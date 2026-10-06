@@ -188,7 +188,7 @@ fn check_redirect(
         transport,
     };
     v5.srv_resolver = Some(SrvResolverConfig(Arc::new(Resolver)));
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     until(
         &mut events,

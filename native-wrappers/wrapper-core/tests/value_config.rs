@@ -1,10 +1,12 @@
+mod support;
+
 use std::time::Duration;
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
     BrokerTarget, ClientConfig, ErrorKind, IncomingPacketLimit, LastWillConfig,
-    LastWillProtocolOptions, NativeClient, ProtocolConfig, QoS, SecretBytes, TlsBackend,
-    TlsClientIdentity, TlsConfig, TransportConfig, V5WillProperties, WebSocketHeader,
+    LastWillProtocolOptions, ProtocolConfig, QoS, SecretBytes, TlsBackend, TlsClientIdentity,
+    TlsConfig, TransportConfig, V5WillProperties, WebSocketHeader,
 };
 
 fn will() -> LastWillConfig {
@@ -24,7 +26,7 @@ fn will_protocol_is_checked_before_start() {
     value.protocol = LastWillProtocolOptions::V5(V5WillProperties::default());
     config.common.last_will = Some(value);
     assert_eq!(
-        NativeClient::start(config).unwrap_err().kind(),
+        support::start(config).unwrap_err().kind(),
         ErrorKind::Configuration
     );
 }

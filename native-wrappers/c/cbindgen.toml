@@ -9,6 +9,8 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_execution_context",
+    "rumqttc_execution_options_t",
     "rumqttc_tls_async_verifier_vtable_t",
     "rumqttc_tls_async_identity_vtable_t",
     "rumqttc_redirect_registration",
@@ -81,6 +83,7 @@ include = [
 ]
 
 [export.rename]
+"rumqttc_execution_context" = "rumqttc_execution_context_t"
 "rumqttc_tls_profile" = "rumqttc_tls_profile_t"
 "rumqttc_config" = "rumqttc_config_t"
 "rumqttc_client" = "rumqttc_client_t"

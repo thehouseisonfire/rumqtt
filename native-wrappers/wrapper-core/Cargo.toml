@@ -11,6 +11,8 @@ repository.workspace = true
 license.workspace = true
 authors.workspace = true
 readme = "README.md"
+# Raw performance evidence belongs in the repository, not the published library.
+exclude = ["benches/execution-results/**"]
 
 [lib]
 name = "rumqttc_wrapper_core"
@@ -50,7 +52,7 @@ rustls = { version = "0.23.40", default-features = false, features = ["std"], op
 rumqttc-core-next = { path = "../../rumqttc-core", version = "0.34.0-alpha", default-features = false }
 scram = { package = "scram-rs", version = "0.24.0", default-features = false, features = ["std"], optional = true }
 thiserror = "2.0.8"
-tokio = { version = "1.40", features = ["macros", "rt", "sync", "time", "io-util"] }
+tokio = { version = "1.40", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "io-util"] }
 rumqttc_v4 = { package = "rumqttc-v4-next", path = "../../rumqttc-v4", version = "0.34.0-alpha", default-features = false }
 rumqttc_v5 = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", version = "0.34.0-alpha", default-features = false }
 native-tls = { version = "0.2.18", optional = true, features = ["alpn"] }

@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use rumqttc_wrapper_core::*;
 
-#[cfg(feature = "ordered-shutdown")]
 mod support;
 
 #[cfg(feature = "ordered-shutdown")]
@@ -90,7 +89,7 @@ mod enabled {
                     });
                     let mut cfg = config(mqtt5, port);
                     inflight_one(&mut cfg);
-                    let mut client = NativeClient::start(cfg).unwrap();
+                    let mut client = support::start(cfg).unwrap();
                     let _events = connected(&mut client);
                     let a = client.handle().try_admit(publish(qos, b"a")).unwrap();
                     first_rx.recv_timeout(DEADLINE).unwrap();
@@ -149,7 +148,7 @@ mod enabled {
             });
             let mut cfg = config(mqtt5, port);
             cfg.common.ack_mode = AckMode::Manual;
-            let mut client = NativeClient::start(cfg).unwrap();
+            let mut client = support::start(cfg).unwrap();
             let mut events = connected(&mut client);
             let inbound = support::until(&mut events, |event| {
                 matches!(event, WrapperEvent::IncomingPublish(_))
@@ -222,7 +221,7 @@ mod enabled {
             let mut cfg = config(mqtt5, port);
             inflight_one(&mut cfg);
             cfg.common.request_channel_capacity = 64;
-            let mut client = NativeClient::start(cfg).unwrap();
+            let mut client = support::start(cfg).unwrap();
             let _events = connected(&mut client);
             client
                 .handle()
@@ -327,7 +326,7 @@ mod enabled {
                 let mut cfg = config(mqtt5, port);
                 persistent(&mut cfg);
                 inflight_one(&mut cfg);
-                let mut client = NativeClient::start(cfg).unwrap();
+                let mut client = support::start(cfg).unwrap();
                 let _events = connected(&mut client);
                 client
                     .handle()
@@ -404,7 +403,7 @@ mod enabled {
                     ));
                 }
             }
-            let mut client = NativeClient::start(cfg).unwrap();
+            let mut client = support::start(cfg).unwrap();
             let _events = connected(&mut client);
             let handle = client.handle();
             store.armed.store(true, Ordering::Release);
@@ -467,7 +466,7 @@ mod enabled {
                 let mut byte = [0];
                 while socket.read(&mut byte).unwrap() != 0 {}
             });
-            let mut client = NativeClient::start(config(mqtt5, port)).unwrap();
+            let mut client = support::start(config(mqtt5, port)).unwrap();
             let _events = connected(&mut client);
             let closer = client.closer();
             let close = client
@@ -512,7 +511,7 @@ mod enabled {
                     mode: TransportMode::Base,
                     connector: Arc::new(PendingConnector),
                 });
-                let client = NativeClient::start(cfg).unwrap();
+                let client = support::start(cfg).unwrap();
                 let close = client
                     .handle()
                     .try_admit(Command::OrderedDisconnect {
@@ -546,7 +545,7 @@ mod enabled {
                     mode: TransportMode::Base,
                     connector: Arc::new(PendingConnector),
                 });
-                let client = NativeClient::start(cfg).unwrap();
+                let client = support::start(cfg).unwrap();
                 let closer = client.closer();
                 let close = client
                     .handle()
@@ -577,7 +576,7 @@ mod enabled {
                 mode: TransportMode::Base,
                 connector: Arc::new(PendingConnector),
             });
-            let mut client = NativeClient::start(cfg).unwrap();
+            let mut client = support::start(cfg).unwrap();
             let close = client
                 .handle()
                 .try_admit(Command::OrderedDisconnect { timeout: None })
@@ -614,7 +613,7 @@ mod enabled {
                 mode: TransportMode::Base,
                 connector: Arc::new(PendingConnector),
             });
-            let client = NativeClient::start(cfg).unwrap();
+            let client = support::start(cfg).unwrap();
             let protocol = if mqtt5 {
                 DisconnectProtocolOptions::V5(V5DisconnectOptions {
                     reason_string: Some("original".into()),
@@ -683,7 +682,7 @@ mod enabled {
             let mut byte = [0];
             assert_eq!(socket.read(&mut byte).unwrap(), 0);
         });
-        let mut client = NativeClient::start(config(true, port)).unwrap();
+        let mut client = support::start(config(true, port)).unwrap();
         let _events = connected(&mut client);
         let publication = client
             .handle()
@@ -786,7 +785,7 @@ mod enabled {
                 ProtocolConfig::V4(cfg) => cfg.session_store = persistence,
                 ProtocolConfig::V5(cfg) => cfg.session_store = persistence,
             }
-            let mut client = NativeClient::start(cfg).unwrap();
+            let mut client = support::start(cfg).unwrap();
             let _events = connected(&mut client);
             store.armed.store(true, Ordering::Release);
             client
@@ -836,7 +835,7 @@ mod enabled {
                     ProtocolConfig::V4(cfg) => cfg.session_store = persistence,
                     ProtocolConfig::V5(cfg) => cfg.session_store = persistence,
                 }
-                let mut client = NativeClient::start(cfg).unwrap();
+                let mut client = support::start(cfg).unwrap();
                 let mut events = connected(&mut client);
                 store.armed.store(true, Ordering::Release);
                 client
@@ -917,7 +916,7 @@ mod enabled {
             let mut cfg = config(mqtt5, port);
             cfg.common.event_buffer_capacity = 1;
             cfg.common.event_delivery_timeout = DEADLINE;
-            let client = NativeClient::start(cfg).unwrap();
+            let client = support::start(cfg).unwrap();
             ready_rx.recv_timeout(DEADLINE).unwrap();
             // Leave incoming delivery blocked before admitting the ordered fence.
             std::thread::sleep(Duration::from_millis(20));
@@ -944,7 +943,7 @@ mod enabled {
 #[cfg(not(feature = "ordered-shutdown"))]
 #[test]
 fn disabled_ordered_commands_leave_the_client_running() {
-    let client = NativeClient::start(ClientConfig::v4("disabled-ordered", "127.0.0.1", 1)).unwrap();
+    let client = support::start(ClientConfig::v4("disabled-ordered", "127.0.0.1", 1)).unwrap();
     let handle = client.handle();
     let error = handle
         .try_admit(Command::OrderedDisconnect {

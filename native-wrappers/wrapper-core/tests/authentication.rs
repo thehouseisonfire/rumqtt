@@ -28,7 +28,7 @@ fn explicit_callback_rejection_is_terminal_and_releases_owner() {
         let mut socket = support::accept(&listener);
         assert_eq!(socket.read(&mut [0]).unwrap(), 0);
     });
-    let mut client = NativeClient::start(config(port, owner)).unwrap();
+    let mut client = support::start(config(port, owner)).unwrap();
     let mut events = client.take_events().unwrap();
     let event = support::until(&mut events, |event| {
         matches!(event, WrapperEvent::DriverTerminated(_))
@@ -63,7 +63,7 @@ fn broker_authentication_method_change_retains_typed_failure() {
         .unwrap();
         socket.write_all(&packet).unwrap();
     });
-    let mut client = NativeClient::start(config(
+    let mut client = support::start(config(
         port,
         Arc::new(Mechanism {
             contexts: Mutex::new(vec![]),
@@ -105,7 +105,7 @@ fn overlapping_reauthentication_is_rejected_before_the_active_exchange_closes() 
         release_rx.recv_timeout(support::DEADLINE).unwrap();
         drop(socket);
     });
-    let mut client = NativeClient::start(config(
+    let mut client = support::start(config(
         port,
         Arc::new(Mechanism {
             contexts: Mutex::new(vec![]),
@@ -163,7 +163,7 @@ fn rejected_overlap_preserves_success_and_releases_admission_for_the_next_exchan
             rumqttc_v5::Packet::Disconnect(_)
         ));
     });
-    let mut client = NativeClient::start(config(
+    let mut client = support::start(config(
         port,
         Arc::new(Mechanism {
             contexts: Mutex::new(vec![]),
@@ -255,7 +255,7 @@ fn authentication_reconnect_and_pending_challenge_shutdown_release_exchange() {
                 contexts: Mutex::new(vec![]),
             });
             let weak = Arc::downgrade(&owner);
-            let mut client = NativeClient::start(config(port, owner.clone())).unwrap();
+            let mut client = support::start(config(port, owner.clone())).unwrap();
             let mut events = client.take_events().unwrap();
             let operation = if reauth {
                 support::until(&mut events, |event| {
@@ -451,7 +451,7 @@ fn ready_async_callbacks_cannot_accept_responses_after_the_exchange_deadline() {
                     "late response reached the broker"
                 );
             });
-            let mut client = NativeClient::start(async_config(
+            let mut client = support::start(async_config(
                 port,
                 Arc::new(Authority {
                     stage,
@@ -605,7 +605,7 @@ fn authentication_future_destruction_panics_are_typed_on_completion_timeout_and_
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (failed_tx, failed_rx) = std::sync::mpsc::channel();
         let dropped = Arc::new(AtomicUsize::new(0));
-        let mut client = NativeClient::start(async_config(
+        let mut client = support::start(async_config(
             port,
             Arc::new(Authority {
                 mode,
@@ -744,7 +744,7 @@ fn deferred_reauthentication_survives_publish_and_keepalive_read_arbitration() {
         support::DEADLINE,
     );
     config.common.keep_alive = Duration::from_secs(1);
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let _events = support::connected(&mut client);
     let reauthentication = client
         .handle()
@@ -820,7 +820,7 @@ fn async_exchange_deadline_expires_while_waiting_for_initial_or_reauthentication
             assert_eq!(socket.read(&mut [0]).unwrap(), 0);
         });
         let (failed_tx, failed_rx) = std::sync::mpsc::channel();
-        let mut client = NativeClient::start(async_config(
+        let mut client = support::start(async_config(
             port,
             Arc::new(Authority(failed_tx)),
             Duration::from_millis(100),
@@ -933,7 +933,7 @@ fn initial_auth_success_is_rejected_before_notifying_the_async_authority() {
     });
     let authority = Arc::new(Authority(AtomicUsize::new(0)));
     let mut client =
-        NativeClient::start(async_config(port, authority.clone(), support::DEADLINE)).unwrap();
+        support::start(async_config(port, authority.clone(), support::DEADLINE)).unwrap();
     let mut events = client.take_events().unwrap();
     loop {
         match events.recv_timeout(support::DEADLINE).unwrap().unwrap() {
@@ -969,8 +969,7 @@ fn async_authentication_panics_are_typed_and_release_the_authority() {
         assert_eq!(socket.read(&mut [0]).unwrap(), 0);
     });
     let owner = Arc::new(Panicking);
-    let mut client =
-        NativeClient::start(async_config(port, owner.clone(), support::DEADLINE)).unwrap();
+    let mut client = support::start(async_config(port, owner.clone(), support::DEADLINE)).unwrap();
     let mut events = client.take_events().unwrap();
     let event = support::until(&mut events, |event| {
         matches!(event, WrapperEvent::DriverTerminated(_))
@@ -1080,7 +1079,7 @@ fn authentication_timeout_during_session_save_notifies_the_authority_with_timeou
     );
     store.timeout = Duration::from_secs(30);
     v5.session_store = Some(store);
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = support::connected(&mut client);
     let operation = client
         .handle()
@@ -1208,7 +1207,7 @@ fn immediate_close_notifies_pending_initial_authentication_once() {
             let (entered_tx, entered_rx) = std::sync::mpsc::channel();
             let (failed_tx, failed_rx) = std::sync::mpsc::channel();
             let dropped = Arc::new(AtomicUsize::new(0));
-            let mut client = NativeClient::start(async_config(
+            let mut client = support::start(async_config(
                 port,
                 Arc::new(Authority {
                     stage,
@@ -1343,7 +1342,7 @@ fn immediate_close_cancels_pending_async_reauthentication_and_forwards_connect_u
     authority.exchange_timeout = Duration::from_secs(30);
     v5.async_authenticator = Some(authority);
 
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let _events = support::connected(&mut client);
     let operation = client
         .handle()
@@ -1392,7 +1391,7 @@ fn immediate_close_with_idle_async_authenticator_sends_disconnect() {
     };
     v5.connect_properties.authentication_method = Some("test".into());
     v5.async_authenticator = Some(AsyncAuthenticatorConfig::new(Arc::new(IdleAuthority)));
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let _events = support::connected(&mut client);
     client.closer().close_now(support::DEADLINE).unwrap();
     broker.join();
@@ -1440,7 +1439,7 @@ fn failed_async_continuation_retains_broker_auth_details() {
     };
     v5.connect_properties.authentication_method = Some("test".into());
     v5.async_authenticator = Some(AsyncAuthenticatorConfig::new(Arc::new(RejectContinuation)));
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     let event = support::until(
         &mut events,
@@ -1545,7 +1544,7 @@ fn failed_async_reauthentication_delivers_broker_details_and_lifecycle_before_te
             assert_eq!(socket.read(&mut [0]).unwrap(), 0);
         });
         let (failed_tx, failed_rx) = std::sync::mpsc::channel();
-        let mut client = NativeClient::start(async_config(
+        let mut client = support::start(async_config(
             port,
             Arc::new(Authority {
                 failure,
@@ -1676,7 +1675,7 @@ fn owned_authentication_rejects_caller_properties_and_handles_tracked_reauthenti
     let mechanism = Arc::new(Mechanism {
         contexts: Mutex::new(Vec::new()),
     });
-    let mut client = NativeClient::start(config(port, mechanism.clone())).unwrap();
+    let mut client = support::start(config(port, mechanism.clone())).unwrap();
     let mut events = client.take_events().unwrap();
     loop {
         if matches!(
@@ -1750,7 +1749,7 @@ fn enhanced_authentication_deadline_terminates_stalled_exchange() {
         unreachable!()
     };
     v5.authenticator.as_mut().unwrap().exchange_timeout = Duration::from_millis(50);
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     loop {
         if let Some(WrapperEvent::DriverTerminated(error)) =
@@ -1787,7 +1786,7 @@ fn tracked_reauthentication_retains_broker_rejection_code() {
             .unwrap();
         socket.write_all(&frame).unwrap();
     });
-    let mut native = NativeClient::start(config(
+    let mut native = support::start(config(
         port,
         Arc::new(Mechanism {
             contexts: Mutex::new(vec![]),
@@ -1839,7 +1838,7 @@ fn authenticator_panics_are_terminal_redacted_and_release_driver_ownership() {
         assert_eq!(socket.read(&mut byte).unwrap(), 0);
     });
     let owner = Arc::new(Panicking);
-    let mut native = NativeClient::start(config(port, owner.clone())).unwrap();
+    let mut native = support::start(config(port, owner.clone())).unwrap();
     let mut events = native.take_events().unwrap();
     loop {
         if let WrapperEvent::DriverTerminated(error) = events
@@ -1994,7 +1993,7 @@ fn redirect_policy_preserves_reference_and_isolates_target_credentials() {
                 (mode == "srv-follow").then_some(target_port),
             ))));
         }
-        let mut native = NativeClient::start(config).unwrap();
+        let mut native = support::start(config).unwrap();
         let mut events = native.take_events().unwrap();
         let mut seen_redirect = false;
         let mut seen_srv_target = false;
@@ -2179,7 +2178,7 @@ fn isolated_redirect_restores_origin_authentication_and_session_expiry_admission
         max_attempts: 1,
         transport: TransportConfig::Tcp,
     };
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     while !matches!(
         events
@@ -2289,8 +2288,7 @@ fn rejected_connack_and_broker_disconnect_preserve_properties() {
                 socket.write_all(&frame).unwrap();
             }
         });
-        let mut native =
-            NativeClient::start(ClientConfig::v5("details", "127.0.0.1", port)).unwrap();
+        let mut native = support::start(ClientConfig::v5("details", "127.0.0.1", port)).unwrap();
         let mut events = native.take_events().unwrap();
         let mut seen = false;
         for _ in 0..8 {
@@ -2503,7 +2501,7 @@ fn scram_verifies_server_proof_for_initial_authentication_and_reauthentication()
             SecretBytes::new(b"scram-private-password".to_vec()),
         ));
         let mut formatted = format!("{config:?}");
-        let mut native = NativeClient::start(config).unwrap();
+        let mut native = support::start(config).unwrap();
         let mut events = native.take_events().unwrap();
         loop {
             let event = events
@@ -2599,7 +2597,7 @@ fn async_failure_callback_distinguishes_broker_refusal_from_transport_loss() {
             assert_eq!(socket.read(&mut [0]).unwrap(), 0);
         });
         let (failed_tx, failed_rx) = std::sync::mpsc::channel();
-        let mut client = NativeClient::start(async_config(
+        let mut client = support::start(async_config(
             port,
             Arc::new(Authority(failed_tx)),
             Duration::from_secs(30),

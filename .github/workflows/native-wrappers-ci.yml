@@ -108,6 +108,13 @@ jobs:
           cargo test --locked --workspace
           cargo test --locked --workspace --doc
 
+      - name: Shared execution with default and composed feature profiles
+        env:
+          RUMQTTC_TEST_EXECUTION: shared
+        run: |
+          cargo test --locked -p rumqttc-wrapper-core-next
+          cargo test --locked -p rumqttc-wrapper-core-next --features tls12,use-native-tls,websocket,proxy,ordered-shutdown,tracing-log-compat
+
       - name: Ordered shutdown enabled and feature unification
         run: |
           cargo test --locked --workspace --features rumqttc-c-next/ordered-shutdown
@@ -141,7 +148,9 @@ jobs:
 
       - name: Real-broker will behavior
         if: ${{ runner.os == 'Linux' }}
-        run: cargo test --locked -p rumqttc-wrapper-core-next --test will_broker -- --ignored
+        run: |
+          cargo test --locked -p rumqttc-wrapper-core-next --test will_broker -- --ignored
+          RUMQTTC_TEST_EXECUTION=shared cargo test --locked -p rumqttc-wrapper-core-next --test will_broker -- --ignored
 
       - name: Wrapper feature matrix
         if: ${{ runner.os == 'Linux' }}
@@ -805,3 +814,45 @@ jobs:
         run: |
           cargo build --locked -p rumqttc-c-next --no-default-features --features use-rustls-ring
           ctest --test-dir target/native-external-signing -R '^rumqttc-native-tls-(advanced|deferred)$' --output-on-failure
+
+  execution-measurements:
+    name: C and asyncio execution resources on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-execution-measurements
+          workspaces: native-wrappers -> target
+      - uses: ./.github/actions/native-c-test-tools
+      - name: Build real release consumers
+        run: |
+          python -m pip install psutil
+          cargo build --locked --release -p rumqttc-c-next -p rumqttc-python-next --features rumqttc-python-next/benchmark-testing,pyo3/extension-module
+          cmake -S c/tests/native -B target/execution-release -DRUMQTTC_LIBRARY_DIR="$PWD/target/release"
+          cmake --build target/execution-release --config Release --target rumqttc-native-execution-benchmark
+      - name: Measure client-count scaling and retain raw evidence
+        run: |
+          case "$RUNNER_OS" in
+            Windows) execution_binary=target/execution-release/Release/rumqttc-native-execution-benchmark.exe; python_library=target/release/rumqttc_python.dll; c_library=target/release/rumqttc.dll ;;
+            macOS) execution_binary=target/execution-release/rumqttc-native-execution-benchmark; python_library=target/release/librumqttc_python.dylib; c_library=target/release/librumqttc.dylib ;;
+            *) execution_binary=target/execution-release/rumqttc-native-execution-benchmark; python_library=target/release/librumqttc_python.so; c_library=target/release/librumqttc.so ;;
+          esac
+          python wrapper-core/benches/execution_matrix.py --binary "$execution_binary" --c-library "$c_library" --python-library "$python_library" \
+            --counts 1 10 100 1000 --qos 0 1 2 --scenarios idle publish incoming periodic reconnect hotspot \
+            --repetitions 1 --rounds 5 --output target/execution-measurements
+      - name: Preserve resource and latency samples
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: execution-measurements-${{ runner.os }}
+          path: native-wrappers/target/execution-measurements

@@ -38,7 +38,7 @@ fn observe_private_terminal_ack() {
         stream.write_all(&ack).unwrap();
         assert_eq!(support::frame(&mut stream)[0], 0xe0);
     });
-    let mut client = NativeClient::start(support::config(true, port)).unwrap();
+    let mut client = support::start(support::config(true, port)).unwrap();
     let mut events = client.take_events().unwrap();
     assert!(matches!(
         events.recv_timeout(support::DEADLINE).unwrap(),
@@ -127,7 +127,7 @@ fn lifecycle_and_admission_traces_do_not_capture_credentials_or_commands() {
         };
         config.common.username = Some("private-username".into());
         config.common.password = Some(b"private-password".as_slice().into());
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = client.take_events().unwrap();
         assert!(matches!(
             events.recv_timeout(Duration::from_secs(3)).unwrap(),

@@ -1,3 +1,5 @@
+mod support;
+
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::time::{Duration, Instant};
@@ -57,7 +59,7 @@ fn real_broker_publishes_will_only_after_ungraceful_disconnect() {
                     ClientConfig::v4(id, "127.0.0.1", port)
                 }
             };
-            let mut observer = NativeClient::start(make_config("will-observer")).unwrap();
+            let mut observer = support::start(make_config("will-observer")).unwrap();
             let mut events = observer.take_events().unwrap();
             assert!(matches!(
                 events.recv_timeout(Duration::from_secs(3)).unwrap(),
@@ -99,7 +101,7 @@ fn real_broker_publishes_will_only_after_ungraceful_disconnect() {
                     LastWillProtocolOptions::VersionNeutral
                 },
             });
-            let mut source = NativeClient::start(config).unwrap();
+            let mut source = support::start(config).unwrap();
             let mut source_events = source.take_events().unwrap();
             assert!(matches!(
                 source_events.recv_timeout(Duration::from_secs(3)).unwrap(),

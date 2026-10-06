@@ -1,10 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rumqttc_wrapper_core::{
-    Completion, CompletionHandle, CompletionWaitOutcome, DeliveryStatus, Error, ErrorKind,
-    TerminalOutcome,
-};
+use rumqttc_wrapper_core::{Completion, CompletionHandle, Error, TerminalOutcome};
 
 pub struct CompletionObject {
     pub operation_id: u64,
@@ -31,16 +28,6 @@ impl CompletionObject {
     }
 
     pub fn wait(&self, timeout: Duration) -> Result<Completion, Error> {
-        match self.handle.wait_timeout_outcome(timeout) {
-            CompletionWaitOutcome::Completed(result) => result,
-            CompletionWaitOutcome::DeadlineElapsed => Err(Error::new(
-                ErrorKind::Timeout,
-                format!(
-                    "operation {} did not complete before timeout",
-                    self.operation_id
-                ),
-            )
-            .with_delivery(DeliveryStatus::Ambiguous)),
-        }
+        self.handle.wait_timeout(timeout)
     }
 }

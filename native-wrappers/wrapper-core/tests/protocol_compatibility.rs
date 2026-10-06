@@ -31,7 +31,7 @@ fn accepted_v4_mismatch_preserves_raw_connection_flags_and_reports_effective_fre
         unreachable!()
     };
     v4.session_present_mismatch_policy = SessionPresentMismatchPolicy::AcceptAsClean;
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     assert!(matches!(
         until(&mut events, |event| matches!(

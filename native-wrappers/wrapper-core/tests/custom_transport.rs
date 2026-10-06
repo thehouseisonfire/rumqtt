@@ -44,7 +44,7 @@ fn custom_streams_reconnect_with_fresh_attempts_and_keep_native_tracking() {
             }),
         });
         let started = Instant::now();
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = connected(&mut client);
         let first = publish(&client, b"first");
         first.completion.wait_timeout(DEADLINE).unwrap();
@@ -107,7 +107,7 @@ fn terminal_connector_failures_stop_the_driver_and_fail_pending_operations() {
                 connector,
                 mode: TransportMode::Base,
             });
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = client.take_events().unwrap();
             let subscribe = client
                 .handle()
@@ -213,7 +213,7 @@ fn retryable_connector_failures_reconnect_before_a_terminal_failure_stops_the_dr
                 }),
                 mode: TransportMode::Base,
             });
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = client.take_events().unwrap();
             let event = events.recv_timeout(DEADLINE).unwrap().unwrap();
             let WrapperEvent::Disconnected { error, .. } = event else {
@@ -316,7 +316,7 @@ fn terminal_stream_failures_stop_the_driver_and_fail_pending_publishes() {
                 }),
                 mode: TransportMode::Base,
             });
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = connected(&mut client);
             let publish = publish(&client, b"pending");
             release.send(()).unwrap();
@@ -389,8 +389,8 @@ fn native_attempt_timeout_cancels_host_work_and_failed_construction_releases_own
         });
         let mut invalid = config.clone();
         invalid.common.connection_timeout = Duration::ZERO;
-        assert!(NativeClient::start(invalid).is_err());
-        let mut client = NativeClient::start(config).unwrap();
+        assert!(support::start(invalid).is_err());
+        let mut client = support::start(config).unwrap();
         let mut events = client.take_events().unwrap();
         let event = until(&mut events, |event| {
             matches!(event, WrapperEvent::Disconnected { .. })
@@ -416,6 +416,6 @@ fn failed_native_client_construction_releases_its_only_connector_owner() {
         mode: TransportMode::Base,
     });
     config.common.connection_timeout = Duration::ZERO;
-    assert!(NativeClient::start(config).is_err());
+    assert!(support::start(config).is_err());
     assert!(weak.upgrade().is_none());
 }

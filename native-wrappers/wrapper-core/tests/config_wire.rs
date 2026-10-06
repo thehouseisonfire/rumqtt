@@ -1,3 +1,5 @@
+mod support;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
@@ -61,8 +63,7 @@ fn mqtt5_batched_publishes_arrive_before_broker_disconnect() {
             .unwrap();
         let _ = release_rx.recv_timeout(Duration::from_secs(3));
     });
-    let mut native =
-        NativeClient::start(ClientConfig::v5("batch-order", "127.0.0.1", port)).unwrap();
+    let mut native = support::start(ClientConfig::v5("batch-order", "127.0.0.1", port)).unwrap();
     let mut events = wait_connected(&mut native);
     for payload in [b"x", b"y"] {
         let event = events
@@ -162,7 +163,7 @@ fn mqtt5_connect_and_will_properties_reach_the_wire_without_loss() {
             user_properties: vec![("key".into(), "value".into()); 2],
         }),
     });
-    let mut native = NativeClient::start(config).unwrap();
+    let mut native = support::start(config).unwrap();
     let _events = wait_connected(&mut native);
     native
         .handle()
@@ -205,7 +206,7 @@ fn mqtt4_binary_will_is_encoded_and_graceful_close_sends_disconnect() {
         retain: true,
         protocol: LastWillProtocolOptions::VersionNeutral,
     });
-    let mut native = NativeClient::start(config).unwrap();
+    let mut native = support::start(config).unwrap();
     let _events = wait_connected(&mut native);
     native
         .handle()
@@ -248,7 +249,7 @@ fn unix_targets_connect_and_close_for_both_protocols() {
         };
         config.common.broker = BrokerTarget::Unix { path };
         config.common.transport = TransportConfig::Unix;
-        let mut native = NativeClient::start(config).unwrap();
+        let mut native = support::start(config).unwrap();
         let _events = wait_connected(&mut native);
         native
             .handle()
@@ -288,8 +289,7 @@ fn mqtt5_disconnect_payload_is_exact_for_graceful_and_immediate_close() {
             );
             assert_eq!(p.server_reference, None);
         });
-        let mut native =
-            NativeClient::start(ClientConfig::v5("disconnect", "127.0.0.1", port)).unwrap();
+        let mut native = support::start(ClientConfig::v5("disconnect", "127.0.0.1", port)).unwrap();
         let _events = wait_connected(&mut native);
         let payload = DisconnectProtocolOptions::V5(V5DisconnectOptions {
             reason_code: 4,
@@ -343,7 +343,7 @@ fn concurrent_close_selects_one_payload_and_coalesces_only_matching_callers() {
         };
         packet.properties.unwrap().reason_string.unwrap()
     });
-    let mut native = NativeClient::start(ClientConfig::v5("race", "127.0.0.1", port)).unwrap();
+    let mut native = support::start(ClientConfig::v5("race", "127.0.0.1", port)).unwrap();
     let _events = wait_connected(&mut native);
     let barrier = Arc::new(Barrier::new(8));
     let callers: Vec<_> = (0..8)
@@ -486,7 +486,7 @@ fn proxy_authentication_and_remote_broker_address_are_preserved() {
                         tls: None,
                     }
                 });
-                let mut native = NativeClient::start(config).unwrap();
+                let mut native = support::start(config).unwrap();
                 let mut events = native.take_events().unwrap();
                 let event = events
                     .recv_timeout(Duration::from_secs(3))
@@ -589,7 +589,7 @@ fn websocket_headers_preserve_order_and_are_reapplied_on_reconnect() {
             },
         ];
         assert!(!format!("{config:?}").contains("secret-token"));
-        let mut native = NativeClient::start(config).unwrap();
+        let mut native = support::start(config).unwrap();
         let mut events = native.take_events().unwrap();
         let mut connected = 0;
         while connected != 2 {

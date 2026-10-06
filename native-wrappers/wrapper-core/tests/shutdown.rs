@@ -1,3 +1,5 @@
+mod support;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
@@ -6,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
-    ClientConfig, Command, Completion, DeliveryStatus, ErrorKind, NativeClient, ProtocolVersion,
-    PublishCommand, PublishCompletion, PublishProtocolOptions, QoS, WrapperEvent,
+    ClientConfig, Command, Completion, DeliveryStatus, ErrorKind, ProtocolVersion, PublishCommand,
+    PublishCompletion, PublishProtocolOptions, QoS, WrapperEvent,
 };
 
 fn read_frame(stream: &mut TcpStream) -> Option<u8> {
@@ -60,7 +62,7 @@ fn assert_graceful_shutdown_drains_ready_publish(protocol: ProtocolVersion) {
         while read_frame(&mut stream).is_some() {}
     });
 
-    let mut native = NativeClient::start(config(protocol, port)).unwrap();
+    let mut native = support::start(config(protocol, port)).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
@@ -142,7 +144,7 @@ fn assert_graceful_timeout_closes_immediately(protocol: ProtocolVersion) {
         }
     });
 
-    let mut native = NativeClient::start(config(protocol, port)).unwrap();
+    let mut native = support::start(config(protocol, port)).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
@@ -209,7 +211,7 @@ fn assert_immediate_shutdown_keeps_unfinished_publish_ambiguous(protocol: Protoc
         while read_frame(&mut stream).is_some() {}
     });
 
-    let mut native = NativeClient::start(config(protocol, port)).unwrap();
+    let mut native = support::start(config(protocol, port)).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
@@ -267,7 +269,7 @@ fn assert_immediate_shutdown_interrupts_connection_establishment(protocol: Proto
 
     let mut config = config(protocol, port);
     config.common.connection_timeout = Duration::from_secs(5);
-    let native = NativeClient::start(config).unwrap();
+    let native = support::start(config).unwrap();
     let handle = native.handle();
     connect_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 
@@ -323,7 +325,7 @@ fn assert_immediate_shutdown_bypasses_repeated_event_backpressure(protocol: Prot
     // submit the immediate disconnect, particularly on slower CI hosts.
     config.common.event_delivery_timeout = Duration::from_secs(5);
     config.common.emit_outgoing_events = true;
-    let native = NativeClient::start(config).unwrap();
+    let native = support::start(config).unwrap();
     let handle = native.handle();
     published_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     thread::sleep(Duration::from_millis(20));
@@ -375,7 +377,7 @@ fn dropping_owner_escalates_an_unbounded_graceful_shutdown() {
     });
 
     let mut native =
-        NativeClient::start(ClientConfig::v4("drop-escalation", "127.0.0.1", port)).unwrap();
+        support::start(ClientConfig::v4("drop-escalation", "127.0.0.1", port)).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
@@ -422,7 +424,7 @@ fn repeated_start_and_close_cycles_join_every_driver_thread() {
     });
 
     for cycle in 0..CYCLES {
-        let mut native = NativeClient::start(ClientConfig::v4(
+        let mut native = support::start(ClientConfig::v4(
             format!("cycle-{cycle}"),
             "127.0.0.1",
             port,

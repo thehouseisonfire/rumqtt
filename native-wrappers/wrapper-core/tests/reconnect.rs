@@ -1,9 +1,11 @@
+mod support;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rumqttc_wrapper_core::{ClientConfig, Command, NativeClient, WrapperEvent};
+use rumqttc_wrapper_core::{ClientConfig, Command, WrapperEvent};
 
 fn read_frame(stream: &mut TcpStream) -> Option<u8> {
     let mut header = [0];
@@ -44,7 +46,7 @@ fn recoverable_poll_error_is_reported_and_reconnects() {
         }
     });
 
-    let mut native = NativeClient::start(ClientConfig::v4("reconnect", "127.0.0.1", port)).unwrap();
+    let mut native = support::start(ClientConfig::v4("reconnect", "127.0.0.1", port)).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     let deadline = Instant::now() + Duration::from_secs(6);

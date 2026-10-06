@@ -18,7 +18,7 @@ fn bind_address_reaches_broker_for_both_protocols() {
             connect(&mut socket, mqtt5);
             assert_eq!(frame(&mut socket)[0], 0xe0);
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let _events = connected(&mut client);
         client.closer().close(DEADLINE).unwrap();
         broker.join();
@@ -32,7 +32,7 @@ fn unsupported_network_controls_fail_before_driver_start() {
             let mut config = config(mqtt5, 1);
             config.common.network.mptcp = true;
             assert_eq!(
-                NativeClient::start(config).unwrap_err().kind(),
+                support::start(config).unwrap_err().kind(),
                 ErrorKind::Configuration
             );
         }
@@ -44,7 +44,7 @@ fn unsupported_network_controls_fail_before_driver_start() {
             let mut config = config(mqtt5, 1);
             config.common.network.bind_device = Some("device".into());
             assert_eq!(
-                NativeClient::start(config).unwrap_err().kind(),
+                support::start(config).unwrap_err().kind(),
                 ErrorKind::Configuration
             );
         }
@@ -55,7 +55,7 @@ fn unsupported_network_controls_fail_before_driver_start() {
             };
             config.common.transport = TransportConfig::Unix;
             assert_eq!(
-                NativeClient::start(config).unwrap_err().kind(),
+                support::start(config).unwrap_err().kind(),
                 ErrorKind::Configuration
             );
         }
@@ -69,7 +69,7 @@ fn bind_device_failure_reaches_socket_and_mptcp_can_connect() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let mut invalid = config(mqtt5, listener.local_addr().unwrap().port());
         invalid.common.network.bind_device = Some("rmq-no-device".into());
-        let mut client = NativeClient::start(invalid).unwrap();
+        let mut client = support::start(invalid).unwrap();
         let mut events = client.take_events().unwrap();
         let event = until(&mut events, |event| {
             matches!(event, WrapperEvent::Disconnected { .. })
@@ -93,7 +93,7 @@ fn bind_device_failure_reaches_socket_and_mptcp_can_connect() {
             connect(&mut socket, mqtt5);
             assert_eq!(frame(&mut socket)[0], 0xe0);
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let _events = connected(&mut client);
         client.closer().close(DEADLINE).unwrap();
         broker.join();
@@ -163,7 +163,7 @@ mod unix {
                         }
                     }
                 });
-                let mut client = NativeClient::start(unix_config(mqtt5, &path)).unwrap();
+                let mut client = support::start(unix_config(mqtt5, &path)).unwrap();
                 let mut events = connected(&mut client);
                 release_tx.send(()).unwrap();
                 until(&mut events, |event| {
@@ -191,7 +191,7 @@ mod unix {
     }
 
     fn assert_network_failure(config: ClientConfig) {
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = client.take_events().unwrap();
         let event = until(&mut events, |event| {
             matches!(event, WrapperEvent::Disconnected { .. })
@@ -254,7 +254,7 @@ mod unix {
                 });
                 let mut config = unix_config(mqtt5, &path);
                 config.common.connection_timeout = Duration::from_secs(1);
-                let mut client = NativeClient::start(config).unwrap();
+                let mut client = support::start(config).unwrap();
                 let mut events = client.take_events().unwrap();
                 ready_rx.recv_timeout(DEADLINE).unwrap();
                 if timeout {

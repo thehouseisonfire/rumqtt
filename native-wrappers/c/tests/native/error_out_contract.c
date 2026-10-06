@@ -5,6 +5,50 @@
 
 #define EXPECT_FAILURE(expression) REQUIRE((expression) != RUMQTTC_OK)
 
+static void coverage_execution(void) {
+  rumqttc_execution_context_t *context = NULL;
+  rumqttc_execution_context_t *retained = NULL;
+  rumqttc_config_t *config = NULL;
+  uint32_t state;
+  /* ERROR_OUT_FAILURE: rumqttc_execution_context_new */
+  EXPECT_FAILURE(rumqttc_execution_context_new(NULL, NULL, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_execution_context_new */
+  CHECK(rumqttc_execution_context_new(NULL, &context, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_execution_context_retain */
+  EXPECT_FAILURE(rumqttc_execution_context_retain(NULL, &retained, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_execution_context_retain */
+  CHECK(rumqttc_execution_context_retain(context, &retained, NULL));
+  CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V4, &config, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_config_set_execution_context */
+  EXPECT_FAILURE(rumqttc_config_set_execution_context(config, NULL, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_config_set_execution_context */
+  CHECK(rumqttc_config_set_execution_context(config, context, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_config_clear_execution_context */
+  EXPECT_FAILURE(rumqttc_config_clear_execution_context(NULL, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_config_clear_execution_context */
+  CHECK(rumqttc_config_clear_execution_context(config, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_execution_context_state */
+  EXPECT_FAILURE(rumqttc_execution_context_state(context, NULL, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_execution_context_state */
+  CHECK(rumqttc_execution_context_state(context, &state, NULL));
+  REQUIRE(state == RUMQTTC_EXECUTION_OPEN);
+  /* ERROR_OUT_FAILURE: rumqttc_execution_context_try_join */
+  EXPECT_FAILURE(rumqttc_execution_context_try_join(context, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_execution_context_join_timeout_ms */
+  EXPECT_FAILURE(rumqttc_execution_context_join_timeout_ms(context, 1, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_execution_context_request_shutdown */
+  EXPECT_FAILURE(rumqttc_execution_context_request_shutdown(NULL, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_execution_context_request_shutdown */
+  CHECK(rumqttc_execution_context_request_shutdown(context, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_execution_context_join_timeout_ms */
+  CHECK(rumqttc_execution_context_join_timeout_ms(context, NATIVE_DEADLINE_MS, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_execution_context_try_join */
+  CHECK(rumqttc_execution_context_try_join(retained, NULL));
+  rumqttc_config_destroy(config);
+  rumqttc_execution_context_release(context);
+  rumqttc_execution_context_release(retained);
+}
+
 static void coverage_store_callback(void *user_data,
                                     const rumqttc_store_request_t *request,
                                     rumqttc_callback_completion_t *completion) {
@@ -259,6 +303,7 @@ static void coverage_redirect_authority(void) {
 }
 
 void native_test_error_out_contract(void) {
+  coverage_execution();
   coverage_redirect_authority();
   coverage_tls_profiles();
   rumqttc_config_t *v4 = NULL;

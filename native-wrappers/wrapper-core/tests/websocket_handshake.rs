@@ -159,7 +159,7 @@ fn dynamic_tokens_and_request_targets_refresh_across_ws_and_wss_reconnects() {
             ];
             config.common.websocket_handshake =
                 Some(WebSocketHandshakeConfig(Arc::new(Tokens(calls.clone()))));
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = client.take_events().unwrap();
             until(&mut events, |event| {
                 matches!(event, WrapperEvent::Connected { .. })
@@ -226,7 +226,7 @@ fn pending_handshake_destructor_failures_are_terminal_on_timeout_and_close() {
             config.common.websocket_handshake = Some(WebSocketHandshakeConfig(Arc::new(
                 PendingDropPanic(entered),
             )));
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let _socket = accept(&listener);
             ready.recv_timeout(DEADLINE).unwrap();
             let pending = client
@@ -346,7 +346,7 @@ fn ipv6_handshake_snapshots_match_direct_and_proxy_connector_targets() {
                     }
                     config.common.websocket_handshake =
                         Some(WebSocketHandshakeConfig(Arc::new(Snapshot(snapshots))));
-                    let client = NativeClient::start(config).unwrap();
+                    let client = support::start(config).unwrap();
                     let mut socket = accept(&listener);
                     if proxy {
                         let mut request = Vec::new();
@@ -405,7 +405,7 @@ fn pending_handshakes_use_native_deadline_and_close_cancels_them() {
         config.common.transport = TransportConfig::WebSocket;
         config.common.connection_timeout = Duration::from_secs(1);
         config.common.websocket_handshake = Some(WebSocketHandshakeConfig(Arc::new(Pending)));
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let _socket = accept(&listener);
         let mut events = client.take_events().unwrap();
         let event = until(&mut events, |event| {
@@ -510,7 +510,7 @@ fn panicking_handshake_authorities_terminate_with_a_typed_failure() {
             config.common.transport = TransportConfig::WebSocket;
             config.common.websocket_handshake =
                 Some(WebSocketHandshakeConfig(Arc::new(Panics(stage))));
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let _socket = accept(&listener);
             let mut events = client.take_events().unwrap();
             let event = until(&mut events, |e| {

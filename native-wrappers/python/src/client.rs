@@ -134,6 +134,8 @@ struct Started {
 }
 pub struct State {
     config: ClientConfig,
+    #[cfg(feature = "benchmark-testing")]
+    execution: std::sync::Mutex<Option<rumqttc_wrapper_core::ExecutionContext>>,
     started: OnceCell<Arc<Started>>,
     start_requested: AtomicBool,
     shutdown: AtomicU8,
@@ -155,14 +157,25 @@ impl State {
             .started
             .get_or_try_init(|| async {
                 let cfg = self.config.clone();
-                let mut native = run_native_blocking(None, move |_| NativeClient::start(cfg))
-                    .await
-                    .map_err(|error| {
-                        rumqttc_wrapper_core::Error::new(
-                            rumqttc_wrapper_core::ErrorKind::Internal,
-                            format!("client start task failed: {error}"),
-                        )
-                    })??;
+                #[cfg(feature = "benchmark-testing")]
+                let execution = self
+                    .execution
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                #[cfg(not(feature = "benchmark-testing"))]
+                let execution: Option<rumqttc_wrapper_core::ExecutionContext> = None;
+                let mut native = run_native_blocking(None, move |_| match execution {
+                    Some(execution) => NativeClient::start_in(cfg, &execution),
+                    None => NativeClient::start(cfg),
+                })
+                .await
+                .map_err(|error| {
+                    rumqttc_wrapper_core::Error::new(
+                        rumqttc_wrapper_core::ErrorKind::Internal,
+                        format!("client start task failed: {error}"),
+                    )
+                })??;
                 let events = native.take_events().ok_or_else(|| {
                     rumqttc_wrapper_core::Error::new(
                         rumqttc_wrapper_core::ErrorKind::Internal,
@@ -314,6 +327,8 @@ impl NativeMqttClient {
         Ok(Self {
             state: Arc::new(State {
                 config: cfg,
+                #[cfg(feature = "benchmark-testing")]
+                execution: std::sync::Mutex::new(None),
                 started: OnceCell::new(),
                 start_requested: AtomicBool::new(false),
                 shutdown: AtomicU8::new(RUNNING),
@@ -569,6 +584,21 @@ impl NativeMqttClient {
                 let _ = py.detach(|| closer.close_now(Duration::from_millis(timeout_ms)));
             }
         }));
+    }
+
+    #[cfg(feature = "benchmark-testing")]
+    fn _benchmark_set_execution(&self, context: &crate::BenchmarkExecutionContext) -> PyResult<()> {
+        if self.state.start_requested.load(Ordering::Acquire) {
+            return Err(PyValueError::new_err(
+                "benchmark execution must be selected before connect",
+            ));
+        }
+        *self
+            .state
+            .execution
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(context.inner.clone());
+        Ok(())
     }
 
     #[cfg(feature = "benchmark-testing")]

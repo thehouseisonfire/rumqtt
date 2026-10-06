@@ -5,6 +5,51 @@ mod config;
 mod error;
 mod event;
 
+/// Explicit benchmark owner; absent from production wheels and Python's public API.
+#[cfg(feature = "benchmark-testing")]
+#[pyclass(module = "rumqttc._native", name = "_BenchmarkExecutionContext")]
+pub struct BenchmarkExecutionContext {
+    inner: rumqttc_wrapper_core::ExecutionContext,
+}
+
+#[cfg(feature = "benchmark-testing")]
+#[pymethods]
+impl BenchmarkExecutionContext {
+    #[new]
+    #[pyo3(signature = (capacity=1024, workers=2, blocking_workers=32))]
+    fn new(
+        py: Python<'_>,
+        capacity: usize,
+        workers: usize,
+        blocking_workers: usize,
+    ) -> PyResult<Self> {
+        let inner = py
+            .detach(|| {
+                rumqttc_wrapper_core::ExecutionContext::new(
+                    rumqttc_wrapper_core::ExecutionOptions {
+                        client_capacity: capacity,
+                        worker_threads: workers,
+                        max_blocking_threads: blocking_workers,
+                    },
+                )
+            })
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    fn shutdown(&self) {
+        self.inner.request_shutdown();
+    }
+
+    fn join(&self, py: Python<'_>, timeout_ms: u64) -> PyResult<()> {
+        py.detach(|| {
+            self.inner
+                .join(std::time::Duration::from_millis(timeout_ms))
+        })
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+    }
+}
+
 use pyo3::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -81,5 +126,7 @@ fn rumqttc_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<completion::NativeCompletion>()?;
     #[cfg(feature = "benchmark-testing")]
     module.add("_TOKIO_BLOCKING_THREADS", configured_blocking_threads)?;
+    #[cfg(feature = "benchmark-testing")]
+    module.add_class::<BenchmarkExecutionContext>()?;
     Ok(())
 }

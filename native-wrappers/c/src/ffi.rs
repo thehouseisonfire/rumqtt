@@ -35,6 +35,10 @@ pub use acknowledgement::*;
 mod ordered;
 pub use ordered::*;
 
+#[path = "execution.rs"]
+mod execution;
+pub use execution::*;
+
 use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
@@ -90,6 +94,7 @@ const CAP_AUTH_CALLBACKS: u64 = 1 << 12;
 const CAP_TRANSPORT_CALLBACKS: u64 = 1 << 13;
 const CAP_WEBSOCKET_CALLBACKS: u64 = 1 << 14;
 const CAP_ORDERED_SHUTDOWN: u64 = 1 << 15;
+const CAP_SHARED_EXECUTION: u64 = 1 << 16;
 const MAX_CHECKPOINT_SIZE: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
@@ -1236,6 +1241,7 @@ pub extern "C" fn rumqttc_library_version() -> *const c_char {
 #[unsafe(no_mangle)]
 pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
     CAP_V4
+        | CAP_SHARED_EXECUTION
         | if cfg!(feature = "ordered-shutdown") {
             CAP_ORDERED_SHUTDOWN
         } else {
@@ -3548,10 +3554,11 @@ pub unsafe extern "C" fn rumqttc_client_start(
         if out.is_null() {
             return Err(ErrorHandle::argument("client output is NULL"));
         }
-        let config = unsafe { config_ref(config) }?
-            .clone_config()
+        let (config, execution) = unsafe { config_ref(config) }?
+            .snapshot()
             .map_err(ErrorHandle::internal)?;
-        let inner = ClientObject::start(config).map_err(|error| core_error(&error, None))?;
+        let inner = ClientObject::start(config, execution.as_ref())
+            .map_err(|error| core_error(&error, None))?;
         unsafe { *out = Box::into_raw(Box::new(rumqttc_client { inner })) };
         Ok(())
     })
@@ -4525,6 +4532,11 @@ pub unsafe extern "C" fn rumqttc_completion_wait_timeout_ms(
 ) -> u32 {
     boundary(error_out, ptr::null_mut(), || {
         let completion = unsafe { completion_ref(completion) }?;
+        if timeout_ms != 0 && !rumqttc_wrapper_core::blocking_wait_allowed() {
+            return Err(ErrorHandle::state(
+                "blocking completion wait is forbidden on execution workers and in callbacks",
+            ));
+        }
         observe_completion(completion, Some(Duration::from_millis(timeout_ms))).map(|_| ())
     })
 }
@@ -6459,7 +6471,7 @@ mod tests {
                 assert_eq!(stream.read(&mut [0]).unwrap(), 0);
             });
             let config = rumqttc_wrapper_core::ClientConfig::v5("ffi-destroy", "127.0.0.1", port);
-            let inner = ClientObject::start(config).unwrap();
+            let inner = ClientObject::start(config, None).unwrap();
             assert!(matches!(
                 inner.recv(Some(Duration::from_secs(5))),
                 Ok(Some(WrapperEvent::Connected { .. }))

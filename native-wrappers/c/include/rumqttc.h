@@ -260,6 +260,7 @@ typedef uint32_t rumqttc_error_kind_t;
 #define RUMQTTC_CAP_TRANSPORT_CALLBACKS (UINT64_C(1) << 13)
 #define RUMQTTC_CAP_WEBSOCKET_CALLBACKS (UINT64_C(1) << 14)
 #define RUMQTTC_CAP_ORDERED_SHUTDOWN (UINT64_C(1) << 15)
+#define RUMQTTC_CAP_SHARED_EXECUTION (UINT64_C(1) << 16)
 
 #define RUMQTTC_TRANSPORT_MAX_TRANSFER 16384u
 #define RUMQTTC_TRANSPORT_BASE 1u
@@ -329,6 +330,19 @@ typedef uint32_t rumqttc_tls_pin_target_t;
 #define RUMQTTC_AUTH_ACTION_COMPLETE 0u
 #define RUMQTTC_AUTH_ACTION_SEND 1u
 #define RUMQTTC_AUTH_ACTION_REJECT 2u
+
+typedef struct rumqttc_execution_context_t rumqttc_execution_context_t;
+#define RUMQTTC_EXECUTION_OPEN 0u
+#define RUMQTTC_EXECUTION_CLOSING 1u
+#define RUMQTTC_EXECUTION_QUIESCENT 2u
+typedef struct rumqttc_execution_options_t {
+    uint32_t struct_size;
+    uint32_t worker_threads;
+    uint32_t max_blocking_threads;
+    uint32_t reserved;
+    size_t client_capacity;
+} rumqttc_execution_options_t;
+#define RUMQTTC_EXECUTION_OPTIONS_INIT { sizeof(rumqttc_execution_options_t), 2u, 32u, 0u, 1024u }
 
 typedef struct rumqttc_config_t rumqttc_config_t;
 typedef struct rumqttc_tls_profile_t rumqttc_tls_profile_t;
@@ -1045,6 +1059,30 @@ typedef struct rumqttc_diagnostics_t {
 RUMQTTC_API uint32_t rumqttc_abi_version(void);
 RUMQTTC_API const char *rumqttc_library_version(void);
 RUMQTTC_API uint64_t rumqttc_library_capabilities(void);
+
+/* Shared execution is opt-in and available in every build. NULL options selects
+ * defaults; counts must be nonzero. Every retained handle is independently
+ * released. Configurations/clients retain the context, so releasing a handle
+ * does not stop attached clients. Final-owner release requests cleanup without
+ * waiting; retain an observation handle when explicit teardown is required.
+ * Shutdown requests immediate cleanup and rejects later starts. Join requires
+ * shutdown first; TIMEOUT only ends observation, and cleanup remains retryable.
+ * QUIESCENT follows successful join of all context execution, including native
+ * blocking work. It does not release host-retained tokens, configurations,
+ * streams, registrations, or host workers. Release/join all independent owners
+ * before unloading the library. Client joining does not stop context peers.
+ * Nonzero blocking waits and context construction are forbidden in callbacks
+ * and on context workers; nonblocking admission/polling/shutdown remain allowed.
+ * A synchronous callback cannot be preempted by a deadline. */
+RUMQTTC_API rumqttc_status_t rumqttc_execution_context_new(const rumqttc_execution_options_t *options, rumqttc_execution_context_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_execution_context_retain(const rumqttc_execution_context_t *context, rumqttc_execution_context_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_execution_context_release(rumqttc_execution_context_t *context);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_execution_context(rumqttc_config_t *config, const rumqttc_execution_context_t *context, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_execution_context(rumqttc_config_t *config, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_execution_context_request_shutdown(const rumqttc_execution_context_t *context, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_execution_context_state(const rumqttc_execution_context_t *context, uint32_t *out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_execution_context_try_join(const rumqttc_execution_context_t *context, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_execution_context_join_timeout_ms(const rumqttc_execution_context_t *context, uint64_t timeout_ms, rumqttc_error_t **error_out);
 
 RUMQTTC_API rumqttc_status_t rumqttc_config_new(rumqttc_protocol_t protocol, rumqttc_config_t **out, rumqttc_error_t **error_out);
 RUMQTTC_API void rumqttc_config_destroy(rumqttc_config_t *config);

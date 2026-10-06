@@ -64,3 +64,8 @@ collective completion without changing ordinary graceful close. See the
 [C API](c/README.md#ordered-publish-shutdown-optional) and
 [measured feature cost](wrapper-core/benches/README.md). Python and JavaScript
 continue to expose their existing close policies.
+
+C applications can opt into explicitly owned shared execution for many-client
+workloads; dedicated startup remains the default. See the
+[C lifecycle contract](c/README.md#shared-execution) and
+[execution measurements](wrapper-core/benches/execution.md).

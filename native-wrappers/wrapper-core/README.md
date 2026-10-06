@@ -1,8 +1,43 @@
 # rumqttc-wrapper-core
 
 Private Rust infrastructure shared by native rumqtt wrappers. The crate owns
-the MQTT event loop on a dedicated thread and exposes owned, protocol-neutral
+the MQTT event loop on dedicated or explicitly shared execution and exposes owned, protocol-neutral
 configuration, commands, completions, events, diagnostics, and errors.
+
+## Execution ownership
+
+`NativeClient::start(config)` preserves dedicated-thread startup.
+`ExecutionContext::new(ExecutionOptions::default())` constructs an explicit
+library-owned Tokio runtime; `NativeClient::start_in(config, &context)` selects
+it for one client. Both use the same driver future and terminal reconciliation.
+Client capacity covers starts under construction and drivers awaiting auxiliary
+cleanup. Closing/joining a client leaves its peers and context workers running.
+
+Context clones, client owners and closers retain execution. Dropping a reference
+requests no shutdown while other owners remain. Final-owner release requests
+cleanup without waiting; retain a context observer to prove teardown explicitly.
+`request_shutdown()` coalesces immediate client cleanup and closes admission.
+Use ordinary graceful client close first if MQTT DISCONNECT is required.
+`join(timeout)` requires shutdown; timeout ends only observation, so join can
+be retried. `try_join()` returns false while pending. `Quiescent` appears only
+after runtime destruction and the management thread has been joined.
+
+Defaults are 1,024 clients, two scheduler workers and at most 32 blocking workers,
+plus one management thread. The blocking queue is not bounded by the worker
+limit; DNS and deferred TLS may create auxiliary work. Client joining includes
+tracked deferred TLS work. Context joining additionally waits for all Tokio
+blocking work and thread teardown. Host-retained tokens, streams, registrations,
+configurations and host jobs have independent lifetimes; release those and join
+host jobs before unloading code. Final-owner release alone proves no quiescence.
+
+Nonzero synchronous completion, event, client-close/join and context waits are
+rejected on context workers and in host callbacks, including waits for peers.
+Polling and nonblocking admissions/shutdown remain available. Synchronous host
+callbacks/destructors must return promptly; deadlines cannot preempt them.
+Driver tasks may migrate between workers. Cooperative yields bound ready MQTT
+and wrapper-control loops; there are no hard peer-latency guarantees.
+See the [C example](../c/examples/shared_execution.c) and
+[measurement method and results](benches/execution.md).
 
 ## Protocol support contract
 

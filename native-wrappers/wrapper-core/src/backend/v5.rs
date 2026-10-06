@@ -592,6 +592,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     };
     loop {
         // See the v4 loop: polling is an indivisible ownership boundary even while wrapper
+        tokio::task::yield_now().await;
         // registrations, cached diagnostics, and completed notices remain responsive.
         let mut authentication_timed_out = false;
         if !connected {

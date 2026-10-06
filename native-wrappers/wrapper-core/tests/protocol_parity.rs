@@ -1,3 +1,5 @@
+mod support;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
@@ -5,9 +7,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
-    AckMode, AckToken, Command, Completion, DeliveryStatus, ErrorKind, NativeClient,
-    PublishCommand, PublishProtocolOptions, QoS, SubscribeCommand, SubscribeProtocolOptions,
-    Subscription, SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions,
+    AckMode, AckToken, Command, Completion, DeliveryStatus, ErrorKind, PublishCommand,
+    PublishProtocolOptions, QoS, SubscribeCommand, SubscribeProtocolOptions, Subscription,
+    SubscriptionProtocolOptions, UnsubscribeCommand, UnsubscribeProtocolOptions,
     V5OutgoingPublishProperties, V5RetainForwardRule, V5SubscribeProperties, V5SubscriptionOptions,
     V5UnsubscribeProperties, WrapperEvent,
 };
@@ -73,7 +75,7 @@ fn assert_commands_not_admitted(
     } else {
         rumqttc_wrapper_core::ClientConfig::v4(client_id, "127.0.0.1", port)
     };
-    let mut native = NativeClient::start(config).unwrap();
+    let mut native = support::start(config).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     assert!(matches!(
@@ -114,7 +116,7 @@ fn mqtt5_publish_rejection_preserves_reason_code() {
         }
     });
 
-    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
+    let mut native = support::start(rumqttc_wrapper_core::ClientConfig::v5(
         "negative-ack",
         "127.0.0.1",
         port,
@@ -174,7 +176,7 @@ fn incoming_mqtt5_subscription_identifiers_are_preserved() {
         }
     });
 
-    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
+    let mut native = support::start(rumqttc_wrapper_core::ClientConfig::v5(
         "incoming-subscription-identifiers",
         "127.0.0.1",
         port,
@@ -224,7 +226,7 @@ fn rejects_invalid_client_originated_mqtt5_publish_properties() {
         }
     });
 
-    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
+    let mut native = support::start(rumqttc_wrapper_core::ClientConfig::v5(
         "invalid-subscription-id",
         "127.0.0.1",
         port,
@@ -352,7 +354,7 @@ fn rejects_unmapped_topic_alias_with_empty_topic() {
         }
     });
 
-    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
+    let mut native = support::start(rumqttc_wrapper_core::ClientConfig::v5(
         "unmapped-topic-alias",
         "127.0.0.1",
         port,
@@ -406,7 +408,7 @@ fn accepts_topic_alias_within_broker_advertised_maximum() {
         }
     });
 
-    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
+    let mut native = support::start(rumqttc_wrapper_core::ClientConfig::v5(
         "valid-topic-alias",
         "127.0.0.1",
         port,
@@ -510,7 +512,7 @@ fn mqtt5_subscribe_and_unsubscribe_extensions_reach_the_wire() {
         }
     });
 
-    let mut native = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v5(
+    let mut native = support::start(rumqttc_wrapper_core::ClientConfig::v5(
         "subscription-extensions",
         "127.0.0.1",
         port,
@@ -763,7 +765,7 @@ fn manual_ack_token_is_single_use() {
     config.common.ack_mode = AckMode::Manual;
     config.common.event_buffer_capacity = 1;
     config.common.event_delivery_timeout = Duration::from_secs(5);
-    let mut native = NativeClient::start(config).unwrap();
+    let mut native = support::start(config).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     let token = recv_ack_token(&mut events, false);
@@ -778,7 +780,7 @@ fn manual_ack_token_is_single_use() {
         stream.write_all(&[0x20, 0x02, 0x00, 0x00]).unwrap();
         while read_frame(&mut stream).is_some() {}
     });
-    let mut other = NativeClient::start(rumqttc_wrapper_core::ClientConfig::v4(
+    let mut other = support::start(rumqttc_wrapper_core::ClientConfig::v4(
         "other-client",
         "127.0.0.1",
         other_port,

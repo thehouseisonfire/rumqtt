@@ -1,5 +1,7 @@
 # Wrapper ordered shutdown measurements
 
+Explicit shared execution has a separate [method, decision and results](execution.md).
+
 Keep `ordered-shutdown` disabled in standard wrapper packages. Enabling it changes
 native admission and publication tracking even when no fence is requested. The
 optional API provides a useful publish drain guarantee, with a measurable runtime

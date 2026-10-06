@@ -40,6 +40,11 @@ static int close_module(module_t module) { return dlclose(module) == 0; }
   } while (0)
 
 typedef struct native_api {
+  rumqttc_status_t (*execution_context_new)(const rumqttc_execution_options_t *, rumqttc_execution_context_t **, rumqttc_error_t **);
+  rumqttc_status_t (*execution_context_request_shutdown)(const rumqttc_execution_context_t *, rumqttc_error_t **);
+  rumqttc_status_t (*execution_context_join_timeout_ms)(const rumqttc_execution_context_t *, uint64_t, rumqttc_error_t **);
+  void (*execution_context_release)(rumqttc_execution_context_t *);
+  rumqttc_status_t (*config_set_execution_context)(rumqttc_config_t *, const rumqttc_execution_context_t *, rumqttc_error_t **);
   rumqttc_status_t (*store_registration_new)(const rumqttc_store_vtable_t *, void *, rumqttc_store_registration_t **,
                                              rumqttc_error_t **);
   void (*store_registration_destroy)(rumqttc_store_registration_t *);
@@ -101,12 +106,18 @@ int main(int argc, char **argv) {
   rumqttc_store_vtable_t vtable = RUMQTTC_STORE_VTABLE_INIT;
   rumqttc_store_registration_t *registration = NULL;
   rumqttc_config_t *config = NULL;
+  rumqttc_execution_context_t *execution = NULL;
   rumqttc_client_t *client = NULL;
   rumqttc_callback_completion_t *completion;
   void *context = malloc(1);
   REQUIRE(argc == 2 && context != NULL);
   module = open_module(argv[1]);
   REQUIRE(module != NULL);
+  LOAD(execution_context_new);
+  LOAD(execution_context_request_shutdown);
+  LOAD(execution_context_join_timeout_ms);
+  LOAD(execution_context_release);
+  LOAD(config_set_execution_context);
   LOAD(store_registration_new);
   LOAD(store_registration_destroy);
   LOAD(config_new);
@@ -126,7 +137,9 @@ int main(int argc, char **argv) {
   vtable.clear = unexpected_write;
   vtable.destroy = destroy_store;
   REQUIRE(api.store_registration_new(&vtable, context, &registration, NULL) == RUMQTTC_OK);
+  REQUIRE(api.execution_context_new(NULL, &execution, NULL) == RUMQTTC_OK);
   REQUIRE(api.config_new(RUMQTTC_PROTOCOL_V4, &config, NULL) == RUMQTTC_OK);
+  REQUIRE(api.config_set_execution_context(config, execution, NULL) == RUMQTTC_OK);
   REQUIRE(api.config_set_broker(config, view("127.0.0.1"), 1883, NULL) == RUMQTTC_OK);
   REQUIRE(api.config_set_client_id(config, view("native-unload"), NULL) == RUMQTTC_OK);
   REQUIRE(api.config_set_v4_clean_session(config, 0, NULL) == RUMQTTC_OK);
@@ -144,7 +157,10 @@ int main(int argc, char **argv) {
   REQUIRE(completion != NULL);
   REQUIRE(api.client_close_now_timeout_ms(client, 5000, NULL) == RUMQTTC_OK);
   REQUIRE(api.client_destroy_timeout_ms(client, 5000, NULL) == RUMQTTC_OK);
+  REQUIRE(api.execution_context_request_shutdown(execution, NULL) == RUMQTTC_OK);
+  REQUIRE(api.execution_context_join_timeout_ms(execution, 5000, NULL) == RUMQTTC_OK);
   api.config_destroy(config);
+  api.execution_context_release(execution);
   api.store_registration_destroy(registration);
   REQUIRE(atomic_load(&destroyed) == 0);
   REQUIRE(api.callback_store_load_complete(completion, RUMQTTC_STORE_NOT_FOUND, (rumqttc_bytes_view_t){NULL, 0}) ==

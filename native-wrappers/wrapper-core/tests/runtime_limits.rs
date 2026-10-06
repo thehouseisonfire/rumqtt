@@ -49,7 +49,7 @@ fn outgoing_inflight_obeys_local_and_broker_limits() {
             puback(&mut socket, third);
             assert_eq!(frame(&mut socket)[0], 0xe0);
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let _events = connected(&mut client);
         let operations: Vec<_> = (0..3).map(|_| publish(&client, b"payload")).collect();
         admitted_tx.send(()).unwrap();
@@ -89,7 +89,7 @@ fn oversized_outgoing_publish_reports_protocol_failure_and_resolves_on_close() {
                 "oversized packet reached broker"
             );
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = connected(&mut client);
         let oversized = publish(&client, &[b'x'; 64]);
         let event = until(&mut events, |e| {
@@ -142,7 +142,7 @@ fn incoming_decoder_limit_is_independent_of_advertised_maximum() {
             // pending publish or accepting a new connection.
             let _ = socket.read(&mut [0]);
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = connected(&mut client);
         let pending = publish(&client, b"small");
         let event = until(&mut events, |e| {

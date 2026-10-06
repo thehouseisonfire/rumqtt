@@ -19,7 +19,7 @@ fn mqtt5_disconnect_options_on_v4_do_not_admit_or_close() {
         puback(&mut socket, id);
         assert_eq!(frame(&mut socket).as_ref(), &[0xe0, 0]);
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let _events = connected(&mut client);
     for command in [
         Command::ImmediateDisconnectWithOptions {
@@ -73,7 +73,7 @@ fn close_callers_keep_independent_deadlines_and_escalation_preserves_payload() {
             // DISCONNECT is the final MQTT packet, even with several waiters.
             let _ = socket.flush();
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let _events = connected(&mut client);
         let pending = publish(&client, b"pending");
         ready_rx.recv_timeout(DEADLINE).unwrap();

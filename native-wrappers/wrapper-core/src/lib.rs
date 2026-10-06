@@ -20,6 +20,8 @@ mod config;
 mod connection;
 mod error;
 mod event;
+mod execution;
+pub use execution::{ExecutionContext, ExecutionOptions, ExecutionState, blocking_wait_allowed};
 mod handle;
 mod operations;
 mod ordered;

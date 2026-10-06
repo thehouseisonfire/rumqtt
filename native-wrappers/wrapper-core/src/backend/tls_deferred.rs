@@ -263,7 +263,9 @@ impl Dispatch {
         let (stop, cancelled) = flume::bounded(1);
         let _stop = Stop(stop);
         let runtime = tokio::runtime::Handle::current();
+        let blocking_work = crate::execution::register_blocking_work();
         let mut worker = tokio::task::spawn_blocking(move || {
+            let _blocking_work = blocking_work;
             let _entered = runtime.enter();
             futures_executor::block_on(async move {
                 match futures_util::future::select(

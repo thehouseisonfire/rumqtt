@@ -38,6 +38,71 @@ durable-session callback API.
 `RUMQTTC_CAP_AUTH_CALLBACKS` reports the raw MQTT 5 asynchronous
 authenticator callback API.
 
+## Shared execution
+
+Dedicated execution remains the default: each started client has its own driver
+thread and Tokio runtime. `RUMQTTC_CAP_SHARED_EXECUTION` is present in every build.
+The additive API lets many clients share one explicitly owned runtime:
+
+```c
+rumqttc_execution_options_t options = RUMQTTC_EXECUTION_OPTIONS_INIT;
+rumqttc_execution_context_t *context = NULL;
+options.client_capacity = 1000;
+/* Check each status; error handling is omitted from this fragment. */
+rumqttc_execution_context_new(&options, &context, NULL);
+rumqttc_config_set_execution_context(config, context, NULL);
+rumqttc_client_start(config, &client, NULL);
+/* Gracefully close clients first when MQTT DISCONNECT is required. */
+rumqttc_execution_context_request_shutdown(context, NULL);
+rumqttc_execution_context_join_timeout_ms(context, 10000, NULL);
+/* Release client/configuration/callback owners before unloading. */
+rumqttc_execution_context_release(context);
+```
+
+The [runnable example](examples/shared_execution.c) runs both MQTT versions on
+one context. `NULL` construction options selects defaults; use the initializer
+for the size-versioned options record and leave `reserved` zero. All counts must
+be nonzero. Defaults allow 1,024 clients, two scheduler workers and 32 blocking
+workers. One extra management thread owns runtime creation/destruction. DNS and
+deferred TLS can use the blocking pool; limiting its workers does not bound its
+queue or total process threads. Context capacity includes starts under
+construction and clients awaiting auxiliary cleanup. Capacity exhaustion returns
+`BACKPRESSURE` without admitting a client; failed starts return their reservation.
+
+Setting a context retains it and affects future starts, which atomically snapshot
+configuration and placement. Clearing selection restores dedicated startup.
+Configuration attachment may retain a closing context; starting against it
+returns `INVALID_STATE`. `retain` returns a separately released handle.
+Configurations, clients and closers retain ownership: releasing an application
+handle does not stop clients. Final-owner release requests cleanup without
+waiting and does not prove execution stopped.
+
+Shutdown transitions `OPEN` to `CLOSING`, rejects new starts and coalesces
+immediate client cleanup. Existing graceful/ordered close APIs remain available;
+finish those before requesting context shutdown when their guarantees are
+needed. Shutdown has no new graceful-drain policy or escalation deadline.
+`try_join` returns `WOULD_BLOCK` while pending. Timed join requires shutdown
+first; `TIMEOUT` ends only that observer's wait, and teardown remains retryable.
+Successful join sets `QUIESCENT` after drivers, tracked auxiliary work, runtime
+blocking work, workers and the management thread have stopped. Management failure
+returns an error on repeated join attempts and never reports quiescence.
+Client close/join stops only that client's execution and tracked auxiliary work.
+
+Context quiescence does not release host-retained callback tokens, streams,
+registrations, configurations or host jobs. Destroy all independent owners and
+join host jobs before unloading the library. Tokens retained after cancellation
+remain releasable; successful context join cannot authorize unloading by itself.
+
+Nonzero blocking event/completion/close/destroy/join waits and context creation
+return `INVALID_STATE` in host callbacks or on context workers, including waits
+for another client. Zero-time observations, nonblocking admission, shutdown
+request and state/try-join observation remain available. Synchronous callbacks
+and destructors must return promptly; timeouts cannot preempt host code. Shared
+tasks may migrate between workers, so callbacks have no thread affinity. Bounded
+cooperative work preserves peer progress but supplies no hard latency bound.
+Resource savings and observed latency tradeoffs are recorded in
+[execution measurements](../wrapper-core/benches/execution.md).
+
 ## Custom transports
 
 `RUMQTTC_CAP_TRANSPORT_CALLBACKS` reports the custom stream API, available

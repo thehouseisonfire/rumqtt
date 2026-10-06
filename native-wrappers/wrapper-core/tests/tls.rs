@@ -83,7 +83,7 @@ fn tls_input_ownership_is_released_on_every_driver_exit() {
                 });
                 if mode == "failed-start" {
                     assert_eq!(
-                        NativeClient::start(config).unwrap_err().kind(),
+                        support::start(config).unwrap_err().kind(),
                         ErrorKind::Configuration
                     );
                 } else {
@@ -109,7 +109,7 @@ fn tls_input_ownership_is_released_on_every_driver_exit() {
                             assert_eq!(support::frame(&mut stream)[0], 0xe0);
                         }
                     });
-                    let mut client = NativeClient::start(config).unwrap();
+                    let mut client = support::start(config).unwrap();
                     let mut events = support::connected(&mut client);
                     let closer = client.closer();
                     match mode {
@@ -195,7 +195,7 @@ fn valid_pkcs12_with_wrong_password_fails_without_disclosing_identity() {
             ..fixture.client(TlsBackend::Native)
         });
         let formatted = format!("{config:?}");
-        let error = NativeClient::start(config).unwrap_err();
+        let error = support::start(config).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Tls);
         support::capture::assert_redacted(
             &format!("{formatted} {error:?} {error}"),
@@ -256,7 +256,7 @@ fn malformed_tls_credentials_and_alpn_fail_without_network_or_secret_disclosure(
                     ..fixture.client(backend)
                 });
                 let debug = format!("{config:?}");
-                let error = NativeClient::start(config).unwrap_err();
+                let error = support::start(config).unwrap_err();
                 assert_eq!(error.kind(), ErrorKind::Tls);
                 support::capture::assert_redacted(
                     &format!("{debug} {error:?} {error}"),
@@ -276,7 +276,7 @@ fn malformed_tls_credentials_and_alpn_fail_without_network_or_secret_disclosure(
                     ..fixture.client(backend)
                 });
                 assert_eq!(
-                    NativeClient::start(config).unwrap_err().kind(),
+                    support::start(config).unwrap_err().kind(),
                     ErrorKind::Configuration
                 );
             }
@@ -287,7 +287,7 @@ fn malformed_tls_credentials_and_alpn_fail_without_network_or_secret_disclosure(
                     ..fixture.client(backend)
                 });
                 assert_eq!(
-                    NativeClient::start(config).unwrap_err().kind(),
+                    support::start(config).unwrap_err().kind(),
                     ErrorKind::Configuration
                 );
             }
@@ -367,7 +367,7 @@ fn platform_roots_child() {
         roots: TlsRootPolicy::Platform,
         ..Default::default()
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let _events = support::connected(&mut client);
     client.closer().close(support::DEADLINE).unwrap();
 }
@@ -390,7 +390,7 @@ async fn malformed_roots_return_startup_errors_inside_async_callers() {
                 ..Default::default()
             });
             config.validate().unwrap();
-            NativeClient::start(config).expect_err("malformed roots must fail during startup");
+            support::start(config).expect_err("malformed roots must fail during startup");
         }
     }
 }
@@ -608,7 +608,7 @@ fn tls_and_wss_enforce_roots_hostname_identity_and_alpn() {
                     } else {
                         TransportConfig::Tls(tls)
                     };
-                    let mut native = NativeClient::start(config).unwrap();
+                    let mut native = support::start(config).unwrap();
                     let mut events = native.take_events().unwrap();
                     let event = events
                         .recv_timeout(Duration::from_secs(3))

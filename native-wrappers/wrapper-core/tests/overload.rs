@@ -1,12 +1,12 @@
+mod support;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use rumqttc_wrapper_core::{
-    ClientConfig, ErrorCode, ErrorKind, NativeClient, ProtocolVersion, WrapperEvent,
-};
+use rumqttc_wrapper_core::{ClientConfig, ErrorCode, ErrorKind, ProtocolVersion, WrapperEvent};
 
 fn assert_full_event_buffer_terminates(mqtt5: bool) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -41,7 +41,7 @@ fn assert_full_event_buffer_terminates(mqtt5: bool) {
     };
     config.common.event_buffer_capacity = 1;
     config.common.event_delivery_timeout = Duration::from_millis(50);
-    let mut native = NativeClient::start(config).unwrap();
+    let mut native = support::start(config).unwrap();
     let mut events = native.take_events().unwrap();
 
     // Do not drain the ordinary event buffer until the driver has terminated. A fixed sleep is
@@ -101,7 +101,7 @@ fn assert_boundary_panic_interrupts_full_event_buffer(protocol: ProtocolVersion)
     config.common.event_buffer_capacity = 1;
     config.common.event_delivery_timeout = Duration::from_secs(30);
     config.common.emit_outgoing_events = true;
-    let mut native = NativeClient::start(config).unwrap();
+    let mut native = support::start(config).unwrap();
     let handle = native.handle();
     let connection = native.connection();
 

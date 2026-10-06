@@ -1,6 +1,18 @@
 ## [Unreleased]
 
 ### Added
+- Native wrappers: Add opt-in, explicitly owned shared execution contexts to
+  wrapper-core and the standard C API. Configure client capacity, scheduler
+  workers and the blocking pool; retain contexts through configurations and
+  clients. Dedicated startup remains the default. Share driver and terminal
+  reconciliation across placements, reject callback/worker blocking waits, and
+  provide retryable context shutdown/join that waits for runtime and blocking
+  work teardown. Add native ownership/unload tests, a mixed-protocol C example,
+  and real C/asyncio resource and latency benchmarks. Python execution selection
+  is benchmark-only and absent from standard wheels. Wrapper-core's
+  `ErrorCode` adds `InvalidState`, and `CompletionWaitOutcome` adds
+  `ObservationRejected` for forbidden synchronous waits; exhaustive Rust matches
+  need updating. Rejected observers do not finalize or cancel their operation.
 - Native wrappers: Add cancellable deferred TLS verification, identity selection
   and signing through owned async Rust traits and retained C completion tokens.
   Keep the driver responsive during pending host work while Rustls handshakes

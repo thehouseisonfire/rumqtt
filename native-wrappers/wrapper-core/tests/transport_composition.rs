@@ -380,7 +380,7 @@ fn compositions(custom_connector: bool, dynamic: bool) {
                             &format!("{config:?}"),
                             &["ws-secret", "cookie-secret"],
                         );
-                        let mut client = NativeClient::start(config).unwrap();
+                        let mut client = support::start(config).unwrap();
                         let mut events = connected(&mut client);
                         release_tx.send(()).unwrap();
                         until(&mut events, |event| {
@@ -426,7 +426,7 @@ fn disabled_transports_fail_before_opening_a_socket() {
                 ..Default::default()
             });
             assert_eq!(
-                NativeClient::start(config).unwrap_err().kind(),
+                support::start(config).unwrap_err().kind(),
                 ErrorKind::Configuration
             );
         }
@@ -441,7 +441,7 @@ fn disabled_transports_fail_before_opening_a_socket() {
             config.common.transport = TransportConfig::WebSocket;
             config.common.websocket_headers = headers();
             assert_eq!(
-                NativeClient::start(config).unwrap_err().kind(),
+                support::start(config).unwrap_err().kind(),
                 ErrorKind::Configuration
             );
         }
@@ -492,7 +492,7 @@ fn disabled_redirect_transports_fail_before_driver_start() {
             transport,
         };
         assert_eq!(
-            NativeClient::start(config).unwrap_err().kind(),
+            support::start(config).unwrap_err().kind(),
             ErrorKind::Configuration
         );
     }
@@ -553,7 +553,7 @@ fn proxy_and_broker_tls_trust_policies_are_independent() {
                         "untrusted TLS peer accepted"
                     );
                 });
-                let mut client = NativeClient::start(config).unwrap();
+                let mut client = support::start(config).unwrap();
                 let mut events = client.take_events().unwrap();
                 let event = until(&mut events, |event| {
                     matches!(event, WrapperEvent::Disconnected { .. })
@@ -617,7 +617,7 @@ fn proxy_negotiation_failures_and_shutdown_resolve_pending_work() {
                         while socket.read(&mut bytes).unwrap() != 0 {}
                     }
                 });
-                let mut client = NativeClient::start(config).unwrap();
+                let mut client = support::start(config).unwrap();
                 let mut events = client.take_events().unwrap();
                 ready_rx.recv_timeout(DEADLINE).unwrap();
                 let operation = client

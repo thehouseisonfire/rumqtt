@@ -1,3 +1,5 @@
+mod support;
+
 use bytes::Bytes;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -12,7 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use rumqttc_wrapper_core::{
     AckMode, AcknowledgementProtocolOptions, ClientConfig, Command, Completion, DeliveryStatus,
-    ErrorKind, NativeClient, V5AcknowledgementOptions, WrapperEvent,
+    ErrorKind, V5AcknowledgementOptions, WrapperEvent,
 };
 
 fn read_frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
@@ -147,7 +149,7 @@ fn acknowledgement_completion_waits_for_flush_and_retains_ambiguous_failures() {
             connector: Arc::new(ControlledConnector(Arc::clone(&control))),
             mode: rumqttc_wrapper_core::TransportMode::Established,
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let handle = client.handle();
         let mut events = client.take_events().unwrap();
         let token = recv_publish(&mut events).ack_token.unwrap();
@@ -266,7 +268,7 @@ fn client_ack_contents_round_trip_and_negative_pubrec_releases_the_exchange() {
     if let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol {
         v5.connect_properties.receive_maximum = Some(1);
     }
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let handle = client.handle();
     let mut events = client.take_events().unwrap();
     for _qos2 in [false, true] {
@@ -336,7 +338,7 @@ fn reconnect_binds_ack_validation_to_the_new_limit_and_generation() {
     });
     let mut config = ClientConfig::v5("ack-reconnect", "127.0.0.1", port);
     config.common.ack_mode = AckMode::Manual;
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let handle = client.handle();
     let mut events = client.take_events().unwrap();
     let old_token = recv_publish(&mut events).ack_token.unwrap();

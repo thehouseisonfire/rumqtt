@@ -20,6 +20,7 @@ pub enum ErrorKind {
 /// Stable machine-readable classification shared by native host wrappers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorCode {
+    InvalidState,
     ConfigurationInvalid,
     CommandInvalid,
     RequestBackpressure,
@@ -41,6 +42,7 @@ impl ErrorCode {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::InvalidState => "INVALID_STATE",
             Self::ConfigurationInvalid => "CONFIGURATION_INVALID",
             Self::CommandInvalid => "COMMAND_INVALID",
             Self::RequestBackpressure => "REQUEST_BACKPRESSURE",

@@ -7,7 +7,7 @@ Determine whether the per-client dedicated-thread model in
 alongside a second mode, or be replaced after real native wrappers establish
 their lifecycle and scheduling requirements.
 
-The current model deliberately favors isolation and predictable progress. Each
+The dedicated default deliberately favors isolation and predictable progress. Each
 `NativeClient` owns one named operating-system thread, one Tokio current-thread
 runtime, and one MQTT event loop. Do not optimize that model away based only on
 its apparent per-client cost. Measure it through actual C and JavaScript or
@@ -20,13 +20,31 @@ tracked separately in `TODO11.md`.
 
 ## Current decision
 
-Implement dedicated-thread execution only until a real wrapper demonstrates a
-need for another mode. In the current implementation, `NativeClient::start`:
+Keep dedicated-thread execution as the default and offer one explicitly owned
+multi-thread Tokio context for C applications with many clients. TODO33
+implements this choice using the same owned driver future in both placements.
+Real C and public asyncio consumers establish the Linux resource benefit:
+at 1,000 clients, the shared C context uses four threads instead of 1,001 and
+39–42% less resident memory. Some latency percentiles regress. The private
+two-current-thread shard comparator saves slightly more memory but has no
+consistent performance advantage sufficient to justify its fixed assignment
+and another supported architecture; no public shard API is shipped.
+
+[Execution measurements](native-wrappers/wrapper-core/benches/execution.md)
+record raw samples, artifact hashes, methodology, regressions, ownership and
+teardown contracts. Linux measurements are complete; macOS/Windows release
+measurements and local WS/WSS measurements remain outstanding. CI retains
+real C/asyncio artifacts on all three operating systems. This decision supports
+an opt-in mode, not a cross-platform latency promise or replacement of the default.
+Python's shared selector is benchmark-only; production Python/JavaScript startup
+continues to use dedicated execution.
+
+`NativeClient::start` retains dedicated placement and:
 
 1. validates and consumes an owned `ClientConfig`;
 2. constructs one v4 or v5 asynchronous client and `EventLoop`;
 3. starts one named operating-system thread;
-4. builds a Tokio current-thread runtime on that thread;
+4. runs the Tokio current-thread runtime on that thread;
 5. continuously polls the event loop and tracked completion futures; and
 6. reports events, completions, terminal status, and diagnostics through
    thread-safe channels.
@@ -254,5 +272,6 @@ This TODO is complete when:
   and
 - unused prototypes and speculative executor abstractions have been removed.
 
-Until then, keep dedicated-thread execution as the supported implementation and
-keep `rumqttc-wrapper-core` private.
+Dedicated-thread execution remains the default supported implementation. TODO33
+adds explicit shared placement without host pumping, reactor embedding, a global
+runtime or a generic executor abstraction. Keep `rumqttc-wrapper-core` private.

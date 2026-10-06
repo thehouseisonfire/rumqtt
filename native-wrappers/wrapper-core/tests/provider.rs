@@ -3,10 +3,10 @@
     not(any(feature = "use-rustls-ring", feature = "use-rustls-aws-lc"))
 ))]
 
+mod support;
+
 use bytes::Bytes;
-use rumqttc_wrapper_core::{
-    ClientConfig, ErrorKind, NativeClient, TlsConfig, TlsRootPolicy, TransportConfig,
-};
+use rumqttc_wrapper_core::{ClientConfig, ErrorKind, TlsConfig, TlsRootPolicy, TransportConfig};
 use std::time::Duration;
 
 #[test]
@@ -31,7 +31,7 @@ fn providerless_rustls_requires_a_process_default_provider() {
     };
     for mqtt5 in [false, true] {
         assert_eq!(
-            NativeClient::start(config(mqtt5)).unwrap_err().kind(),
+            support::start(config(mqtt5)).unwrap_err().kind(),
             ErrorKind::Tls
         );
     }
@@ -39,7 +39,7 @@ fn providerless_rustls_requires_a_process_default_provider() {
         .install_default()
         .unwrap_or_else(|_| panic!("failed to install process default provider"));
     for mqtt5 in [false, true] {
-        let client = NativeClient::start(config(mqtt5)).unwrap();
+        let client = support::start(config(mqtt5)).unwrap();
         client.closer().close_now(Duration::from_secs(5)).unwrap();
         client.join(Duration::from_secs(5)).unwrap();
     }

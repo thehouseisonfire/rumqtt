@@ -2,7 +2,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use bytes::Bytes;
-use rumqttc_wrapper_core::{AckMode, ClientConfig, ProtocolConfig, TlsConfig, TransportConfig};
+use rumqttc_wrapper_core::{
+    AckMode, ClientConfig, ExecutionContext, ProtocolConfig, TlsConfig, TransportConfig,
+};
 
 pub struct ConfigHandle {
     inner: Mutex<ConfigState>,
@@ -11,6 +13,7 @@ pub struct ConfigHandle {
 #[derive(Clone)]
 struct ConfigState {
     config: ClientConfig,
+    execution: Option<ExecutionContext>,
     // The legacy C builder keeps its TCP address when selecting a WebSocket URL.
     tcp_broker: rumqttc_wrapper_core::BrokerTarget,
 }
@@ -26,15 +29,35 @@ impl ConfigHandle {
             inner: Mutex::new(ConfigState {
                 tcp_broker: config.common.broker.clone(),
                 config,
+                execution: None,
             }),
         })
     }
 
+    #[cfg(test)]
     pub fn clone_config(&self) -> Result<ClientConfig, &'static str> {
         self.inner
             .lock()
             .map(|state| state.config.clone())
             .map_err(|_| "configuration lock is poisoned")
+    }
+
+    pub fn snapshot(&self) -> Result<(ClientConfig, Option<ExecutionContext>), &'static str> {
+        self.inner
+            .lock()
+            .map(|state| (state.config.clone(), state.execution.clone()))
+            .map_err(|_| "configuration lock is poisoned")
+    }
+
+    pub fn set_execution(&self, execution: Option<ExecutionContext>) -> Result<(), &'static str> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| "configuration lock is poisoned")?;
+        let previous = std::mem::replace(&mut state.execution, execution);
+        drop(state);
+        drop(previous);
+        Ok(())
     }
 
     pub fn update(

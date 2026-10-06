@@ -214,6 +214,8 @@ pub enum CompletionWaitOutcome {
     Completed(Result<Completion>),
     /// The operation was still pending when the wait deadline elapsed.
     DeadlineElapsed,
+    /// Blocking observation was rejected; this says nothing about the operation's terminal state.
+    ObservationRejected(Error),
 }
 
 #[derive(Debug)]
@@ -323,8 +325,9 @@ impl CompletionHandle {
     /// # Errors
     ///
     /// Returns an error when the driver terminates before reporting completion or the operation
-    /// itself fails.
+    /// itself fails, or when called on an execution worker or in a host callback.
     pub fn wait(&self) -> Result<Completion> {
+        crate::execution::check_wait(Duration::from_secs(1))?;
         let mut state = self
             .cell
             .result
@@ -353,6 +356,7 @@ impl CompletionHandle {
     pub fn wait_timeout(&self, timeout: Duration) -> Result<Completion> {
         match self.wait_timeout_outcome(timeout) {
             CompletionWaitOutcome::Completed(result) => result,
+            CompletionWaitOutcome::ObservationRejected(error) => Err(error),
             CompletionWaitOutcome::DeadlineElapsed => Err(Error::new(
                 ErrorKind::Timeout,
                 format!(
@@ -365,9 +369,13 @@ impl CompletionHandle {
     }
 
     /// Blocks for at most `timeout`, preserving whether a timeout came from the wait deadline or
-    /// from the operation's terminal result.
+    /// from the operation's terminal result. A forbidden blocking observation returns
+    /// `ObservationRejected(_)` without modifying the stored operation result.
     #[must_use]
     pub fn wait_timeout_outcome(&self, timeout: Duration) -> CompletionWaitOutcome {
+        if let Err(error) = crate::execution::check_wait(timeout) {
+            return CompletionWaitOutcome::ObservationRejected(error);
+        }
         let started = Instant::now();
         let mut remaining = timeout;
         let mut state = self
@@ -406,6 +414,34 @@ mod tests {
         CompletionHandle::new(CompletionCell::new(OperationId(
             NonZeroU64::new(1).unwrap(),
         )))
+    }
+
+    #[test]
+    fn rejected_callback_observation_does_not_complete_or_cancel_an_operation() {
+        let handle = handle();
+        crate::runtime::with_host_callback(|| {
+            let CompletionWaitOutcome::ObservationRejected(error) =
+                handle.wait_timeout_outcome(Duration::from_millis(1))
+            else {
+                panic!("blocking observation was not rejected");
+            };
+            assert_eq!(error.kind(), ErrorKind::Shutdown);
+            assert_eq!(
+                error.delivery_status(),
+                crate::DeliveryStatus::NotApplicable
+            );
+            assert!(handle.wait().is_err());
+            assert!(matches!(
+                handle.wait_timeout_outcome(Duration::ZERO),
+                CompletionWaitOutcome::DeadlineElapsed
+            ));
+            assert!(handle.try_outcome().is_none());
+        });
+        handle.cell.complete(Ok(Completion::Acknowledged));
+        assert_eq!(
+            handle.wait_timeout(Duration::from_secs(1)).unwrap(),
+            Completion::Acknowledged
+        );
     }
 
     #[test]

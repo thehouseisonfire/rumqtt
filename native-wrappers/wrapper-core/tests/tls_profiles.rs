@@ -60,7 +60,7 @@ fn exercise(tls: TlsConfig, server: Arc<rustls::ServerConfig>, mqtt5: bool, succ
             assert!(matches!(result, Err(_) | Ok(0)));
         }
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     if succeeds {
         support::until(&mut events, |event| {
@@ -145,10 +145,7 @@ fn unsupported_pins_and_malformed_combined_roots_fail_before_networking() {
                 roots: TlsRootPolicy::PlatformAndPem(b"private-invalid-root".as_slice().into()),
                 ..TlsConfig::default()
             });
-            assert_eq!(
-                NativeClient::start(config).unwrap_err().kind(),
-                ErrorKind::Tls
-            );
+            assert_eq!(support::start(config).unwrap_err().kind(), ErrorKind::Tls);
         }
         if backend == TlsBackend::Native {
             let tls = TlsConfig {
@@ -265,7 +262,7 @@ fn pinning_revalidates_rotated_certificates_on_ticket_enabled_reconnects() {
                         assert!(matches!(stream.read(&mut [0]), Err(_) | Ok(0)));
                     }
                 });
-                let mut client = NativeClient::start(config).unwrap();
+                let mut client = support::start(config).unwrap();
                 let mut events = support::connected(&mut client);
                 release.send(()).unwrap();
                 support::until(&mut events, |event| {

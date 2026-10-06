@@ -35,7 +35,7 @@ branches, including disabled ones, so API additions require an explicit review.
 | v4, v5 | option | set_socket_connector | supported | Owned custom base/established streams, explicit socket policy and native deadline; C retained-operation/cancellation contract; terminal failures stop SRV fallback and retain redirect detail | custom_transport, custom_transport_memory, custom_transport_native_tls, custom_transport_redirect, transport_composition, transport::proof, native_custom_transport, native_custom_transport_matrix |
 | v4, v5 | option | set_connection_timeout, set_tcp_send_buffer_size, set_tcp_recv_buffer_size, set_tcp_nodelay, set_bind_addr, set_bind_device, set_mptcp | supported | WC-12 network values; unsupported platform-specific settings fail eagerly | platform_network::bind_address_reaches_broker_for_both_protocols, platform_network::bind_device_failure_reaches_socket_and_mptcp_can_connect, platform_network::unsupported_network_controls_fail_before_driver_start; rumqttc-core tests::network_controls_are_applied_to_the_created_socket |
 | v5 | option | set_network_options, set_connect_timeout | supported | CommonConfig.network plus one total connection-timeout input | backend config_tests |
-| v4, v5 | operation | builder | supported | NativeClient.start owns construction/runtime/event-loop lifecycle | config, lifecycle |
+| v4, v5 | operation | builder | supported | NativeClient.start owns dedicated construction; start_in retains explicit shared execution with the same driver lifecycle | config, lifecycle, execution, native_execution |
 | v4, v5 | operation | from_sender, from_senders | intentionally omitted | Foreign channels bypass managed admission/completion; explicitly out of scope | lifecycle |
 | v4, v5 | operation | publish, try_publish, publish_tracked, try_publish_tracked | supported | PublishCommand always provides tracked terminal observation | protocol_parity, shutdown, session_store |
 | v4, v5 | operation | subscribe, subscribe_many, subscribe_tracked, subscribe_many_tracked, try_subscribe, try_subscribe_many, try_subscribe_tracked, try_subscribe_many_tracked | supported | SubscribeCommand owns one or more filters; local admission differs from SUBACK | protocol_parity |
@@ -256,3 +256,18 @@ There is no chain-wide deadline, replacement enhanced-auth authority, selective
 proxy/header reuse or automatic checkpoint migration. Foreign callbacks must not
 unwind or block. New native C execution in this change is on Linux; remote CI and
 macOS/Windows execution remain pending.
+
+## Execution placement parity
+
+Dedicated startup remains the default. Shared execution is available through
+wrapper-core `ExecutionContext`/`NativeClient::start_in` and the standard C
+context API. Python has a private `benchmark-testing` hook for the real asyncio
+measurements; production Python and JavaScript retain dedicated placement.
+`RUMQTTC_TEST_EXECUTION=shared` runs the existing backend behavioral suites with
+shared placement, including completions, reconnect, overload, manual ACK,
+shutdown, TLS, WebSocket and proxy profiles. Tests permit shared tasks to migrate
+between workers. The `execution` suite additionally puts peers on one worker
+and verifies capacity, start/shutdown races, peer progress and panic containment.
+Native C fixtures verify callback blocking-wait rejection, retained-token
+release ordering and unload after explicit context teardown. Pumping and foreign
+reactor integration remain unsupported.

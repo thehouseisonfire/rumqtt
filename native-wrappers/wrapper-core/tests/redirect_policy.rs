@@ -157,7 +157,7 @@ fn redirect_reference_forms_select_isolated_endpoints_for_both_sources() {
                         assert_eq!(frame(&mut stream)[0], 0xe0);
                     }
                 });
-                let mut client = NativeClient::start(config).unwrap();
+                let mut client = support::start(config).unwrap();
                 let mut events = client.take_events().unwrap();
                 let pending = if disconnect {
                     until(&mut events, |event| {
@@ -258,7 +258,7 @@ fn rejected_redirects_preserve_context_and_resolve_pending_operations() {
                 release_rx.recv_timeout(DEADLINE).unwrap();
                 redirect(&mut socket, reference, disconnect);
             });
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = client.take_events().unwrap();
             let operation = if disconnect {
                 until(&mut events, |event| {
@@ -398,7 +398,7 @@ fn failed_followed_srv_connection_retains_terminal_redirect_diagnostics() {
         frame(&mut socket);
     });
 
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     let initial = until(&mut events, |event| {
         matches!(event, WrapperEvent::Redirect(_))
@@ -453,7 +453,7 @@ fn srv_lookup_failure_empty_answers_and_cancellation_release_owner() {
             release_rx.recv_timeout(DEADLINE).unwrap();
             redirect(&mut socket, "_mqtt._tcp.service.invalid", false);
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = client.take_events().unwrap();
         let operation = pending_before_connack(&client);
         release_tx.send(()).unwrap();
@@ -533,7 +533,7 @@ fn redirect_loops_and_attempt_exhaustion_are_terminal() {
                 false,
             );
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = client.take_events().unwrap();
         let operation = pending_before_connack(&client);
         release_tx.send(()).unwrap();
@@ -643,7 +643,7 @@ fn assert_resolved_srv_diagnostics(reason: RedirectReason) {
         socket.write_all(TARGET_CONNACK).unwrap();
         assert_eq!(frame(&mut socket)[0], 0xe0);
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     entered_rx.recv_timeout(DEADLINE).unwrap();
     result_tx
@@ -757,7 +757,7 @@ fn isolated_redirect_never_reads_or_writes_the_origin_store_scope() {
         puback(&mut socket, id);
         assert_eq!(frame(&mut socket)[0], 0xe0);
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let _events = connected(&mut client);
     let before = store.0.lock().unwrap().clone();
     assert!(!before.is_empty());
@@ -948,7 +948,7 @@ fn websocket_redirect_uses_target_uri_and_clears_origin_header_edits() {
                 }
             }
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = connected(&mut client);
         let pending = publish(&client, b"pending");
         let event = until(&mut events, |event| {
@@ -1116,7 +1116,7 @@ fn application_redirect_selects_second_reference_with_copied_credentials_and_sco
                 puback(&mut socket, id);
                 assert_eq!(frame(&mut socket)[0], 0xe0);
             });
-            let mut client = NativeClient::start(config.clone()).unwrap();
+            let mut client = support::start(config.clone()).unwrap();
             let mut events = client.take_events().unwrap();
             let event = until(&mut events, |e| matches!(e, WrapperEvent::Redirect(_)));
             let WrapperEvent::Redirect(event) = event else {
@@ -1140,9 +1140,7 @@ fn application_redirect_selects_second_reference_with_copied_credentials_and_sco
             v5.session_store.as_mut().unwrap().scope =
                 if changed_scope { "target" } else { "origin" }.into();
             assert_eq!(
-                NativeClient::start(probe.clone())
-                    .unwrap_err()
-                    .store_failure(),
+                support::start(probe.clone()).unwrap_err().store_failure(),
                 Some(StoreFailure::InUse)
             );
             if changed_key {
@@ -1151,7 +1149,7 @@ fn application_redirect_selects_second_reference_with_copied_credentials_and_sco
                     unreachable!()
                 };
                 v5.redirect_policy = RedirectPolicy::Reject;
-                let origin_owner = NativeClient::start(origin_probe).unwrap();
+                let origin_owner = support::start(origin_probe).unwrap();
                 origin_owner.closer().close_now(DEADLINE).unwrap();
             }
             assert_eq!(
@@ -1166,7 +1164,7 @@ fn application_redirect_selects_second_reference_with_copied_credentials_and_sco
                 == if changed_scope { "target" } else { "origin" }
                 && key.client_id == expected_id));
             drop(client);
-            let owner = NativeClient::start(probe).unwrap();
+            let owner = support::start(probe).unwrap();
             owner.closer().close_now(DEADLINE).unwrap();
             let request = saved_request.lock().unwrap().take().unwrap();
             assert_eq!(request.references[1].raw, reference);
@@ -1214,7 +1212,7 @@ fn application_rejection_failures_and_expired_decisions_are_terminal_before_targ
             frame(&mut socket);
             redirect(&mut socket, "127.0.0.2:1", false);
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = client.take_events().unwrap();
         let WrapperEvent::Redirect(event) =
             until(&mut events, |e| matches!(e, WrapperEvent::Redirect(_)))
@@ -1322,7 +1320,7 @@ fn approved_same_session_redirect_preserves_tracked_qos_flows_and_packet_ids() {
                 }
                 assert_eq!(frame(&mut socket)[0], 0xe0);
             });
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = connected(&mut client);
             let operation = client
                 .handle()
@@ -1442,7 +1440,7 @@ fn reused_authentication_authority_observes_effective_redirect_and_assigned_iden
                 socket.write_all(&packet).unwrap();
                 assert_eq!(frame(&mut socket)[0], 0xe0);
             });
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let _events = connected(&mut client);
             let contexts = authority.0.lock().unwrap().clone();
             assert!(contexts.contains(&("parity".into(), true)));
@@ -1513,7 +1511,7 @@ fn temporary_nested_scoped_redirect_restores_origin_and_releases_target_leases()
         socket.write_all(b"\x20\x03\x00\x00\x00").unwrap();
         assert_eq!(frame(&mut socket)[0], 0xe0);
     });
-    let mut client = NativeClient::start(config.clone()).unwrap();
+    let mut client = support::start(config.clone()).unwrap();
     let mut events = connected(&mut client);
     until(&mut events, |event| {
         matches!(event, WrapperEvent::Connected { .. })
@@ -1530,7 +1528,7 @@ fn temporary_nested_scoped_redirect_restores_origin_and_releases_target_leases()
             host: "127.0.0.2".into(),
             port: 1,
         };
-        NativeClient::start(probe).map(|owner| owner.closer().close_now(DEADLINE).unwrap())
+        support::start(probe).map(|owner| owner.closer().close_now(DEADLINE).unwrap())
     };
     assert_eq!(
         probe("origin", "parity").unwrap_err().store_failure(),
@@ -1593,7 +1591,7 @@ fn application_target_lease_conflict_is_typed_and_never_dials_the_target() {
         unreachable!()
     };
     v5.session_store.as_mut().unwrap().scope = "target".into();
-    let competing = NativeClient::start(competing_config).unwrap();
+    let competing = support::start(competing_config).unwrap();
     let ProtocolConfig::V5(v5) = &mut config.protocol else {
         unreachable!()
     };
@@ -1610,7 +1608,7 @@ fn application_target_lease_conflict_is_typed_and_never_dials_the_target() {
         frame(&mut socket);
         redirect(&mut socket, &reference, false);
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     let WrapperEvent::Redirect(event) =
         until(&mut events, |e| matches!(e, WrapperEvent::Redirect(_)))
@@ -1665,7 +1663,7 @@ fn reentrant_shutdown_from_redirect_callback_prevents_target_dial() {
         ready_rx.recv_timeout(DEADLINE).unwrap();
         redirect(&mut socket, &reference, false);
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     *handle.lock().unwrap() = Some(client.handle());
     ready_tx.send(()).unwrap();
     let mut events = client.take_events().unwrap();
@@ -1716,7 +1714,7 @@ fn same_session_redirect_invalidates_manual_ack_tokens_for_the_previous_connecti
         assert_eq!(frame(&mut socket).as_ref(), b"\x40\x02\x00\x07");
         assert_eq!(frame(&mut socket)[0], 0xe0);
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = connected(&mut client);
     let publication = |events: &mut EventConsumer| {
         let WrapperEvent::IncomingPublish(publish) =
@@ -1846,7 +1844,7 @@ fn application_authentication_and_websocket_network_reuse_are_independent() {
                     }
                 }
             });
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let _events = connected(&mut client);
             let contexts = authority.0.lock().unwrap().clone();
             assert_eq!(contexts.contains(&("target".into(), true)), reuse_auth);

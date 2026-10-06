@@ -113,7 +113,7 @@ fn native_tls_handshake_preserves_transport_failures_and_driver_policy() {
                     }),
                     mode: TransportMode::Base,
                 });
-                let mut client = NativeClient::start(config).unwrap();
+                let mut client = support::start(config).unwrap();
                 let mut events = client.take_events().unwrap();
                 let pending = client
                     .handle()

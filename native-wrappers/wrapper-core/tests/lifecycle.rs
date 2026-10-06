@@ -1,3 +1,5 @@
+mod support;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -7,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rumqttc_wrapper_core::{
-    ClientConfig, Command, Completion, DiagnosticsSnapshot, ErrorKind, NativeClient,
-    ProtocolVersion, PublishCommand, PublishCompletion, PublishProtocolOptions, QoS,
-    SubscribeCommand, SubscribeProtocolOptions, Subscription, SubscriptionProtocolOptions,
-    UnsubscribeCommand, UnsubscribeProtocolOptions, WrapperEvent,
+    ClientConfig, Command, Completion, DiagnosticsSnapshot, ErrorKind, ProtocolVersion,
+    PublishCommand, PublishCompletion, PublishProtocolOptions, QoS, SubscribeCommand,
+    SubscribeProtocolOptions, Subscription, SubscriptionProtocolOptions, UnsubscribeCommand,
+    UnsubscribeProtocolOptions, WrapperEvent,
 };
 
 fn spawn_broker(protocol: ProtocolVersion) -> (u16, thread::JoinHandle<()>) {
@@ -122,7 +124,7 @@ fn assert_sustained_control_traffic_does_not_starve_mqtt_progress(protocol: Prot
     let (port, broker) = spawn_broker(protocol);
     let mut config = config(protocol, port);
     config.common.request_channel_capacity = 64;
-    let mut native = NativeClient::start(config).unwrap();
+    let mut native = support::start(config).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
@@ -189,7 +191,7 @@ fn sustained_diagnostics_and_completions_do_not_starve_either_protocol_loop() {
 #[allow(clippy::too_many_lines)]
 fn run_lifecycle(protocol: ProtocolVersion) {
     let (port, broker) = spawn_broker(protocol);
-    let mut native = NativeClient::start(config(protocol, port)).unwrap();
+    let mut native = support::start(config(protocol, port)).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
@@ -322,7 +324,7 @@ fn bounded_request_channel_reports_backpressure() {
     let mut config = ClientConfig::v4("backpressure", "127.0.0.1", port);
     config.common.request_channel_capacity = 1;
     config.common.event_buffer_capacity = 32;
-    let native = NativeClient::start(config).unwrap();
+    let native = support::start(config).unwrap();
     let handle = native.handle();
     let command = || {
         Command::Publish(PublishCommand {
@@ -344,8 +346,7 @@ fn bounded_request_channel_reports_backpressure() {
 fn immediate_cleanup_is_idempotent() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let native =
-        NativeClient::start(ClientConfig::v4("idempotent-close", "127.0.0.1", port)).unwrap();
+    let native = support::start(ClientConfig::v4("idempotent-close", "127.0.0.1", port)).unwrap();
     let handle = native.handle();
 
     handle.close_now_idempotent();
@@ -356,7 +357,7 @@ fn immediate_cleanup_is_idempotent() {
 #[test]
 fn immediate_close_after_graceful_close_preserves_graceful_result() {
     let (port, broker) = spawn_broker(ProtocolVersion::V4);
-    let mut native = NativeClient::start(config(ProtocolVersion::V4, port)).unwrap();
+    let mut native = support::start(config(ProtocolVersion::V4, port)).unwrap();
     let mut events = native.take_events().unwrap();
     wait_connected(&mut events);
     let closer = native.closer();

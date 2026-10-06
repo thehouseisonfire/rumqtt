@@ -118,7 +118,7 @@ fn run_with_connector(
             assert!(matches!(stream.read(&mut [0]), Err(_) | Ok(0)));
         }
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     if succeeds {
         support::until(&mut events, |event| {
@@ -344,7 +344,7 @@ fn callbacks_cannot_accept_results_after_the_original_attempt_deadline() {
             let mut stream = fixture::wrap(Box::new(support::accept(&listener)), server);
             assert!(matches!(stream.read(&mut [0]), Err(_) | Ok(0)));
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = client.take_events().unwrap();
         let event = support::until(&mut events, |event| {
             matches!(event, WrapperEvent::Disconnected { .. })
@@ -403,7 +403,7 @@ fn sni_and_cipher_selection_affect_the_wire_without_changing_certificate_authori
                 stream.flush().unwrap();
                 assert_eq!(support::frame(&mut stream)[0], 0xe0);
             });
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = support::connected(&mut client);
             client.closer().close(support::DEADLINE).unwrap();
             client.join(support::DEADLINE).unwrap();
@@ -465,7 +465,7 @@ fn explicit_resumption_policy_is_enforced_on_reconnect() {
                 second.flush().unwrap();
                 assert_eq!(support::frame(&mut second)[0], 0xe0);
             });
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = support::connected(&mut client);
             release.send(()).unwrap();
             support::until(&mut events, |event| {
@@ -550,7 +550,7 @@ fn terminal_verification_failure_stops_srv_redirect_fallback() {
         let mut stream = fixture::wrap(Box::new(support::accept(&preferred)), server);
         assert!(matches!(stream.read(&mut [0]), Err(_) | Ok(0)));
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     let error = loop {
         let event = events.recv_timeout(support::DEADLINE).unwrap().unwrap();
@@ -927,7 +927,7 @@ fn deferred_pending_hooks_cancel_without_blocking_driver_join_and_drop_owned_wor
                     let mut stream = fixture::wrap(Box::new(support::accept(&listener)), server);
                     assert!(matches!(stream.read(&mut [0]), Err(_) | Ok(0)));
                 });
-                let mut client = NativeClient::start(config).unwrap();
+                let mut client = support::start(config).unwrap();
                 let mut events = client.take_events().unwrap();
                 let mut calls = 0;
                 loop {
@@ -1021,7 +1021,7 @@ fn deferred_worker_cancels_network_waits_before_runtime_shutdown() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let mut config = support::config(true, listener.local_addr().unwrap().port());
     config.common.transport = TransportConfig::Tls(deferred_profile(&fixture, catalog, host));
-    let client = NativeClient::start(config).unwrap();
+    let client = support::start(config).unwrap();
     let mut socket = support::accept(&listener);
     let mut hello = [0; 4096];
     assert!(socket.read(&mut hello).unwrap() > 0);
@@ -1099,7 +1099,12 @@ impl MixedHost {
     fn check_driver(&self) {
         let thread = std::thread::current().id();
         let mut driver = self.driver.lock().unwrap();
-        assert_eq!(*driver.get_or_insert(thread), thread);
+        if std::env::var("RUMQTTC_TEST_EXECUTION").as_deref() == Ok("shared") {
+            driver.get_or_insert(thread);
+            assert_eq!(std::thread::current().name(), Some("rumqtt-context-worker"));
+        } else {
+            assert_eq!(*driver.get_or_insert(thread), thread);
+        }
         drop(driver);
     }
 }
@@ -1309,7 +1314,7 @@ fn pending_destructor_failure(
         let mut stream = fixture::wrap(Box::new(support::accept(&listener)), server);
         assert!(matches!(stream.read(&mut [0]), Err(_) | Ok(0)));
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     let mut calls = 0;
     loop {
@@ -1564,7 +1569,7 @@ fn tls_destructor_failures_are_isolated_between_clients_sharing_a_profile() {
                 assert_eq!(support::frame(&mut stream)[0], 0xe0);
             }
         }));
-        clients.push(NativeClient::start(config).unwrap());
+        clients.push(support::start(config).unwrap());
         assert_eq!(receiver.recv_timeout(support::DEADLINE).unwrap(), call);
     }
     let error = clients[0]

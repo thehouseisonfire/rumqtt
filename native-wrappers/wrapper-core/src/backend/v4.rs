@@ -379,6 +379,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     };
     loop {
         // `EventLoop::poll` can dequeue requests and mutate protocol state before awaiting I/O.
+        tokio::task::yield_now().await;
         // Keep the same future alive across wrapper-control wakeups so those side effects cannot
         // be abandoned by `select!` cancellation. Diagnostics use the last completed snapshot
         // while the poll future holds the mutable event-loop borrow.

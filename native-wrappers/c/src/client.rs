@@ -3,8 +3,8 @@ use std::sync::{Mutex, TryLockError};
 use std::time::Duration;
 
 use rumqttc_wrapper_core::{
-    ClientHandle, Completion, DisconnectProtocolOptions, EventConsumer, NativeClient,
-    NativeClientCloser, ProtocolVersion, WrapperEvent,
+    ClientHandle, Completion, DisconnectProtocolOptions, EventConsumer, ExecutionContext,
+    NativeClient, NativeClientCloser, ProtocolVersion, WrapperEvent,
 };
 
 pub enum ClientError {
@@ -25,9 +25,13 @@ pub struct ClientObject {
 impl ClientObject {
     pub fn start(
         config: rumqttc_wrapper_core::ClientConfig,
+        execution: Option<&ExecutionContext>,
     ) -> Result<Self, rumqttc_wrapper_core::Error> {
         let protocol = config.protocol_version();
-        let mut native = NativeClient::start(config)?;
+        let mut native = match execution {
+            Some(execution) => NativeClient::start_in(config, execution)?,
+            None => NativeClient::start(config)?,
+        };
         let handle = native.handle();
         let closer = native.closer();
         let events = native
@@ -58,6 +62,13 @@ impl ClientObject {
     }
 
     pub fn recv(&self, timeout: Option<Duration>) -> Result<Option<WrapperEvent>, ClientError> {
+        if timeout.is_some_and(|timeout| !timeout.is_zero())
+            && !rumqttc_wrapper_core::blocking_wait_allowed()
+        {
+            return Err(ClientError::State(
+                "blocking event receive is forbidden on execution workers and in callbacks",
+            ));
+        }
         let mut events = match self.events.try_lock() {
             Ok(events) => events,
             Err(TryLockError::WouldBlock) => {
@@ -93,6 +104,11 @@ impl ClientObject {
 
     /// Cleanup preserves any admitted disconnect payload and waits for all host callbacks.
     pub fn shutdown_and_join(&self, timeout: Duration) -> Result<(), ClientError> {
+        if !timeout.is_zero() && !rumqttc_wrapper_core::blocking_wait_allowed() {
+            return Err(ClientError::State(
+                "blocking client destruction is forbidden on execution workers and in callbacks",
+            ));
+        }
         self.handle.close_now_idempotent();
         self.native.join(timeout).map_err(ClientError::Core)
     }

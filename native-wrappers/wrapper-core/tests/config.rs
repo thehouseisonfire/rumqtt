@@ -1,3 +1,5 @@
+mod support;
+
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -97,12 +99,7 @@ fn malformed_tls_material_fails_before_driver_start() {
         )),
         ..TlsConfig::default()
     });
-    assert_eq!(
-        rumqttc_wrapper_core::NativeClient::start(config)
-            .unwrap_err()
-            .kind(),
-        ErrorKind::Tls
-    );
+    assert_eq!(support::start(config).unwrap_err().kind(), ErrorKind::Tls);
 }
 
 #[test]

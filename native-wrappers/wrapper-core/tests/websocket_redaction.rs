@@ -73,7 +73,7 @@ fn wrapper_diagnostics_redact_handshake_credentials() {
         config.common.transport = TransportConfig::WebSocket;
         config.common.websocket_handshake = Some(WebSocketHandshakeConfig(Arc::new(Secret)));
         let debug = format!("{config:?}");
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let _events = connected(&mut client);
         client.closer().close(Duration::from_secs(3)).unwrap();
         broker.join();

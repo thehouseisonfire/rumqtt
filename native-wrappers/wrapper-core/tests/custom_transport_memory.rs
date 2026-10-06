@@ -301,7 +301,7 @@ fn native_client_composes_and_reconnects_over_short_memory_io() {
                             *host = "localhost".into();
                         }
                         let started = Instant::now();
-                        let mut client = NativeClient::start(config).unwrap();
+                        let mut client = support::start(config).unwrap();
                         let mut events = connected(&mut client);
                         release.notify_one();
                         until(&mut events, |event| {
@@ -409,7 +409,7 @@ fn custom_base_streams_do_not_bypass_broker_trust_validation() {
                     connector,
                     mode: TransportMode::Base,
                 });
-                let mut client = NativeClient::start(config).unwrap();
+                let mut client = support::start(config).unwrap();
                 let mut events = client.take_events().unwrap();
                 let event = events
                     .recv_timeout(DEADLINE)

@@ -4,8 +4,8 @@ use std::time::Duration;
 mod support;
 
 use rumqttc_wrapper_core::{
-    ClientConfig, Command, ErrorKind, NativeClient, ProtocolConfig, SessionCheckpoint,
-    SessionStore, SessionStoreConfig, SessionStoreKey, StoreFailure, StoreFuture, WrapperEvent,
+    ClientConfig, Command, ErrorKind, ProtocolConfig, SessionCheckpoint, SessionStore,
+    SessionStoreConfig, SessionStoreKey, StoreFailure, StoreFuture, WrapperEvent,
 };
 
 #[derive(Default)]
@@ -158,7 +158,7 @@ fn restart_recovers_mixed_subscriptions_publishes_and_incoming_qos2() {
             host: "127.0.0.1".into(),
             port,
         };
-        let mut first = NativeClient::start(config.clone()).unwrap();
+        let mut first = support::start(config.clone()).unwrap();
         let mut events = support::connected(&mut first);
         let subscriptions = first
             .handle()
@@ -227,7 +227,7 @@ fn restart_recovers_mixed_subscriptions_publishes_and_incoming_qos2() {
             );
         }
         assert!(store.checkpoint.lock().unwrap().is_some());
-        let mut second = NativeClient::start(config).unwrap();
+        let mut second = support::start(config).unwrap();
         let mut events = support::connected(&mut second);
         ready_rx.recv_timeout(DEADLINE).unwrap();
         second.closer().close(DEADLINE).unwrap();
@@ -284,7 +284,7 @@ fn checkpoint_and_clear_failures_terminate_and_release_the_store() {
                 host: "127.0.0.1".into(),
                 port,
             };
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = client.take_events().unwrap();
             let mut publish = None;
             loop {
@@ -357,7 +357,7 @@ fn callback_failure_panic_and_timeout_are_typed_and_release_the_owner() {
                 ..Default::default()
             });
             let weak = Arc::downgrade(&store);
-            let mut client = NativeClient::start(config(mqtt5, store)).unwrap();
+            let mut client = support::start(config(mqtt5, store)).unwrap();
             let mut events = client.take_events().unwrap();
             let Some(WrapperEvent::DriverTerminated(error)) =
                 events.recv_timeout(Duration::from_secs(2)).unwrap()
@@ -377,16 +377,16 @@ fn duplicate_key_is_rejected_until_driver_releases_lease() {
     for mqtt5 in [false, true] {
         let store = Arc::new(MemoryStore::default());
         let config = config(mqtt5, store);
-        let mut first = NativeClient::start(config.clone()).unwrap();
+        let mut first = support::start(config.clone()).unwrap();
         let _events = first.take_events().unwrap();
-        let error = NativeClient::start(config.clone()).unwrap_err();
+        let error = support::start(config.clone()).unwrap_err();
         assert_eq!(error.store_failure(), Some(StoreFailure::InUse));
         first
             .handle()
             .try_admit(Command::ImmediateDisconnect)
             .unwrap();
         first.join(Duration::from_secs(2)).unwrap();
-        let mut second = NativeClient::start(config).unwrap();
+        let mut second = support::start(config).unwrap();
         let _events = second.take_events().unwrap();
         second
             .handle()
@@ -415,7 +415,7 @@ fn pending_load_is_cancelled_by_immediate_shutdown() {
                 v5.session_store.as_mut().unwrap().timeout = Duration::from_secs(60);
             }
         }
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let _events = client.take_events().unwrap();
         entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         client
@@ -487,7 +487,7 @@ fn store_completion_races_shutdown_and_abandonment_without_retaining_owner() {
                         v5.session_store.as_mut().unwrap().timeout = Duration::from_secs(60);
                     }
                 }
-                let mut client = NativeClient::start(config).unwrap();
+                let mut client = support::start(config).unwrap();
                 let _events = client.take_events().unwrap();
                 entered_rx.recv_timeout(DEADLINE).unwrap();
                 let pending = client
@@ -596,7 +596,7 @@ fn malformed_envelopes_are_rejected_without_network_io() {
                     v5.session_store.as_mut().unwrap().max_checkpoint_size = 64;
                 }
             }
-            let mut client = NativeClient::start(config).unwrap();
+            let mut client = support::start(config).unwrap();
             let mut events = client.take_events().unwrap();
             let Some(WrapperEvent::DriverTerminated(error)) =
                 events.recv_timeout(Duration::from_secs(2)).unwrap()
@@ -685,7 +685,7 @@ fn restart_replays_unacknowledged_publish_with_original_packet_identifier() {
                 host: "127.0.0.1".into(),
                 port,
             };
-            let mut first = NativeClient::start(config.clone()).unwrap();
+            let mut first = support::start(config.clone()).unwrap();
             let mut events = first.take_events().unwrap();
             assert!(matches!(
                 events.recv_timeout(Duration::from_secs(2)).unwrap(),
@@ -714,7 +714,7 @@ fn restart_replays_unacknowledged_publish_with_original_packet_identifier() {
                     .is_err()
             );
             assert!(store.checkpoint.lock().unwrap().is_some());
-            let mut second = NativeClient::start(config).unwrap();
+            let mut second = support::start(config).unwrap();
             let mut events = second.take_events().unwrap();
             assert!(matches!(
                 events.recv_timeout(Duration::from_secs(2)).unwrap(),

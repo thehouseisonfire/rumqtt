@@ -75,7 +75,7 @@ fn automatic_and_explicit_aliases_replay_concrete_topics_under_new_connack_limit
             puback(&mut socket, fresh.pkid);
             assert_eq!(frame(&mut socket)[0], 0xe0);
         });
-        let mut client = NativeClient::start(config).unwrap();
+        let mut client = support::start(config).unwrap();
         let mut events = connected(&mut client);
         let first = client.handle().try_admit(command(explicit, false)).unwrap();
         assert_eq!(
@@ -119,7 +119,7 @@ fn alias_rejection_retains_broker_reason_and_connection_generation() {
         read_publish(&mut socket);
         socket.write_all(&[0xe0, 2, 0x94, 0]).unwrap();
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = connected(&mut client);
     let operation = client.handle().try_admit(command(true, false)).unwrap();
     let event = until(&mut events, |event| {
@@ -159,7 +159,7 @@ fn rejected_connect_properties_preserve_reason_before_first_generation() {
         release_rx.recv_timeout(DEADLINE).unwrap();
         socket.write_all(&[0x20, 3, 0, 0x82, 0]).unwrap();
     });
-    let mut client = NativeClient::start(config).unwrap();
+    let mut client = support::start(config).unwrap();
     let mut events = client.take_events().unwrap();
     let pending = client
         .handle()

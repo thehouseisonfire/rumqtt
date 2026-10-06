@@ -262,7 +262,9 @@ const fn core_kind(kind: ErrorKind) -> u32 {
 }
 
 fn core_status(error: &Error) -> u32 {
-    if error.kind() == ErrorKind::Timeout {
+    if error.code() == rumqttc_wrapper_core::ErrorCode::InvalidState {
+        INVALID_STATE
+    } else if error.kind() == ErrorKind::Timeout {
         TIMEOUT
     } else if error.websocket_failure().is_some() {
         WEBSOCKET_HANDSHAKE_ERROR

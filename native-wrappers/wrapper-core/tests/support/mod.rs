@@ -11,6 +11,16 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use rumqttc_wrapper_core::*;
 
+/// Run unchanged behavioral scenarios against either placement; selection is test-only.
+pub fn start(config: ClientConfig) -> rumqttc_wrapper_core::Result<NativeClient> {
+    if std::env::var("RUMQTTC_TEST_EXECUTION").as_deref() == Ok("shared") {
+        let context = ExecutionContext::new(ExecutionOptions::default())?;
+        NativeClient::start_in(config, &context)
+    } else {
+        NativeClient::start(config)
+    }
+}
+
 pub const DEADLINE: Duration = Duration::from_secs(5);
 
 pub fn process_output(command: &mut std::process::Command) -> std::process::Output {
@@ -162,6 +172,7 @@ pub fn puback(socket: &mut TcpStream, id: u16) {
 pub fn terminal(admission: &Admission) -> Result<Completion> {
     match admission.completion.wait_timeout_outcome(DEADLINE) {
         CompletionWaitOutcome::Completed(result) => result,
+        CompletionWaitOutcome::ObservationRejected(error) => Err(error),
         CompletionWaitOutcome::DeadlineElapsed => panic!("operation remained unresolved"),
     }
 }
