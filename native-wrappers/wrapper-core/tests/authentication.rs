@@ -136,6 +136,134 @@ fn overlapping_reauthentication_is_rejected_before_the_active_exchange_closes() 
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the traffic, broker and shutdown scenarios together"
+)]
+fn overlapping_reauthentication_traffic_preserves_mqtt_deadlines_and_shutdown() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct StopTraffic(Arc<AtomicBool>);
+    impl Drop for StopTraffic {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    for timeout in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (traffic_tx, traffic_rx) = std::sync::mpsc::channel();
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        let broker = support::Broker::spawn(move || {
+            let mut socket = support::accept(&listener);
+            read_packet(&mut socket);
+            socket
+                .write_all(b"\x20\x0a\x00\x00\x07\x15\x00\x04test")
+                .unwrap();
+            let rumqttc_v5::Packet::Auth(auth) = read_packet(&mut socket) else {
+                panic!("reauthentication request expected")
+            };
+            assert_eq!(auth.code, rumqttc_v5::AuthReasonCode::ReAuthenticate);
+            ready_tx.send(()).unwrap();
+            traffic_rx.recv_timeout(support::DEADLINE).unwrap();
+            // QoS 1 PUBLISH, topic "a", packet ID 1, payload "abc". Network
+            // reads and the automatic PUBACK must progress during the AUTH exchange.
+            socket
+                .write_all(b"\x32\x09\x00\x01a\x00\x01\x00abc")
+                .unwrap();
+            let rumqttc_v5::Packet::PubAck(ack) = read_packet(&mut socket) else {
+                panic!("PUBACK expected")
+            };
+            assert_eq!(ack.pkid, 1);
+            progress_tx.send(()).unwrap();
+            if timeout {
+                assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+            } else {
+                assert!(matches!(
+                    read_packet(&mut socket),
+                    rumqttc_v5::Packet::Disconnect(_)
+                ));
+            }
+        });
+        let mut configuration = config(
+            port,
+            Arc::new(Mechanism {
+                contexts: Mutex::new(vec![]),
+            }),
+        );
+        if timeout {
+            let ProtocolConfig::V5(v5) = &mut configuration.protocol else {
+                unreachable!()
+            };
+            v5.authenticator.as_mut().unwrap().exchange_timeout = Duration::from_secs(1);
+        }
+        let mut client = NativeClient::start(configuration).unwrap();
+        let mut events = support::connected(&mut client);
+        let handle = client.handle();
+        let first = handle.try_admit(Command::Reauthenticate(None)).unwrap();
+        ready_rx.recv_timeout(support::DEADLINE).unwrap();
+        let overlap = handle.try_admit(Command::Reauthenticate(None)).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+
+        std::thread::scope(|scope| {
+            // Overlap rejections register ready futures without consuming native
+            // request-channel or publish-budget capacity. Dropping observers does
+            // not cancel those registrations. Stop the producer even if an assertion fails.
+            let _stop_on_exit = StopTraffic(stop.clone());
+            let producer = scope.spawn(|| {
+                let mut started = false;
+                while !stop.load(Ordering::Acquire) {
+                    match handle.try_admit(Command::Reauthenticate(None)) {
+                        Ok(admission) => drop(admission),
+                        Err(error) if error.kind() == ErrorKind::Shutdown => break,
+                        Err(error) => panic!("unexpected registration error: {error}"),
+                    }
+                    if !started {
+                        traffic_tx.send(()).unwrap();
+                        started = true;
+                    }
+                    std::thread::yield_now();
+                }
+                assert!(started);
+            });
+
+            support::until(&mut events, |event| {
+                matches!(event, WrapperEvent::IncomingPublish(_))
+            });
+            progress_rx.recv_timeout(support::DEADLINE).unwrap();
+            let diagnostics = handle.try_admit(Command::Diagnostics).unwrap();
+            assert!(
+                matches!(support::terminal(&diagnostics).unwrap(), Completion::Diagnostics(snapshot) if snapshot.connected)
+            );
+            let error = support::terminal(&overlap).unwrap_err();
+            assert_eq!(error.auth_failure(), Some(AuthFailure::Overlapping));
+            assert_eq!(error.delivery_status(), DeliveryStatus::NotAdmitted);
+
+            if timeout {
+                let event = support::until(&mut events, |event| {
+                    matches!(event, WrapperEvent::DriverTerminated(_))
+                });
+                let WrapperEvent::DriverTerminated(error) = event else {
+                    unreachable!()
+                };
+                assert_eq!(error.auth_failure(), Some(AuthFailure::Timeout));
+            } else {
+                // Keep submitting registrations until shutdown itself closes admission.
+                client.closer().close_now(support::DEADLINE).unwrap();
+            }
+            stop.store(true, Ordering::Release);
+            producer.join().unwrap();
+        });
+        let error = support::terminal(&first).unwrap_err();
+        assert_eq!(error.delivery_status(), DeliveryStatus::Ambiguous);
+        client.join(support::DEADLINE).unwrap();
+        broker.join();
+    }
+}
+
+#[test]
 fn rejected_overlap_preserves_success_and_releases_admission_for_the_next_exchange() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

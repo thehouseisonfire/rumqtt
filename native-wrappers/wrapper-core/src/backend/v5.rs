@@ -24,9 +24,10 @@ pub fn validate_publish(command: &PublishCommand) -> Result<()> {
         }
     }
     if properties.topic_alias == Some(0) {
-        return Err(protocol_option_error(
-            "topic alias must be greater than zero",
-        ));
+        return Err(
+            protocol_option_error("topic alias must be greater than zero")
+                .with_publish_failure(crate::PublishFailure::TopicAliasZero),
+        );
     }
     if let Some(response_topic) = &properties.response_topic {
         validate_mqtt_utf8_string(response_topic, "response topic")?;
@@ -113,16 +114,62 @@ fn validate_user_properties(properties: &[(String, String)], name: &str) -> Resu
 }
 
 pub fn map_client_error(error: &rumqttc_v5::ClientError) -> Error {
-    let kind = match error {
-        rumqttc_v5::ClientError::RequestChannelFull(_)
-        | rumqttc_v5::ClientError::PublishAdmissionPending { .. } => ErrorKind::Backpressure,
-        rumqttc_v5::ClientError::RequestChannelDisconnected(_) => ErrorKind::Shutdown,
+    use crate::{ErrorCode as C, PublishFailure as F};
+    use rumqttc_v5::{ClientError as E, PublishAdmissionError as A, PublishBudgetError as B};
+    let (kind, code, failure) = match error {
+        E::RequestChannelFull(request) => (
+            ErrorKind::Backpressure,
+            C::RequestBackpressure,
+            matches!(request.as_ref(), rumqttc_v5::Request::Publish(_))
+                .then_some(F::RequestChannelFull),
+        ),
+        E::PublishAdmissionPending { .. } => (
+            ErrorKind::Backpressure,
+            C::PublishCapabilitiesPending,
+            Some(F::CapabilitiesPending),
+        ),
+        E::PublishBudget { reason, .. } => match reason {
+            B::RecoveryPending => (
+                ErrorKind::Backpressure,
+                C::PublishRecoveryPending,
+                Some(F::RecoveryPending),
+            ),
+            B::CountExhausted => (
+                ErrorKind::Backpressure,
+                C::PublishBudgetExhausted,
+                Some(F::CountExhausted),
+            ),
+            B::BytesExhausted => (
+                ErrorKind::Backpressure,
+                C::PublishBudgetExhausted,
+                Some(F::BytesExhausted),
+            ),
+            B::TooLarge => (ErrorKind::Admission, C::PublishTooLarge, Some(F::TooLarge)),
+        },
+        E::PublishAdmissionRejected { reason, .. } => (
+            ErrorKind::Admission,
+            C::PublishRejected,
+            Some(match reason {
+                A::RetainUnavailable => F::RetainUnavailable,
+                A::MaximumQos { .. } => F::MaximumQos,
+                A::TopicAliasZero => F::TopicAliasZero,
+                A::TopicAliasMaximum { .. } => F::TopicAliasMaximum,
+                A::TopicAliasUnmapped(_) => F::TopicAliasUnmapped,
+            }),
+        ),
         #[cfg(feature = "ordered-shutdown")]
-        rumqttc_v5::ClientError::Closing(_) => ErrorKind::Shutdown,
-        _ => ErrorKind::Admission,
+        E::Closing(_) => (ErrorKind::Shutdown, C::Shutdown, None),
+        E::RequestChannelDisconnected(_) => (ErrorKind::Shutdown, C::Shutdown, None),
+        _ => (ErrorKind::Admission, C::CommandInvalid, None),
     };
-    // Client errors can own rejected requests, including payloads and AUTH data.
-    Error::new(kind, "MQTT request admission failed").with_delivery(DeliveryStatus::NotAdmitted)
+    // Rejected requests can own credentials or payloads. Never retain them in wrapper errors.
+    let mut error = Error::new(kind, "MQTT request admission failed")
+        .with_code(code)
+        .with_delivery(DeliveryStatus::NotAdmitted);
+    if let Some(failure) = failure {
+        error = error.with_publish_failure(failure);
+    }
+    error
 }
 
 pub fn map_connection_error(error: &rumqttc_v5::ConnectionError) -> Error {
@@ -181,6 +228,11 @@ pub fn map_connection_error(error: &rumqttc_v5::ConnectionError) -> Error {
     }
     if let rumqttc_v5::ConnectionError::SessionRestore(source) = error {
         let failure = match source {
+            rumqttc_v5::SessionRestoreError::PublishBudgetExceeded => {
+                return Error::store(crate::StoreFailure::PublishBudgetExceeded)
+                    .with_code(crate::ErrorCode::PublishRestoreBudgetExceeded)
+                    .with_publish_failure(crate::PublishFailure::RestoreBudgetExceeded);
+            }
             rumqttc_v5::SessionRestoreError::UnsupportedFormatVersion { .. } => {
                 crate::StoreFailure::Version
             }
@@ -246,7 +298,8 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use crate::handle::Shared;
 use crate::operations::{
-    PendingFuture, PendingSender, accept_registration, fail_pending, resolve_pending,
+    PendingFuture, PendingSender, accept_registration, fail_pending, process_ready_completions,
+    resolve_pending,
 };
 use crate::runtime::{
     DriverContext, EventDelivery, ShutdownInputs, TerminalStatus, complete_shutdown, deliver,
@@ -495,6 +548,8 @@ pub fn build(
     common: &crate::CommonConfig,
     protocol: crate::V5Config,
 ) -> crate::Result<(rumqttc_v5::AsyncClient, Box<Driver>)> {
+    let publish_admission_policy = protocol.publish_admission_policy;
+    let publish_budget = protocol.publish_budget;
     let authenticator = protocol.authenticator.clone();
     let async_authenticator = protocol.async_authenticator.clone();
     #[cfg(feature = "auth-scram")]
@@ -525,7 +580,18 @@ pub fn build(
     configure_handshake(&mut options, common, websocket.clone())?;
     let (client, eventloop) = rumqttc_v5::AsyncClient::builder(options)
         .capacity(common.request_channel_capacity)
-        .publish_admission_policy(rumqttc_v5::PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+        .publish_admission_policy(match publish_admission_policy {
+            crate::PublishAdmissionPolicy::RequireNegotiatedCapabilities => {
+                rumqttc_v5::PublishAdmissionPolicy::RequireNegotiatedCapabilities
+            }
+            crate::PublishAdmissionPolicy::EventLoopValidated => {
+                rumqttc_v5::PublishAdmissionPolicy::EventLoopValidated
+            }
+        })
+        .publish_budget(rumqttc_v5::PublishBudgetLimits {
+            max_outstanding: publish_budget.max_outstanding,
+            max_bytes: publish_budget.max_bytes,
+        })
         .try_build()
         .map_err(|error| {
             Error::sourced(
@@ -591,8 +657,12 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         staged: std::sync::Mutex::new(None),
     };
     loop {
-        // See the v4 loop: polling is an indivisible ownership boundary even while wrapper
+        // Retire notices promptly as native publish capacity is released, but leave
+        // sustained control traffic to the fair arbitration below. Yield after this
+        // bounded pass on every iteration so shared execution remains cooperative.
+        process_ready_completions(&completion_rx, &mut pending, &mut senders);
         tokio::task::yield_now().await;
+        // See the v4 loop: polling is an indivisible ownership boundary even while wrapper
         // registrations, cached diagnostics, and completed notices remain responsive.
         let mut authentication_timed_out = false;
         if !connected {
@@ -1328,13 +1398,21 @@ pub fn from_incoming_publish_properties(
     }
 }
 
+#[cfg(test)]
 pub fn map_publish_notice(
     result: std::result::Result<rumqttc_v5::PublishResult, rumqttc_v5::PublishNoticeError>,
 ) -> TerminalOutcome {
+    map_publish_outcome(rumqttc_v5::PublishNoticeOutcome {
+        result,
+        possibly_transmitted: true,
+    })
+}
+
+pub fn map_publish_outcome(outcome: rumqttc_v5::PublishNoticeOutcome) -> TerminalOutcome {
     use rumqttc_v5::PublishResult as R;
-    let result = match result {
+    let result = match outcome.result {
         Ok(result) => result,
-        Err(error) => return Err(map_notice_error(error)).into(),
+        Err(error) => return Err(map_publish_failure(&error, outcome.possibly_transmitted)).into(),
     };
     let (kind, packet_id, reason, properties, recovered, completion) = match result {
         R::Qos0Flushed => return Ok(Completion::Publish(PublishCompletion::Qos0Flushed)).into(),
@@ -1527,6 +1605,63 @@ pub fn v5_pubcomp_success(reason: rumqttc_v5::PubCompReason) -> bool {
     reason == rumqttc_v5::PubCompReason::Success
 }
 
+fn map_publish_failure(
+    error: &rumqttc_v5::PublishNoticeError,
+    possibly_transmitted: bool,
+) -> Error {
+    use crate::{ErrorCode as C, PublishFailure as F};
+    use rumqttc_v5::PublishNoticeError as E;
+    let (failure, code, kind) = match error {
+        E::RetainNotSupported => (
+            F::RetainUnavailable,
+            C::PublishRejected,
+            ErrorKind::Protocol,
+        ),
+        E::QoSNotSupported { .. } => (F::MaximumQos, C::PublishRejected, ErrorKind::Protocol),
+        E::TopicAliasInvalid { .. } => (
+            F::TopicAliasMaximum,
+            C::PublishRejected,
+            ErrorKind::Protocol,
+        ),
+        E::TopicAliasMappingUnavailable(_) => (
+            F::TopicAliasUnmapped,
+            C::PublishRejected,
+            ErrorKind::Protocol,
+        ),
+        E::TopicAliasReplayUnavailable(_) => (
+            F::TopicAliasReplayUnavailable,
+            C::PublishAliasReplayUnavailable,
+            ErrorKind::Protocol,
+        ),
+        E::SessionReset => (F::SessionReset, C::PublishSessionReset, ErrorKind::Protocol),
+        E::Redirected => (F::Redirected, C::PublishRejected, ErrorKind::Protocol),
+        E::BrokerOnlySessionResume => (
+            F::BrokerOnlySessionResume,
+            C::PublishRejected,
+            ErrorKind::Protocol,
+        ),
+        E::Qos0NotFlushed => (F::Qos0NotFlushed, C::Protocol, ErrorKind::Protocol),
+        E::SessionPersistence(_) => (F::Persistence, C::Persistence, ErrorKind::Persistence),
+        _ => (F::ReceiverTerminated, C::Protocol, ErrorKind::Protocol),
+    };
+    let delivery = if possibly_transmitted || matches!(failure, F::ReceiverTerminated) {
+        DeliveryStatus::Ambiguous
+    } else {
+        DeliveryStatus::Rejected
+    };
+    // Known variants contain only local numeric metadata, except persistence diagnostics.
+    let message = if matches!(failure, F::Persistence | F::ReceiverTerminated) {
+        "MQTT publish failed".to_owned()
+    } else {
+        error.to_string()
+    };
+    Error::new(kind, message)
+        .with_code(code)
+        .with_delivery(delivery)
+        .with_publish_failure(failure)
+        .with_retryable(failure == F::SessionReset && delivery == DeliveryStatus::Rejected)
+}
+
 pub fn map_notice_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Error {
     Error::sourced(ErrorKind::Protocol, DeliveryStatus::Ambiguous, error)
 }
@@ -1675,7 +1810,11 @@ mod config_tests {
         assert_eq!(error.kind(), ErrorKind::Protocol);
         assert_eq!(error.delivery_status(), DeliveryStatus::Ambiguous);
         assert_eq!(
-            std::error::Error::source(error).unwrap().to_string(),
+            error.publish_failure(),
+            Some(crate::PublishFailure::TopicAliasReplayUnavailable)
+        );
+        assert_eq!(
+            error.message(),
             rumqttc_v5::PublishNoticeError::TopicAliasReplayUnavailable(7).to_string()
         );
     }

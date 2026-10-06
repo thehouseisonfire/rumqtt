@@ -384,6 +384,10 @@ impl<T> Drop for WaitingReceiver<'_, T> {
 
 impl<T> Receiver<T> {
     #[must_use]
+    pub fn capacity(&self) -> Option<usize> {
+        self.0.capacity
+    }
+    #[must_use]
     pub fn gate(&self) -> &Arc<Gate> {
         &self.0.gate
     }

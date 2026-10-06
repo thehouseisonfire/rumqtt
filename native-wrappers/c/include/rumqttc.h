@@ -43,10 +43,38 @@ typedef uint32_t rumqttc_status_t;
 #define RUMQTTC_AUTHENTICATION_ERROR 13u
 #define RUMQTTC_REDIRECT_ERROR 14u
 #define RUMQTTC_WEBSOCKET_HANDSHAKE_ERROR 15u
+#define RUMQTTC_LOCAL_REJECTED 16u
 
 typedef uint32_t rumqttc_protocol_t;
 #define RUMQTTC_PROTOCOL_V4 1u
 #define RUMQTTC_PROTOCOL_V5 2u
+
+#define RUMQTTC_PUBLISH_ADMISSION_REQUIRE_NEGOTIATED_CAPABILITIES 0u
+#define RUMQTTC_PUBLISH_ADMISSION_EVENT_LOOP_VALIDATED 1u
+#define RUMQTTC_DEFAULT_PUBLISH_MAX_OUTSTANDING 1024u
+#define RUMQTTC_DEFAULT_PUBLISH_MAX_BYTES (16u * 1024u * 1024u)
+
+/* Stable local reasons; broker ACK reasons are reported separately. */
+#define RUMQTTC_PUBLISH_FAILURE_CAPABILITIES_PENDING 1u
+#define RUMQTTC_PUBLISH_FAILURE_RECOVERY_PENDING 2u
+#define RUMQTTC_PUBLISH_FAILURE_REQUEST_CHANNEL_FULL 3u
+#define RUMQTTC_PUBLISH_FAILURE_COUNT_EXHAUSTED 4u
+#define RUMQTTC_PUBLISH_FAILURE_BYTES_EXHAUSTED 5u
+#define RUMQTTC_PUBLISH_FAILURE_TOO_LARGE 6u
+#define RUMQTTC_PUBLISH_FAILURE_RETAIN_UNAVAILABLE 7u
+#define RUMQTTC_PUBLISH_FAILURE_MAXIMUM_QOS 8u
+#define RUMQTTC_PUBLISH_FAILURE_TOPIC_ALIAS_ZERO 9u
+#define RUMQTTC_PUBLISH_FAILURE_TOPIC_ALIAS_MAXIMUM 10u
+#define RUMQTTC_PUBLISH_FAILURE_TOPIC_ALIAS_UNMAPPED 11u
+#define RUMQTTC_PUBLISH_FAILURE_TOPIC_ALIAS_REPLAY_UNAVAILABLE 12u
+#define RUMQTTC_PUBLISH_FAILURE_SESSION_RESET 13u
+#define RUMQTTC_PUBLISH_FAILURE_REDIRECTED 14u
+#define RUMQTTC_PUBLISH_FAILURE_BROKER_ONLY_SESSION_RESUME 15u
+#define RUMQTTC_PUBLISH_FAILURE_QOS0_NOT_FLUSHED 16u
+#define RUMQTTC_PUBLISH_FAILURE_PERSISTENCE 17u
+#define RUMQTTC_PUBLISH_FAILURE_RECEIVER_TERMINATED 18u
+#define RUMQTTC_PUBLISH_FAILURE_RESTORE_BUDGET_EXCEEDED 19u
+
 
 /* MQTT packet-type values; these are terminal observations, not ACK commands. */
 typedef uint32_t rumqttc_acknowledgement_kind_t;
@@ -224,6 +252,7 @@ typedef uint32_t rumqttc_error_kind_t;
 #define RUMQTTC_STORE_FAILURE_TIMEOUT 8u
 #define RUMQTTC_STORE_FAILURE_PANIC 9u
 #define RUMQTTC_STORE_FAILURE_IN_USE 10u
+#define RUMQTTC_STORE_FAILURE_PUBLISH_BUDGET_EXCEEDED 12u
 #define RUMQTTC_AUTH_FAILURE_REJECTED 1u
 #define RUMQTTC_AUTH_FAILURE_PANIC 2u
 #define RUMQTTC_AUTH_FAILURE_TIMEOUT 3u
@@ -1387,6 +1416,16 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_clear_v5_outgoing_inflight_upper_lim
 /* Explicit presence flags preserve absent and present-empty fields. */
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_connect_properties(rumqttc_config_t *config, const rumqttc_v5_connect_properties_t *properties, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_clear_v5_connect_properties(rumqttc_config_t *config, rumqttc_error_t **error_out);
+/* MQTT 5 only. Configuration edits affect future clients; limits must be nonzero.
+ * The strict admission default is unchanged. Event-loop validation defers negotiated
+ * rejection while connected as well as offline. Admission is neither broker ACK nor durability. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_publish_admission_policy(rumqttc_config_t *config, uint32_t policy, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_publish_budget(rumqttc_config_t *config, size_t max_outstanding, size_t max_bytes, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_reset_v5_publish_budget(rumqttc_config_t *config, rumqttc_error_t **error_out);
+/* Coherent native usage; all scalar outputs are optional, but at least one is required.
+ * Counters include restored PUBLISH/PUBREL work and survive reconnect queue transfers.
+ * Bytes charge retained publish data, not process RSS. Outputs initialize to zero on failure. */
+RUMQTTC_API rumqttc_status_t rumqttc_client_v5_publish_budget_snapshot(rumqttc_client_t *client, size_t *outstanding_out, size_t *retained_bytes_out, size_t *max_outstanding_out, size_t *max_bytes_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_topic_alias_policy(rumqttc_config_t *config, uint32_t policy, rumqttc_error_t **error_out);
 /* Unix path bytes use the platform's native Unix encoding; no UTF-8 conversion. */
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_unix_broker(rumqttc_config_t *config, rumqttc_bytes_view_t path, rumqttc_error_t **error_out);
@@ -1560,6 +1599,7 @@ RUMQTTC_API rumqttc_status_t rumqttc_error_message(const rumqttc_error_t *error,
 RUMQTTC_API rumqttc_status_t rumqttc_error_source_chain(const rumqttc_error_t *error, rumqttc_string_view_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_flags(const rumqttc_error_t *error, uint8_t *retryable_out, uint8_t *ambiguous_out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_broker_reason(const rumqttc_error_t *error, uint8_t *present_out, uint8_t *reason_out);
+RUMQTTC_API rumqttc_status_t rumqttc_error_publish_failure(const rumqttc_error_t *error, uint8_t *present_out, uint32_t *failure_out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_store_failure(const rumqttc_error_t *error, uint8_t *present_out, uint32_t *failure_out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_auth_failure(const rumqttc_error_t *error, uint8_t *present_out, uint32_t *failure_out);
 RUMQTTC_API rumqttc_status_t rumqttc_error_redirect_failure(const rumqttc_error_t *error, uint8_t *present_out, uint32_t *failure_out);

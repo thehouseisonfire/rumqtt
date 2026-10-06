@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Added
+
 - Native wrappers: Add opt-in, explicitly owned shared execution contexts to
   wrapper-core and the standard C API. Configure client capacity, scheduler
   workers and the blocking pool; retain contexts through configurations and
@@ -13,6 +14,15 @@
   `ErrorCode` adds `InvalidState`, and `CompletionWaitOutcome` adds
   `ObservationRejected` for forbidden synchronous waits; exhaustive Rust matches
   need updating. Rejected observers do not finalize or cancel their operation.
+- MQTT 5/native wrappers: Add bounded publish admission across native queues,
+  replay, protocol state and checkpoint recovery. Wrapper defaults are 1,024
+  outstanding publishes and 16 MiB of charged data, with the existing strict
+  capability policy preserved. C and wrapper-core can select event-loop validation,
+  configure limits and inspect usage. Add structured local publish failure details
+  and C `LOCAL_REJECTED` without inventing broker ACKs; previously transmitted
+  replay rejection remains ambiguous. Direct native Rust budgets are opt-in.
+  Add an offline publishing example. Existing C record layouts remain unchanged;
+  Rust `V5Config`, `ClientError` and `SessionRestoreError` gain fields/variants.
 - Native wrappers: Add cancellable deferred TLS verification, identity selection
   and signing through owned async Rust traits and retained C completion tokens.
   Keep the driver responsive during pending host work while Rustls handshakes
@@ -127,6 +137,16 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- Native wrappers: Bound MQTT 5 completion-registration and ready-result batches
+  before polling MQTT, so sustained overlapping reauthentication traffic cannot
+  indefinitely postpone network progress, authentication deadlines or shutdown.
+- MQTT 5: Gate publish admission for every fresh session-store load, including
+  public client-ID or store-scope changes between connections. Keep recovery
+  gated across cancelled or failed loads until checkpoint restoration succeeds.
+- MQTT 5: Wake managed publishers when a zero-capacity request receiver becomes
+  ready, including after a cancelled receive. Rearm publish recovery admission
+  before redirects change persistent session scope or client identity so new
+  submissions cannot consume capacity needed by the target checkpoint.
 - Native wrappers: Preserve deferred TLS future destruction panics during
   cancellation as terminal callback failures in both MQTT drivers, including
   broker, proxy and redirect TLS. Fail pending operations and shutdown instead

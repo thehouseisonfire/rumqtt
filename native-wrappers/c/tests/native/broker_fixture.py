@@ -536,6 +536,42 @@ class Broker:
         if read_frame(stream)[0] != 14:
             raise AssertionError("unexpected packet after manual ACK fixture")
 
+    def publish_admission(self, stream: socket.socket, client_id: bytes, attempt: int) -> None:
+        name = client_id.decode("ascii")
+        replay = client_id == b"native-admission-replay"
+        if replay and attempt > 1:
+            self.signal(f"{name}-ready-{attempt}")
+            self.barrier(f"{name}-release-{attempt}")
+        elif not replay:
+            self.signal(name + "-ready")
+            self.barrier(name + "-release")
+        restricted = not replay or attempt == 4
+        properties = b"\x24\x00\x25\x00" if restricted else b""
+        stream.sendall(frame(2, 0, bytes((int(replay and attempt > 1), 0)) + encode_remaining(len(properties)) + properties))
+        original = None
+        while packet := read_frame(stream):
+            kind, flags, body = packet
+            if kind == 14:
+                return
+            if kind != 3:
+                raise AssertionError("unexpected admission fixture packet")
+            if restricted:
+                if flags & 7:
+                    raise AssertionError("locally rejected publish reached the broker")
+            else:
+                if flags != (2 if attempt == 1 else 10):
+                    raise AssertionError("replayed publish flags changed")
+                topic, offset = string_at(body, 0)
+                identifier = body[offset:offset + 2]
+                if topic != b"a" or body[offset + 2:] != b"\x00data":
+                    raise AssertionError("replayed publish data changed")
+                original = self.restart_packet_ids.setdefault((client_id, b"admission"), identifier)
+                if identifier != original:
+                    raise AssertionError("replayed publish identifier changed")
+                self.signal(f"{name}-seen-{attempt}")
+                self.barrier(f"{name}-drop-{attempt}")
+                return
+
     def batching(self, stream: socket.socket, protocol: int, client_id: bytes) -> None:
         name = client_id.decode("ascii")
         reads = b"-read-" in client_id
@@ -714,6 +750,9 @@ class Broker:
                     raise AssertionError("wire-options fixture connected more than three times")
                 if offset != len(body):
                     raise AssertionError("unexpected CONNECT payload fields")
+            if client_id.startswith(b"native-admission-"):
+                self.publish_admission(stream, client_id, attempt)
+                return
             if client_id.startswith(b"native-terminal-"):
                 self.acknowledgement_results(stream, protocol, client_id, attempt)
                 return

@@ -37,6 +37,7 @@ use tokio::select;
 use tokio::time::{self, Instant, Sleep, error::Elapsed};
 
 use std::collections::VecDeque;
+use std::future::{Future, poll_fn};
 #[cfg(feature = "ordered-shutdown")]
 #[path = "eventloop_disconnect.rs"]
 mod ordered_disconnect;
@@ -655,6 +656,15 @@ impl Drop for EventLoop {
         if let Some(admission) = &self.publish_admission {
             admission.close();
         }
+        // Channel storage can outlive its receiver while clients retain senders. Retire owned
+        // notices here so shutdown releases reservations even for work never polled.
+        let publish_queued = self.requests_rx.len();
+        let control_queued = self.control_requests_rx.len();
+        self.requests_rx.drain().take(publish_queued).for_each(drop);
+        self.control_requests_rx
+            .drain()
+            .take(control_queued)
+            .for_each(drop);
     }
 }
 
@@ -984,8 +994,8 @@ impl EventLoop {
             NoticeFailureReason::SessionReset
         };
         self.clean_with_notice_reason(reason);
-        if temporary_redirect {
-            self.restore_redirect_origin();
+        if temporary_redirect && let Err(error) = self.restore_redirect_origin() {
+            self.pending_connection_error = Some(error.into());
         }
     }
 
@@ -1474,6 +1484,11 @@ impl EventLoop {
             return;
         }
 
+        if self.options.session_store().is_some() && !self.options.clean_start() {
+            // Resetting the previous session can release reservations and wake producers.
+            // Close admission first so they cannot take the target checkpoint's capacity.
+            self.begin_publish_recovery();
+        }
         if self.session_store_key.is_some() {
             self.reset_session_state_without_store_invalidation();
         }
@@ -1487,44 +1502,106 @@ impl EventLoop {
             .reconcile_outgoing_tracking_capacity(self.pending.is_empty());
     }
 
+    fn begin_publish_recovery(&self) {
+        if let Some(admission) = &self.publish_admission {
+            admission.begin_recovery();
+        }
+    }
+
+    fn finish_publish_recovery(&self) {
+        if let Some(budget) = self
+            .publish_admission
+            .as_ref()
+            .and_then(|admission| admission.budget.as_ref())
+        {
+            budget.recovery_pending(false);
+        }
+    }
+
+    fn restore_publish_replay(
+        &mut self,
+        session: &crate::PersistedSession,
+    ) -> Result<Vec<RequestEnvelope>, crate::SessionRestoreError> {
+        let budget = self
+            .publish_admission
+            .as_ref()
+            .and_then(|admission| admission.budget.as_ref());
+        let mut reservations = if let Some(budget) = budget {
+            let costs = session
+                .replay
+                .iter()
+                .map(crate::publish_budget::replay_charge)
+                .collect::<Option<Vec<_>>>()
+                .ok_or(crate::SessionRestoreError::PublishBudgetExceeded)?;
+            budget
+                .reserve_replay(&costs.into_iter().flatten().collect::<Vec<_>>())?
+                .into_iter()
+        } else {
+            Vec::new().into_iter()
+        };
+        let replay = self
+            .state
+            .restore_persisted_session(&self.options, session)?;
+        Ok(replay
+            .into_iter()
+            .map(|request| {
+                let mut envelope = RequestEnvelope::plain_replay(request);
+                if budget.is_some()
+                    && matches!(envelope.request, Request::Publish(_) | Request::PubRel(_))
+                {
+                    let mut notice = PublishNoticeTx::internal();
+                    notice.reserve(reservations.next());
+                    notice.mark_transmission_started();
+                    envelope.notice = Some(TrackedNoticeTx::Publish(notice));
+                }
+                envelope
+            })
+            .collect())
+    }
+
     async fn load_persisted_session_if_needed(&mut self) -> Result<(), ConnectionError> {
         if self.session_store.clear_pending {
             self.clear_persisted_session().await?;
+            self.finish_publish_recovery();
             return Ok(());
         }
 
         if self.session_store.loaded || self.options.clean_start() {
             self.session_store.loaded = true;
+            self.finish_publish_recovery();
             return Ok(());
         }
 
         let Some(store) = self.options.session_store() else {
             self.session_store.loaded = true;
+            self.finish_publish_recovery();
             self.session_store.clear_pending = false;
             return Ok(());
         };
 
         let key = self.options.session_store_key();
         let client_id = key.client_id().to_owned();
+        // Every fresh load owns recovery admission, including loads caused by public
+        // option changes or retried after cancellation/error. No lock crosses the await.
+        self.begin_publish_recovery();
         let Some(session) = store
             .load(&key)
             .await
             .map_err(ConnectionError::SessionStore)?
         else {
             self.session_store.loaded = true;
+            self.finish_publish_recovery();
             return Ok(());
         };
 
-        let replay = self
-            .state
-            .restore_persisted_session(&self.options, &session)?;
+        let replay = self.restore_publish_replay(&session)?;
         #[cfg(feature = "tracing")]
         let replay_count = replay.len();
-        self.pending
-            .extend(replay.into_iter().map(RequestEnvelope::plain_replay));
+        self.pending.extend(replay);
         self.session_client_id = Some(client_id);
         self.session_store_key = Some(key);
         self.session_store.loaded = true;
+        self.finish_publish_recovery();
         #[cfg(feature = "tracing")]
         crate::instrumentation::session_restored(
             self.telemetry.connection_generation(),
@@ -1844,22 +1921,28 @@ impl EventLoop {
         })
     }
 
-    fn restore_redirect_origin(&mut self) {
+    fn restore_redirect_origin(&mut self) -> Result<(), crate::SessionRestoreError> {
         let Some(active) = self.active_redirect.take() else {
-            return;
+            return Ok(());
         };
+        let admission = self.publish_admission.clone();
+        if let Some(budget) = admission
+            .as_ref()
+            .and_then(|admission| admission.budget.as_ref())
+        {
+            budget.recovery_pending(true);
+        }
+        let _cleanup = admission
+            .as_ref()
+            .map(|admission| admission.begin_connection_cleanup());
         self.options = active.previous_options;
         self.state.set_authenticator(self.options.authenticator());
         self.state
             .set_async_authenticator(self.options.async_authenticator());
         if let Some(origin) = active.origin_session {
             self.reset_session_state_for_redirect();
-            let replay = self
-                .state
-                .restore_persisted_session(&self.options, &origin.checkpoint)
-                .expect("an internally captured redirect session must remain restorable");
-            self.pending
-                .extend(replay.into_iter().map(RequestEnvelope::plain_replay));
+            let replay = self.restore_publish_replay(&origin.checkpoint)?;
+            self.pending.extend(replay);
             self.session_client_id = origin.session_client_id;
             self.session_store_key = origin.session_store_key;
             self.effective_session_expiry_interval = origin.effective_session_expiry_interval;
@@ -1871,17 +1954,41 @@ impl EventLoop {
         } else {
             self.reset_session_state_for_redirect();
         }
+        self.finish_publish_recovery();
         self.redirect_attempts = 0;
         self.redirect_selected_reference = None;
         self.redirect_visited.clear();
+        Ok(())
     }
 
     fn apply_redirect_profile(&mut self, profile: &RedirectTargetProfile) -> bool {
-        let old_client_id = self.options.client_id();
         let old_scope = self.options.session_store_scope().to_owned();
         let old_store = self.options.session_store();
         let old_authenticator = self.options.authenticator();
         let old_async_authenticator = self.options.async_authenticator();
+        let preserve_session = matches!(profile.client_id_policy(), RedirectClientId::Reuse)
+            && matches!(profile.session_policy(), RedirectSession::Reuse { store_scope } if old_scope == *store_scope)
+            && match (old_store.as_ref(), profile.session_store.as_ref()) {
+                (_, None) => true,
+                (Some(old), Some(new)) => std::sync::Arc::ptr_eq(old, new),
+                (None, Some(_)) => false,
+            };
+        let admission = self.publish_admission.clone();
+        // Serialize the gate and session transition with producer admission. Resetting the
+        // old session can release reservations and wake producers before the target loads.
+        let _cleanup = admission
+            .as_ref()
+            .map(|admission| admission.begin_connection_cleanup());
+        if !preserve_session
+            && matches!(profile.session_policy(), RedirectSession::Reuse { .. })
+            && (profile.session_store.is_some() || old_store.is_some())
+            && !self.options.clean_start()
+            && let Some(budget) = admission
+                .as_ref()
+                .and_then(|admission| admission.budget.as_ref())
+        {
+            budget.recovery_pending(true);
+        }
 
         if let Some(broker) = profile.broker() {
             self.options.broker = broker.clone();
@@ -1928,29 +2035,20 @@ impl EventLoop {
             }
         }
 
-        let preserve_session = match profile.session_policy() {
+        match profile.session_policy() {
             RedirectSession::Isolated => {
                 self.options.set_clean_start(true);
                 self.options.set_session_expiry_interval(Some(0));
                 self.options.clear_session_store();
                 self.options.clear_session_store_scope();
-                false
             }
             RedirectSession::Reuse { store_scope } => {
                 self.options.set_session_store_scope(store_scope.clone());
                 if let Some(store) = &profile.session_store {
                     self.options.set_session_store_arc(store.clone());
                 }
-                matches!(profile.client_id_policy(), RedirectClientId::Reuse)
-                    && old_client_id == self.options.client_id()
-                    && old_scope == *store_scope
-                    && match (old_store.as_ref(), self.options.session_store().as_ref()) {
-                        (None, None) => true,
-                        (Some(old), Some(new)) => std::sync::Arc::ptr_eq(old, new),
-                        _ => false,
-                    }
             }
-        };
+        }
 
         if preserve_session {
             self.session_store.loaded = true;
@@ -1969,8 +2067,10 @@ impl EventLoop {
         failure: RedirectFailure,
     ) -> ConnectionError {
         self.last_redirect_diagnostics = Some(self.diagnostics().redirect);
-        if self.active_redirect.is_some() {
-            self.restore_redirect_origin();
+        if self.active_redirect.is_some()
+            && let Err(error) = self.restore_redirect_origin()
+        {
+            return error.into();
         }
         RedirectError { outcome, failure }.into()
     }
@@ -2567,7 +2667,7 @@ impl EventLoop {
                     .as_ref()
                     .is_some_and(|active| active.established);
                 if restore_temporary_origin {
-                    self.restore_redirect_origin();
+                    self.restore_redirect_origin()?;
                 }
                 checkpoint?;
                 Err(e)
@@ -2645,7 +2745,7 @@ impl EventLoop {
                     .as_ref()
                     .is_some_and(|active| active.established);
                 if restore_temporary_origin {
-                    self.restore_redirect_origin();
+                    self.restore_redirect_origin()?;
                 }
                 checkpoint?;
                 Err(e)
@@ -3672,10 +3772,24 @@ impl EventLoop {
         publish_admission: Option<&ManagedPublishAdmission>,
     ) -> Result<RequestEnvelope, ConnectionError> {
         if pending.is_empty() {
-            let envelope = rx
-                .recv_async()
-                .await
-                .map_err(|_| ConnectionError::RequestsDone)?;
+            let receive = rx.recv_async();
+            tokio::pin!(receive);
+            let mut notify_readiness = rx.capacity() == Some(0);
+            let envelope = poll_fn(|cx| {
+                let result = receive.as_mut().poll(cx);
+                if result.is_pending() && notify_readiness {
+                    // Polling registers the rendezvous receiver. Managed producers use
+                    // try_send rather than a channel send waiter, so bridge its readiness
+                    // once per registration, including after cancellation and rearming.
+                    notify_readiness = false;
+                    if let Some(admission) = publish_admission {
+                        admission.notify_progress();
+                    }
+                }
+                result
+            })
+            .await
+            .map_err(|_| ConnectionError::RequestsDone)?;
             if let Some(admission) = publish_admission {
                 admission.notify_progress();
             }
@@ -4424,6 +4538,207 @@ mod tests {
     use std::task::{Context, Poll};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
     use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn publish_budget_reserves_restored_work_before_opening_admission() {
+        use crate::{
+            AsyncClient, ClientError, PublishAdmissionPolicy, PublishBudgetError,
+            PublishBudgetLimits, PublishOptions,
+        };
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("budget-recovery", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let mut source = MqttState::builder(4).build();
+        source
+            .handle_outgoing_packet(Request::Publish(Publish::new(
+                "a",
+                QoS::AtLeastOnce,
+                "data",
+                None,
+            )))
+            .unwrap();
+        let checkpoint = source.persisted_session(&options, Some(60), std::iter::empty());
+        *store.session.lock().unwrap() = Some(checkpoint.clone());
+        // Both the count and the byte limit must preflight the entire checkpoint atomically.
+        for limits in [
+            PublishBudgetLimits {
+                max_outstanding: 1,
+                max_bytes: 4,
+            },
+            PublishBudgetLimits {
+                max_outstanding: 1,
+                max_bytes: 5,
+            },
+        ] {
+            let (client, mut driver) = AsyncClient::builder(options.clone())
+                .publish_admission_policy(PublishAdmissionPolicy::EventLoopValidated)
+                .publish_budget(limits)
+                .build();
+            assert!(matches!(
+                client.try_publish("a", "data", PublishOptions::at_least_once()),
+                Err(ClientError::PublishBudget {
+                    reason: PublishBudgetError::TooLarge | PublishBudgetError::RecoveryPending,
+                    ..
+                })
+            ));
+            if limits.max_bytes == 4 {
+                assert!(matches!(
+                    driver.load_persisted_session_if_needed().await,
+                    Err(ConnectionError::SessionRestore(
+                        SessionRestoreError::PublishBudgetExceeded
+                    ))
+                ));
+                assert_eq!(client.publish_budget_snapshot().unwrap().outstanding, 0);
+                assert!(driver.pending.is_empty());
+                assert_eq!(store.current(), Some(checkpoint.clone()));
+                drop(driver);
+                assert!(matches!(
+                    client.try_publish("a", "", PublishOptions::at_least_once()),
+                    Err(ClientError::RequestChannelDisconnected(_))
+                ));
+            } else {
+                driver.load_persisted_session_if_needed().await.unwrap();
+                let snapshot = client.publish_budget_snapshot().unwrap();
+                assert_eq!(
+                    (
+                        snapshot.outstanding,
+                        snapshot.retained_bytes,
+                        snapshot.recovery_pending
+                    ),
+                    (1, 5, false)
+                );
+                assert!(matches!(
+                    client.try_publish("a", "data", PublishOptions::at_least_once()),
+                    Err(ClientError::PublishBudget {
+                        reason: PublishBudgetError::CountExhausted,
+                        ..
+                    })
+                ));
+                for _ in 0..8 {
+                    driver.clean();
+                }
+                assert_eq!(client.publish_budget_snapshot().unwrap().outstanding, 1);
+                driver.reset_session_state();
+                assert_eq!(client.publish_budget_snapshot().unwrap().outstanding, 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fresh_checkpoint_load_rearms_recovery_without_a_session_key_transition() {
+        use crate::{
+            AsyncClient, ClientError, PublishBudgetError, PublishBudgetLimits, PublishOptions,
+        };
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("budget-recovery", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let (client, mut driver) = AsyncClient::builder(options.clone())
+            .publish_budget(PublishBudgetLimits {
+                max_outstanding: 1,
+                max_bytes: 4,
+            })
+            .build();
+        driver.load_persisted_session_if_needed().await.unwrap();
+        assert!(!client.publish_budget_snapshot().unwrap().recovery_pending);
+        let mut source = MqttState::builder(4).build();
+        source
+            .handle_outgoing_packet(Request::Publish(Publish::new(
+                "a",
+                QoS::AtLeastOnce,
+                "data",
+                None,
+            )))
+            .unwrap();
+        *store.session.lock().unwrap() =
+            Some(source.persisted_session(&options, Some(60), std::iter::empty()));
+        driver.session_store.loaded = false;
+        // Exercise the loader directly: key-transition handling cannot close the gate here.
+        assert!(matches!(
+            driver.load_persisted_session_if_needed().await,
+            Err(ConnectionError::SessionRestore(
+                SessionRestoreError::PublishBudgetExceeded
+            ))
+        ));
+        assert!(client.publish_budget_snapshot().unwrap().recovery_pending);
+        assert_eq!(client.publish_budget_snapshot().unwrap().outstanding, 0);
+        assert!(matches!(
+            client.try_publish("a", "", PublishOptions::new(QoS::AtMostOnce)),
+            Err(ClientError::PublishBudget {
+                reason: PublishBudgetError::RecoveryPending,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn restored_pubrel_counts_as_outstanding_publish_and_failed_preflight_is_atomic() {
+        use crate::{AsyncClient, PublishBudgetLimits};
+        let store = CapturingSessionStore::new();
+        let mut options = MqttOptions::new("budget-recovery", "localhost");
+        options
+            .set_clean_start(false)
+            .set_session_expiry_interval(Some(60))
+            .set_session_store(store.clone());
+        let mut source = MqttState::builder(4).build();
+        source
+            .handle_outgoing_packet(Request::Publish(Publish::new(
+                "a",
+                QoS::ExactlyOnce,
+                "data",
+                None,
+            )))
+            .unwrap();
+        source
+            .handle_incoming_packet_with_effects(Incoming::PubRec(PubRec::new(1, None)))
+            .unwrap();
+        source
+            .handle_outgoing_packet(Request::Publish(Publish::new(
+                "a",
+                QoS::AtLeastOnce,
+                "data",
+                None,
+            )))
+            .unwrap();
+        let checkpoint = source.persisted_session(&options, Some(60), std::iter::empty());
+        assert!(
+            checkpoint
+                .replay
+                .iter()
+                .any(|request| matches!(request, crate::PersistedRequest::PubRel(_)))
+        );
+        *store.session.lock().unwrap() = Some(checkpoint.clone());
+        for count in [1, 2] {
+            let (client, mut driver) = AsyncClient::builder(options.clone())
+                .publish_budget(PublishBudgetLimits {
+                    max_outstanding: count,
+                    max_bytes: 5,
+                })
+                .build();
+            if count == 1 {
+                assert!(matches!(
+                    driver.load_persisted_session_if_needed().await,
+                    Err(ConnectionError::SessionRestore(
+                        SessionRestoreError::PublishBudgetExceeded
+                    ))
+                ));
+                assert_eq!(client.publish_budget_snapshot().unwrap().outstanding, 0);
+                assert!(driver.state.outbound_requests_drained());
+                assert_eq!(store.current(), Some(checkpoint.clone()));
+            } else {
+                driver.load_persisted_session_if_needed().await.unwrap();
+                let snapshot = client.publish_budget_snapshot().unwrap();
+                assert_eq!((snapshot.outstanding, snapshot.retained_bytes), (2, 5));
+                driver.reset_session_state();
+                assert_eq!(client.publish_budget_snapshot().unwrap().outstanding, 0);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn connection_timeout_display_is_specific() {
@@ -8289,6 +8604,34 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn rendezvous_readiness_notifies_once_per_receive_registration() {
+        use futures_util::FutureExt;
+        let admission = ManagedPublishAdmission::new();
+        let (tx, rx) = bounded(0);
+        let mut pending = VecDeque::new();
+        let progress = admission.waiter();
+        let mut receive = Box::pin(EventLoop::next_request(
+            &mut pending,
+            &rx,
+            Duration::ZERO,
+            Some(&admission),
+        ));
+        assert!(receive.as_mut().now_or_never().is_none());
+        assert!(progress.wait_async().now_or_never().is_some());
+        let progress = admission.waiter();
+        assert!(receive.as_mut().now_or_never().is_none());
+        assert!(progress.wait_async().now_or_never().is_none());
+        drop(receive);
+        assert!(
+            EventLoop::next_request(&mut pending, &rx, Duration::ZERO, Some(&admission))
+                .now_or_never()
+                .is_none()
+        );
+        assert!(progress.wait_async().now_or_never().is_some());
+        drop(tx);
     }
 
     #[tokio::test]
@@ -13165,6 +13508,61 @@ mod tests {
             eventloop.options.broker().websocket_url(),
             Some("ws://broker.example/a/b?tenant=blue")
         );
+    }
+
+    #[test]
+    fn redirect_store_replacement_requires_publish_recovery_even_with_the_same_scope() {
+        for replace_store in [false, true] {
+            let origin: Arc<dyn crate::SessionStore> = Arc::new(CapturingSessionStore::new());
+            let target: Arc<dyn crate::SessionStore> = if replace_store {
+                Arc::new(CapturingSessionStore::new())
+            } else {
+                origin.clone()
+            };
+            let mut options = MqttOptions::new("origin", "primary.example");
+            options
+                .set_clean_start(false)
+                .set_session_expiry_interval(Some(60))
+                .set_session_store_scope("shared")
+                .set_session_store_arc(origin);
+            let (client, mut eventloop) = crate::AsyncClient::builder(options)
+                .publish_budget(crate::PublishBudgetLimits {
+                    max_outstanding: 1,
+                    max_bytes: 64,
+                })
+                .build();
+            eventloop.session_store.loaded = true;
+            eventloop.finish_publish_recovery();
+            let reference = crate::redirect::parse_server_references(Some("backup.example"))
+                .unwrap()
+                .remove(0);
+            let profile = RedirectTargetProfile::isolated(reference, Transport::tcp())
+                .unwrap()
+                .client_id(RedirectClientId::Reuse)
+                .session(RedirectSession::Reuse {
+                    store_scope: "shared".into(),
+                })
+                .session_store_arc(target.clone());
+            assert_eq!(eventloop.apply_redirect_profile(&profile), !replace_store);
+            assert!(Arc::ptr_eq(
+                &target,
+                &eventloop.options.session_store().unwrap()
+            ));
+            assert_eq!(eventloop.session_store.loaded, !replace_store);
+            let result =
+                client.try_publish("a", "data", crate::PublishOptions::new(QoS::AtMostOnce));
+            if replace_store {
+                assert!(matches!(
+                    result,
+                    Err(crate::ClientError::PublishBudget {
+                        reason: crate::PublishBudgetError::RecoveryPending,
+                        ..
+                    })
+                ));
+            } else {
+                result.unwrap();
+            }
+        }
     }
 
     #[test]

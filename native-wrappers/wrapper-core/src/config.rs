@@ -477,6 +477,10 @@ impl Default for V4Config {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct V5Config {
+    /// Fixed at construction; defaults to strict negotiated-capability checks.
+    pub publish_admission_policy: crate::PublishAdmissionPolicy,
+    /// Finite process-local retained publish limits, including replay and restored work.
+    pub publish_budget: crate::PublishBudgetLimits,
     pub clean_start: bool,
     pub connect_properties: V5ConnectProperties,
     pub topic_alias_policy: TopicAliasPolicy,
@@ -584,6 +588,8 @@ impl V5ConnectProperties {
 impl Default for V5Config {
     fn default() -> Self {
         Self {
+            publish_admission_policy: crate::PublishAdmissionPolicy::default(),
+            publish_budget: crate::PublishBudgetLimits::default(),
             clean_start: true,
             connect_properties: V5ConnectProperties {
                 maximum_packet_size: Some(10 * 1024),
@@ -683,6 +689,11 @@ impl ClientConfig {
                 }
             }
             ProtocolConfig::V5(v5) => {
+                if v5.publish_budget.max_outstanding == 0 || v5.publish_budget.max_bytes == 0 {
+                    return Err(Error::configuration(
+                        "publish budget limits must be nonzero",
+                    ));
+                }
                 v5.validate_redirect(&self.common)?;
                 v5.validate_authentication()?;
                 if let Some(store) = &v5.session_store {

@@ -37,6 +37,8 @@ impl std::fmt::Debug for SessionCheckpoint {
 pub enum StoreFailure {
     #[error("native session store key does not match its lease")]
     KeyMismatch,
+    #[error("session replay exceeds the configured publish budget")]
+    PublishBudgetExceeded,
     #[error("session store load failed")]
     Load,
     #[error("session store save failed")]

@@ -21,6 +21,15 @@ pub enum ErrorKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorCode {
     InvalidState,
+    PublishCapabilitiesPending,
+    PublishRecoveryPending,
+    PublishBudgetExhausted,
+    PublishTooLarge,
+    PublishRejected,
+    PublishSessionReset,
+    PublishAliasReplayUnavailable,
+    PublishRestoreBudgetExceeded,
+
     ConfigurationInvalid,
     CommandInvalid,
     RequestBackpressure,
@@ -43,6 +52,14 @@ impl ErrorCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::InvalidState => "INVALID_STATE",
+            Self::PublishCapabilitiesPending => "PUBLISH_CAPABILITIES_PENDING",
+            Self::PublishRecoveryPending => "PUBLISH_RECOVERY_PENDING",
+            Self::PublishBudgetExhausted => "PUBLISH_BUDGET_EXHAUSTED",
+            Self::PublishTooLarge => "PUBLISH_TOO_LARGE",
+            Self::PublishRejected => "PUBLISH_REJECTED",
+            Self::PublishSessionReset => "PUBLISH_SESSION_RESET",
+            Self::PublishAliasReplayUnavailable => "PUBLISH_ALIAS_REPLAY_UNAVAILABLE",
+            Self::PublishRestoreBudgetExceeded => "PUBLISH_RESTORE_BUDGET_EXCEEDED",
             Self::ConfigurationInvalid => "CONFIGURATION_INVALID",
             Self::CommandInvalid => "COMMAND_INVALID",
             Self::RequestBackpressure => "REQUEST_BACKPRESSURE",
@@ -106,6 +123,7 @@ pub struct Error {
     delivery: DeliveryStatus,
     message: Arc<str>,
     broker_reason: Option<u8>,
+    publish_failure: Option<crate::PublishFailure>,
     store_failure: Option<crate::StoreFailure>,
     auth_failure: Option<crate::AuthFailure>,
     redirect_failure: Option<crate::RedirectFailure>,
@@ -129,6 +147,7 @@ impl Error {
             delivery: DeliveryStatus::NotApplicable,
             message: Arc::from(message.into()),
             broker_reason: None,
+            publish_failure: None,
             store_failure: None,
             auth_failure: None,
             redirect_failure: None,
@@ -158,6 +177,7 @@ impl Error {
             delivery,
             message,
             broker_reason: None,
+            publish_failure: None,
             store_failure: None,
             auth_failure: None,
             redirect_failure: None,
@@ -181,6 +201,16 @@ impl Error {
     ) -> Self {
         self.ordered_failure = Some(failure);
         self.retryable = false;
+        self
+    }
+
+    #[must_use]
+    pub const fn publish_failure(&self) -> Option<crate::PublishFailure> {
+        self.publish_failure
+    }
+
+    pub(crate) const fn with_publish_failure(mut self, failure: crate::PublishFailure) -> Self {
+        self.publish_failure = Some(failure);
         self
     }
 
@@ -354,6 +384,7 @@ impl fmt::Debug for Error {
             .field("delivery", &self.delivery)
             .field("message", &self.message)
             .field("broker_reason", &self.broker_reason)
+            .field("publish_failure", &self.publish_failure)
             .field("store_failure", &self.store_failure)
             .field("auth_failure", &self.auth_failure)
             .field("redirect_failure", &self.redirect_failure)

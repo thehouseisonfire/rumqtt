@@ -3265,6 +3265,108 @@ pub unsafe extern "C" fn rumqttc_config_clear_v5_connect_properties(
     })
 }
 
+/// Select native MQTT 5 admission policy for future clients; never mutates a live client.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_publish_admission_policy(
+    config: *mut rumqttc_config,
+    policy: u32,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        let policy = match policy {
+            0 => rumqttc_wrapper_core::PublishAdmissionPolicy::RequireNegotiatedCapabilities,
+            1 => rumqttc_wrapper_core::PublishAdmissionPolicy::EventLoopValidated,
+            _ => return Err(ErrorHandle::argument("unknown publish admission policy")),
+        };
+        let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol else {
+            return Err(ErrorHandle::argument(
+                "publish admission policy requires MQTT 5",
+            ));
+        };
+        v5.publish_admission_policy = policy;
+        Ok(())
+    })
+}
+
+/// Set finite count and byte ceilings; both must be nonzero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_set_v5_publish_budget(
+    config: *mut rumqttc_config,
+    max_outstanding: usize,
+    max_bytes: usize,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        if max_outstanding == 0 || max_bytes == 0 {
+            return Err(ErrorHandle::argument(
+                "publish budget limits must be nonzero",
+            ));
+        }
+        let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol else {
+            return Err(ErrorHandle::argument("publish budget requires MQTT 5"));
+        };
+        v5.publish_budget = rumqttc_wrapper_core::PublishBudgetLimits {
+            max_outstanding,
+            max_bytes,
+        };
+        Ok(())
+    })
+}
+
+/// Restore the wrapper defaults: 1,024 publishes and 16 MiB of retained publish data.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_config_reset_v5_publish_budget(
+    config: *mut rumqttc_config,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    config_update(config, error_out, |config| {
+        let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol else {
+            return Err(ErrorHandle::argument("publish budget requires MQTT 5"));
+        };
+        v5.publish_budget = rumqttc_wrapper_core::PublishBudgetLimits::default();
+        Ok(())
+    })
+}
+
+/// Read coherent live usage without waiting for driver progress. At least one output is required.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_client_v5_publish_budget_snapshot(
+    client: *mut rumqttc_client,
+    outstanding_out: *mut usize,
+    retained_bytes_out: *mut usize,
+    max_outstanding_out: *mut usize,
+    max_bytes_out: *mut usize,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    unsafe {
+        write_optional(outstanding_out, 0);
+        write_optional(retained_bytes_out, 0);
+        write_optional(max_outstanding_out, 0);
+        write_optional(max_bytes_out, 0);
+    }
+    boundary(error_out, client, || {
+        if outstanding_out.is_null()
+            && retained_bytes_out.is_null()
+            && max_outstanding_out.is_null()
+            && max_bytes_out.is_null()
+        {
+            return Err(ErrorHandle::argument("publish budget outputs are NULL"));
+        }
+        let client = unsafe { client_ref(client) }?;
+        let snapshot = client
+            .handle
+            .publish_budget_snapshot()
+            .map_err(|error| core_error(&error, None))?;
+        unsafe {
+            write_optional(outstanding_out, snapshot.outstanding);
+            write_optional(retained_bytes_out, snapshot.retained_bytes);
+            write_optional(max_outstanding_out, snapshot.limits.max_outstanding);
+            write_optional(max_bytes_out, snapshot.limits.max_bytes);
+        }
+        Ok(())
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_config_set_v5_topic_alias_policy(
     config: *mut rumqttc_config,
@@ -6167,6 +6269,20 @@ fn error_detail(
             write_optional(detail_out, value.unwrap_or(0));
         }
         Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_error_publish_failure(
+    error: *const rumqttc_error,
+    present_out: *mut u8,
+    failure_out: *mut u32,
+) -> u32 {
+    error_detail(error, present_out, failure_out, |error| {
+        error
+            .failure_details()
+            .publish
+            .map(std::num::NonZeroU32::get)
     })
 }
 

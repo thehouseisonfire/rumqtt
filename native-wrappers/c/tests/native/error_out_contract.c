@@ -704,6 +704,36 @@ void native_test_error_out_contract(void) {
     /* ERROR_OUT_FAILURE: rumqttc_config_clear_v5_scram */
     EXPECT_FAILURE(rumqttc_config_clear_v5_scram(v4, NULL));
   }
+  {
+    rumqttc_client_t *budget_client = NULL;
+    rumqttc_config_t *budget_config = NULL;
+    size_t count = 99;
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_publish_admission_policy */
+    CHECK(rumqttc_config_set_v5_publish_admission_policy(v5, RUMQTTC_PUBLISH_ADMISSION_REQUIRE_NEGOTIATED_CAPABILITIES, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_publish_admission_policy */
+    EXPECT_FAILURE(rumqttc_config_set_v5_publish_admission_policy(v4, 1, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_set_v5_publish_budget */
+    CHECK(rumqttc_config_set_v5_publish_budget(v5, 8, 1024, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_set_v5_publish_budget */
+    EXPECT_FAILURE(rumqttc_config_set_v5_publish_budget(v5, 0, 1024, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_config_reset_v5_publish_budget */
+    CHECK(rumqttc_config_reset_v5_publish_budget(v5, NULL));
+    /* ERROR_OUT_FAILURE: rumqttc_config_reset_v5_publish_budget */
+    EXPECT_FAILURE(rumqttc_config_reset_v5_publish_budget(v4, NULL));
+    CHECK(rumqttc_config_new(RUMQTTC_PROTOCOL_V5, &budget_config, NULL));
+    CHECK(rumqttc_config_set_broker(budget_config, native_string("127.0.0.1"), native_test_port(), NULL));
+    CHECK(rumqttc_config_set_client_id(budget_config, native_string("error-out-budget"), NULL));
+    CHECK(rumqttc_client_start(budget_config, &budget_client, NULL));
+    rumqttc_config_destroy(budget_config);
+    /* ERROR_OUT_SUCCESS: rumqttc_client_v5_publish_budget_snapshot */
+    CHECK(rumqttc_client_v5_publish_budget_snapshot(budget_client, &count, NULL, NULL, NULL, NULL));
+    REQUIRE(count == 0);
+    /* ERROR_OUT_FAILURE: rumqttc_client_v5_publish_budget_snapshot */
+    EXPECT_FAILURE(rumqttc_client_v5_publish_budget_snapshot(NULL, &count, NULL, NULL, NULL, NULL));
+    REQUIRE(count == 0);
+    rumqttc_event_destroy(native_wait_event(budget_client, RUMQTTC_EVENT_CONNECTED));
+    native_close_destroy(budget_client);
+  }
   rumqttc_config_destroy(v4);
   rumqttc_config_destroy(v5);
 

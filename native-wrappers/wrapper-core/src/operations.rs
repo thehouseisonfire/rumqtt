@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use flume::{Receiver, Sender};
+use futures_util::FutureExt;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use crate::completion::CompletionCell;
@@ -229,6 +230,34 @@ pub fn resolve_pending(
     }
 }
 
+const READY_COMPLETION_BATCH_SIZE: usize = 64;
+
+/// Retire ready wrapper work before the next MQTT poll without waiting for an
+/// unbounded registration queue or ready-result backlog to become empty.
+/// Returns whether any work was handled so the caller can yield to the I/O reactor.
+pub fn process_ready_completions(
+    completions: &Receiver<CompletionRegistration>,
+    pending: &mut FuturesUnordered<PendingFuture>,
+    senders: &mut HashMap<OperationId, PendingSender>,
+) -> bool {
+    let mut handled = false;
+    for _ in 0..READY_COMPLETION_BATCH_SIZE {
+        let Ok(registration) = completions.try_recv() else {
+            break;
+        };
+        accept_registration(registration, pending, senders);
+        handled = true;
+    }
+    for _ in 0..READY_COMPLETION_BATCH_SIZE {
+        let Some(Some(result)) = pending.next().now_or_never() else {
+            break;
+        };
+        resolve_pending(result, senders);
+        handled = true;
+    }
+    handled
+}
+
 pub async fn drain_pending(
     pending: &mut FuturesUnordered<PendingFuture>,
     senders: &mut HashMap<OperationId, PendingSender>,
@@ -270,6 +299,101 @@ pub fn fail_unfinished(senders: &mut HashMap<OperationId, PendingSender>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ready_registrations_leave_backlog_for_later_arbitration() {
+        let (registry, receivers) = OperationRegistry::new(1);
+        let (completions, _) = receivers.into_parts();
+        let admissions: Vec<_> = (0..=READY_COMPLETION_BATCH_SIZE * 2)
+            .map(|_| {
+                registry
+                    .register(Box::pin(async { Ok(Completion::Acknowledged).into() }))
+                    .unwrap()
+            })
+            .collect();
+        let mut pending = FuturesUnordered::new();
+        let mut senders = HashMap::new();
+
+        assert!(process_ready_completions(
+            &completions,
+            &mut pending,
+            &mut senders
+        ));
+        assert_eq!(
+            completions.len(),
+            admissions.len() - READY_COMPLETION_BATCH_SIZE
+        );
+        for admission in &admissions[..READY_COMPLETION_BATCH_SIZE] {
+            assert_eq!(
+                admission.completion.try_wait().unwrap(),
+                Some(Completion::Acknowledged)
+            );
+        }
+        assert!(
+            admissions
+                .last()
+                .unwrap()
+                .completion
+                .try_wait()
+                .unwrap()
+                .is_none()
+        );
+
+        while process_ready_completions(&completions, &mut pending, &mut senders) {}
+        for admission in admissions {
+            assert_eq!(
+                admission.completion.try_wait().unwrap(),
+                Some(Completion::Acknowledged)
+            );
+        }
+        assert!(senders.is_empty());
+    }
+
+    #[test]
+    fn ready_results_leave_backlog_and_do_not_wait_for_unready_results() {
+        let (registry, receivers) = OperationRegistry::new(1);
+        let (completions, _) = receivers.into_parts();
+        let unready = registry.register(Box::pin(std::future::pending())).unwrap();
+        let ready: Vec<_> = (0..=READY_COMPLETION_BATCH_SIZE * 2)
+            .map(|_| {
+                registry
+                    .register(Box::pin(async { Ok(Completion::Acknowledged).into() }))
+                    .unwrap()
+            })
+            .collect();
+        let mut pending = FuturesUnordered::new();
+        let mut senders = HashMap::new();
+        while let Ok(registration) = completions.try_recv() {
+            accept_registration(registration, &pending, &mut senders);
+        }
+
+        assert!(process_ready_completions(
+            &completions,
+            &mut pending,
+            &mut senders
+        ));
+        assert_eq!(pending.len(), ready.len() + 1 - READY_COMPLETION_BATCH_SIZE);
+        assert!(unready.completion.try_wait().unwrap().is_none());
+        assert_eq!(
+            ready
+                .iter()
+                .filter(|admission| admission.completion.try_wait().unwrap().is_some())
+                .count(),
+            READY_COMPLETION_BATCH_SIZE,
+        );
+
+        while process_ready_completions(&completions, &mut pending, &mut senders) {}
+        for admission in ready {
+            assert_eq!(
+                admission.completion.try_wait().unwrap(),
+                Some(Completion::Acknowledged)
+            );
+        }
+        assert_eq!(pending.len(), 1);
+        assert_eq!(senders.len(), 1);
+        registry.fail_all(&Error::new(ErrorKind::Shutdown, "test teardown"));
+        assert!(unready.completion.try_wait().is_err());
+    }
 
     #[test]
     fn completion_is_resolved_exactly_once() {

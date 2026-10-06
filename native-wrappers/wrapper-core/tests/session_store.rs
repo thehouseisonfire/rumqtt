@@ -490,14 +490,18 @@ fn store_completion_races_shutdown_and_abandonment_without_retaining_owner() {
                 let mut client = support::start(config).unwrap();
                 let _events = client.take_events().unwrap();
                 entered_rx.recv_timeout(DEADLINE).unwrap();
+                // Publish admission is gated until MQTT 5 checkpoint recovery finishes.
+                // A subscription still exercises queued-operation cleanup during store I/O.
                 let pending = client
                     .handle()
-                    .try_admit(Command::Publish(rumqttc_wrapper_core::PublishCommand {
-                        topic: "queued".into(),
-                        payload: b"queued during load".as_slice().into(),
-                        qos: rumqttc_wrapper_core::QoS::AtMostOnce,
-                        retain: false,
-                        protocol: rumqttc_wrapper_core::PublishProtocolOptions::VersionNeutral,
+                    .try_admit(Command::Subscribe(rumqttc_wrapper_core::SubscribeCommand {
+                        filters: vec![rumqttc_wrapper_core::Subscription {
+                            filter: "queued".into(),
+                            qos: rumqttc_wrapper_core::QoS::AtMostOnce,
+                            protocol:
+                                rumqttc_wrapper_core::SubscriptionProtocolOptions::VersionNeutral,
+                        }],
+                        protocol: rumqttc_wrapper_core::SubscribeProtocolOptions::VersionNeutral,
                     }))
                     .unwrap();
                 let handle = client.handle();

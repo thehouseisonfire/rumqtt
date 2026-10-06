@@ -2424,12 +2424,15 @@ impl MqttState {
     }
 
     fn replay_collision_publish(&mut self, pkid: u16) -> Option<Packet> {
-        self.check_collision(pkid).map(|(publish, notice)| {
+        self.check_collision(pkid).map(|(publish, mut notice)| {
             let pkid = publish.pkid;
             let replay_publish = self.publish_for_replay_tracking(&publish);
             self.ensure_outgoing_tracking_capacity(usize::from(pkid) + 1);
             self.reserve_outbound_pkid(pkid)
                 .expect("collision replay packet identifier should have been released");
+            if let Some(notice) = &mut notice {
+                notice.mark_transmission_started();
+            }
             self.outgoing_pub[usize::from(pkid)] = Some(replay_publish);
             self.outgoing_pub_order.push_back(pkid);
             self.outgoing_pub_notice[usize::from(pkid)] = notice;
@@ -2682,6 +2685,9 @@ impl MqttState {
                 self.reserve_outbound_pkid(pkid)?;
             }
             let replay_publish = self.publish_for_replay_tracking(&publish);
+            if let Some(notice) = &mut notice {
+                notice.mark_transmission_started();
+            }
             self.outgoing_pub[usize::from(pkid)] = Some(replay_publish);
             self.outgoing_pub_order.push_back(pkid);
             self.outgoing_pub_notice[usize::from(pkid)] = notice.take();
@@ -2713,6 +2719,9 @@ impl MqttState {
         self.events.push_back(event);
 
         if publish.qos == QoS::AtMostOnce {
+            if let Some(notice) = &mut notice {
+                notice.mark_transmission_started();
+            }
             Ok((Some(Packet::Publish(publish)), notice.take()))
         } else {
             Ok((Some(Packet::Publish(publish)), None))
@@ -2725,6 +2734,9 @@ impl MqttState {
         notice: Option<PublishNoticeTx>,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
         let pubrel = self.save_pubrel_with_notice(pubrel, notice)?;
+        if let Some(notice) = &mut self.outgoing_rel_notice[usize::from(pubrel.pkid)] {
+            notice.mark_transmission_started();
+        }
 
         debug!("Pubrel. Pkid = {}", pubrel.pkid);
 

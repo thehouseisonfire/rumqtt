@@ -529,3 +529,12 @@ from effective `session_resumed` and reports `BrokerOnlySessionResume` when that
 explicit compatibility policy was used. It is committed only after all
 connection-establishment barriers succeed and is cleared on connection cleanup.
 Raw CONNACK packets remain unchanged.
+
+Builder `publish_budget(PublishBudgetLimits { max_outstanding, max_bytes })` opts
+into finite retained publish accounting across channel, replay and protocol
+state, including restored PUBLISH/PUBREL. Both values must be nonzero. Direct
+native builders remain unbudgeted by default. `publish_budget_snapshot()`
+observes current usage. `PublishNotice::wait_outcome[_async]` additionally reports
+conservative transmission history while existing notice methods keep their
+result API. The [wrapper accounting contract](../native-wrappers/wrapper-core/publish-admission.md)
+describes byte charges, recovery preflight and separate allocation limits.

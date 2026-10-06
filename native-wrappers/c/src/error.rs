@@ -20,6 +20,7 @@ pub const PERSISTENCE_ERROR: u32 = 12;
 pub const AUTHENTICATION_ERROR: u32 = 13;
 pub const REDIRECT_ERROR: u32 = 14;
 pub const WEBSOCKET_HANDSHAKE_ERROR: u32 = 15;
+pub const LOCAL_REJECTED: u32 = 16;
 
 pub const ERROR_NONE: u32 = 0;
 const ERROR_CONFIGURATION: u32 = 1;
@@ -61,6 +62,7 @@ pub struct FailureDetails {
     pub websocket: Option<NonZeroU32>,
     pub tls_callback: Option<rumqttc_wrapper_core::TlsCallbackFailure>,
     pub ordered: Option<NonZeroU32>,
+    pub publish: Option<NonZeroU32>,
 }
 const EMPTY_FAILURES: FailureDetails = FailureDetails {
     store: None,
@@ -70,6 +72,7 @@ const EMPTY_FAILURES: FailureDetails = FailureDetails {
     websocket: None,
     tls_callback: None,
     ordered: None,
+    publish: None,
 };
 
 impl FailureDetails {
@@ -77,6 +80,9 @@ impl FailureDetails {
         Self {
             ordered: error
                 .ordered_disconnect_failure()
+                .and_then(|failure| NonZeroU32::new(failure as u32)),
+            publish: error
+                .publish_failure()
                 .and_then(|failure| NonZeroU32::new(failure as u32)),
             store: error.store_failure().and_then(|failure| {
                 NonZeroU32::new(match failure {
@@ -91,6 +97,7 @@ impl FailureDetails {
                     rumqttc_wrapper_core::StoreFailure::Panic => 9,
                     rumqttc_wrapper_core::StoreFailure::InUse => 10,
                     rumqttc_wrapper_core::StoreFailure::KeyMismatch => 11,
+                    rumqttc_wrapper_core::StoreFailure::PublishBudgetExceeded => 12,
                 })
             }),
             auth: error.auth_failure().and_then(|failure| {
@@ -174,6 +181,7 @@ impl ErrorHandle {
                 AUTHENTICATION_ERROR => "AUTHENTICATION",
                 REDIRECT_ERROR => "REDIRECT",
                 WEBSOCKET_HANDSHAKE_ERROR => "WEBSOCKET_HANDSHAKE",
+                LOCAL_REJECTED => "PUBLISH_REJECTED",
                 _ => "UNKNOWN",
             },
             source_chain: Arc::new(message.clone()),
@@ -270,11 +278,16 @@ fn core_status(error: &Error) -> u32 {
         WEBSOCKET_HANDSHAKE_ERROR
     } else if error.delivery_status() == DeliveryStatus::Ambiguous {
         AMBIGUOUS
+    } else if error.store_failure().is_some() {
+        PERSISTENCE_ERROR
+    } else if error.publish_failure().is_some()
+        && (error.delivery_status() == DeliveryStatus::Rejected
+            || error.code() == rumqttc_wrapper_core::ErrorCode::PublishRejected)
+    {
+        LOCAL_REJECTED
     } else if error.broker_reason().is_some() || error.delivery_status() == DeliveryStatus::Rejected
     {
         BROKER_REJECTED
-    } else if error.store_failure().is_some() {
-        PERSISTENCE_ERROR
     } else if error.auth_failure().is_some() {
         AUTHENTICATION_ERROR
     } else if error.redirect_failure().is_some() {

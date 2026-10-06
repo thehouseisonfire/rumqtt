@@ -27,6 +27,10 @@ mod operations;
 mod ordered;
 pub use ordered::{OrderedDisconnectFailure, OrderedShutdownDiagnostics, OrderedShutdownPhase};
 mod protocol;
+mod publish;
+pub use publish::{
+    PublishAdmissionPolicy, PublishBudgetLimits, PublishBudgetSnapshot, PublishFailure,
+};
 mod proxy;
 mod redirect;
 mod runtime;

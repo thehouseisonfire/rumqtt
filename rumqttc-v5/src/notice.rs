@@ -191,7 +191,15 @@ fn notice_channel<T, E>() -> (NoticeTx<T, E>, NoticeRx<T, E>) {
 
 /// Wait handle returned by tracked publish APIs.
 #[derive(Debug)]
-pub struct PublishNotice(NoticeRx<PublishResult, PublishNoticeError>);
+pub struct PublishNotice(oneshot::Receiver<PublishNoticeOutcome>);
+
+/// Native terminal result with conservative transmission history.
+/// `possibly_transmitted=false` proves no packet was handed toward network output.
+#[derive(Debug)]
+pub struct PublishNoticeOutcome {
+    pub result: Result<PublishResult, PublishNoticeError>,
+    pub possibly_transmitted: bool,
+}
 
 impl PublishNotice {
     /// Wait for the publish protocol result by blocking the current thread.
@@ -205,7 +213,7 @@ impl PublishNotice {
     ///
     /// Panics if called in an async context.
     pub fn wait(self) -> PublishNoticeResult {
-        self.0.wait_blocking()
+        self.wait_outcome().result
     }
 
     /// Wait for the publish protocol result asynchronously.
@@ -215,7 +223,26 @@ impl PublishNotice {
     /// Returns an error if the event loop drops the notice sender or if the
     /// publish fails before a protocol result is available.
     pub async fn wait_async(self) -> PublishNoticeResult {
-        self.0.wait_async().await
+        self.wait_outcome_async().await.result
+    }
+
+    /// Wait for a native outcome, including whether transmission may have started.
+    ///
+    /// # Panics
+    /// Panics if called in an async context.
+    pub fn wait_outcome(self) -> PublishNoticeOutcome {
+        self.0.blocking_recv().unwrap_or(PublishNoticeOutcome {
+            result: Err(PublishNoticeError::Recv),
+            possibly_transmitted: true,
+        })
+    }
+
+    /// Await a native outcome. Dropping this observer never cancels admitted work.
+    pub async fn wait_outcome_async(self) -> PublishNoticeOutcome {
+        self.0.await.unwrap_or(PublishNoticeOutcome {
+            result: Err(PublishNoticeError::Recv),
+            possibly_transmitted: true,
+        })
     }
 
     /// Wait for publish completion and map broker rejection reasons to
@@ -541,57 +568,84 @@ impl AuthNotice {
     }
 }
 
-#[cfg(not(feature = "ordered-shutdown"))]
 #[derive(Debug)]
-pub struct PublishNoticeTx(NoticeTx<PublishResult, PublishNoticeError>);
-
-#[cfg(feature = "ordered-shutdown")]
-#[derive(Debug)]
-pub struct PublishNoticeTx(
-    NoticeTx<PublishResult, PublishNoticeError>,
-    Option<crate::disconnect::Observation>,
-);
+pub struct PublishNoticeTx {
+    sender: Option<oneshot::Sender<PublishNoticeOutcome>>,
+    reservation: Option<crate::publish_budget::PublishReservation>,
+    possibly_transmitted: bool,
+    #[cfg(feature = "ordered-shutdown")]
+    observation: Option<crate::disconnect::Observation>,
+}
 
 impl PublishNoticeTx {
-    #[cfg(feature = "ordered-shutdown")]
     pub(crate) const fn internal() -> Self {
-        Self(NoticeTx(None), None)
+        Self {
+            sender: None,
+            reservation: None,
+            possibly_transmitted: false,
+            #[cfg(feature = "ordered-shutdown")]
+            observation: None,
+        }
     }
 
     pub(crate) fn new() -> (Self, PublishNotice) {
-        let (tx, rx) = notice_channel();
-        #[cfg(not(feature = "ordered-shutdown"))]
-        {
-            (Self(tx), PublishNotice(rx))
-        }
-        #[cfg(feature = "ordered-shutdown")]
-        {
-            (Self(tx, None), PublishNotice(rx))
+        let (sender, receiver) = oneshot::channel();
+        (
+            Self {
+                sender: Some(sender),
+                ..Self::internal()
+            },
+            PublishNotice(receiver),
+        )
+    }
+
+    pub(crate) fn reserve(
+        &mut self,
+        reservation: Option<crate::publish_budget::PublishReservation>,
+    ) {
+        debug_assert!(self.reservation.is_none());
+        self.reservation = reservation;
+    }
+
+    pub(crate) fn mark_transmission_started(&mut self) {
+        self.possibly_transmitted = true;
+    }
+
+    pub(crate) fn rollback_admission(&mut self) {
+        if let Some(reservation) = self.reservation.take() {
+            reservation.rollback();
         }
     }
 
     pub(crate) fn success(self, result: PublishResult) {
-        #[cfg(feature = "ordered-shutdown")]
-        if let Some(observation) = self.1 {
-            observation.finish(validate_v5_publish_completion(&result));
-        }
-
-        self.0.success(result);
+        self.finish(Ok(result));
+    }
+    pub(crate) fn error(self, error: PublishNoticeError) {
+        self.finish(Err(error));
     }
 
-    pub(crate) fn error(self, err: PublishNoticeError) {
+    fn finish(mut self, result: Result<PublishResult, PublishNoticeError>) {
         #[cfg(feature = "ordered-shutdown")]
-        if let Some(observation) = self.1 {
-            observation.finish(Err(err.clone()));
+        if let Some(observation) = self.observation.take() {
+            observation.finish(match &result {
+                Ok(result) => validate_v5_publish_completion(result),
+                Err(error) => Err(error.clone()),
+            });
         }
-
-        self.0.error(err);
+        // Release before waking observers. Destruction of an unprocessed sender also releases.
+        drop(self.reservation.take());
+        if let Some(sender) = self.sender.take() {
+            _ = sender.send(PublishNoticeOutcome {
+                result,
+                possibly_transmitted: self.possibly_transmitted,
+            });
+        }
     }
 
     #[cfg(feature = "ordered-shutdown")]
     pub(crate) fn observe(&mut self, ledger: &std::sync::Arc<crate::disconnect::Ledger>) {
-        if self.1.is_none() {
-            self.1 = Some(crate::disconnect::Observation::new(ledger.clone()));
+        if self.observation.is_none() {
+            self.observation = Some(crate::disconnect::Observation::new(ledger.clone()));
         }
     }
 }

@@ -37,6 +37,7 @@ branches, including disabled ones, so API additions require an explicit review.
 | v5 | option | set_network_options, set_connect_timeout | supported | CommonConfig.network plus one total connection-timeout input | backend config_tests |
 | v4, v5 | operation | builder | supported | NativeClient.start owns dedicated construction; start_in retains explicit shared execution with the same driver lifecycle | config, lifecycle, execution, native_execution |
 | v4, v5 | operation | from_sender, from_senders | intentionally omitted | Foreign channels bypass managed admission/completion; explicitly out of scope | lifecycle |
+| v5 | option | PublishAdmissionPolicy, publish_budget | supported | Strict default; native event-loop validation is selectable. Both modes enforce finite count/data bounds across replay and checkpoint recovery. | publish_admission, native_publish_admission, native publish_budget tests |
 | v4, v5 | operation | publish, try_publish, publish_tracked, try_publish_tracked | supported | PublishCommand always provides tracked terminal observation | protocol_parity, shutdown, session_store |
 | v4, v5 | operation | subscribe, subscribe_many, subscribe_tracked, subscribe_many_tracked, try_subscribe, try_subscribe_many, try_subscribe_tracked, try_subscribe_many_tracked | supported | SubscribeCommand owns one or more filters; local admission differs from SUBACK | protocol_parity |
 | v4, v5 | operation | unsubscribe, unsubscribe_many, unsubscribe_tracked, unsubscribe_many_tracked, try_unsubscribe, try_unsubscribe_many, try_unsubscribe_tracked, try_unsubscribe_many_tracked | supported | UnsubscribeCommand owns one or more filters and tracked result | protocol_parity |
@@ -271,3 +272,17 @@ and verifies capacity, start/shutdown races, peer progress and panic containment
 Native C fixtures verify callback blocking-wait rejection, retained-token
 release ordering and unload after explicit context teardown. Pumping and foreign
 reactor integration remain unsupported.
+## MQTT 5 publish admission (TODO32)
+
+MQTT 5 publish admission adds C policy/limit setters, usage snapshots,
+structured local failure reasons and `LOCAL_REJECTED`, preserving C record
+layouts and the strict policy default. JavaScript/Python inherit finite budgets
+without new selectors. See [the resource and retry contract](publish-admission.md).
+In-memory Rust tests cover negotiated deferral, repeated reconnect replay,
+QoS 2 reservation lifetime, observer cancellation, shutdown and restore preflight.
+`native_publish_admission_offline` executes public C APIs using a held transport
+callback: strict default, aliases, channel/count/byte rejection, config isolation,
+observer release and shutdown reclamation all run without sockets.
+The native C broker fixture covers selectors, configuration reuse, nonblocking
+channel/count failure, connected deferral and repeated replay with changed QoS.
+Native C broker execution requires a host that permits loopback sockets.

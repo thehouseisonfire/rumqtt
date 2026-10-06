@@ -380,3 +380,14 @@ set_tests_properties(rumqttc-native-ordered-shutdown PROPERTIES LABELS "native;s
 add_test(NAME rumqttc-native-redirect-authority
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --redact --binary $<TARGET_FILE:rumqttc-native-redirect-authority>)
 set_tests_properties(rumqttc-native-redirect-authority PROPERTIES LABELS "native;redirect;persistence" TIMEOUT 90)
+rumqttc_native_target(rumqttc-native-publish-admission native_publish_admission.c)
+add_test(NAME rumqttc-native-publish-admission
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-publish-admission>)
+set_tests_properties(rumqttc-native-publish-admission PROPERTIES LABELS "native;wire;admission" TIMEOUT 60)
+
+rumqttc_native_target(rumqttc-native-publish-admission-offline native_publish_admission_offline.c)
+if(MSVC)
+    target_compile_options(rumqttc-native-publish-admission-offline PRIVATE /experimental:c11atomics)
+endif()
+add_test(NAME rumqttc-native-publish-admission-offline COMMAND rumqttc-native-publish-admission-offline)
+set_tests_properties(rumqttc-native-publish-admission-offline PROPERTIES LABELS "native;admission;ownership" TIMEOUT 30)

@@ -126,6 +126,31 @@ impl BackendClient {
                 .into()
         }))
     }
+    pub(crate) fn publish_waiter(&self) -> Option<rumqttc_v5::PublishAdmissionWaiter> {
+        match self {
+            Self::V4(_) => None,
+            Self::V5(client) => client.publish_admission_waiter(),
+        }
+    }
+
+    pub(crate) fn publish_budget_snapshot(&self) -> Result<crate::PublishBudgetSnapshot> {
+        let Self::V5(client) = self else {
+            return Err(protocol_option_error("publish budget requires MQTT 5"));
+        };
+        let snapshot = client
+            .publish_budget_snapshot()
+            .expect("wrapper MQTT 5 clients always have a budget");
+        Ok(crate::PublishBudgetSnapshot {
+            outstanding: snapshot.outstanding,
+            retained_bytes: snapshot.retained_bytes,
+            limits: crate::PublishBudgetLimits {
+                max_outstanding: snapshot.limits.max_outstanding,
+                max_bytes: snapshot.limits.max_bytes,
+            },
+            recovery_pending: snapshot.recovery_pending,
+        })
+    }
+
     pub(crate) fn try_publish(&self, command: PublishCommand) -> Result<CompletionFuture> {
         match self {
             Self::V4(client) => {
@@ -149,7 +174,7 @@ impl BackendClient {
                     .try_publish_tracked(command.topic, command.payload, options)
                     .map_err(|error| v5::map_client_error(&error))?;
                 Ok(Box::pin(async move {
-                    v5::map_publish_notice(notice.wait_async().await)
+                    v5::map_publish_outcome(notice.wait_outcome_async().await)
                 }))
             }
         }

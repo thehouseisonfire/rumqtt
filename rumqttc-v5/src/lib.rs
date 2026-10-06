@@ -46,6 +46,8 @@ mod notice;
 pub use disconnect::{DisconnectNotice, DisconnectNoticeError, ShutdownPhase};
 
 mod publish_admission;
+mod publish_budget;
+pub use publish_budget::{PublishBudgetError, PublishBudgetLimits, PublishBudgetSnapshot};
 mod redirect;
 mod session;
 mod srv;
@@ -76,7 +78,7 @@ pub use mqttbytes::v5::*;
 pub use mqttbytes::*;
 pub use notice::{
     AuthNotice, AuthNoticeError, NoticeFailureReason, PublishNotice, PublishNoticeError,
-    PublishResult, SubscribeNotice, SubscribeNoticeError, UnsubscribeNotice,
+    PublishNoticeOutcome, PublishResult, SubscribeNotice, SubscribeNoticeError, UnsubscribeNotice,
     UnsubscribeNoticeError,
 };
 pub use publish_admission::{

@@ -919,6 +919,21 @@ after termination, every observer receives the same success or error. A wait
 deadline does not become the completion's terminal result, so a later observer
 can still receive the operation outcome.
 
+MQTT 5 preserves strict negotiated-capability admission by default. Select
+`RUMQTTC_PUBLISH_ADMISSION_EVENT_LOOP_VALIDATED` with
+`rumqttc_config_set_v5_publish_admission_policy()` for offline process-local
+queueing and deferred connected checks. All MQTT 5 wrapper clients enforce
+1,024 outstanding publishes and 16 MiB charged data by default; configure these
+with `rumqttc_config_set_v5_publish_budget()`, restore defaults with
+`rumqttc_config_reset_v5_publish_budget()`, and inspect usage with
+`rumqttc_client_v5_publish_budget_snapshot()`. Both C publish entry points remain
+nonblocking. `rumqttc_error_publish_failure()` distinguishes capability waits,
+channel exhaustion, byte/count exhaustion and local rejection.
+`RUMQTTC_LOCAL_REJECTED` distinguishes local checks from broker ACK rejection;
+previously transmitted replay failures remain ambiguous. Read the
+[full accounting, recovery and retry contract](../wrapper-core/publish-admission.md)
+before choosing an application retry/durability policy.
+
 Use `rumqttc_error_code()` for fine-grained machine-readable handling. Local
 API misuse reports `INVALID_STATE`, premature completion access reports
 `WOULD_BLOCK`, and `SHUTDOWN` is reserved for failures caused by the client
@@ -1066,6 +1081,7 @@ The [`examples`](examples) directory contains warning-clean C11 programs for:
 
 - [single-threaded event polling](examples/event_polling.c);
 - [publishing from multiple native threads](examples/multithreaded_publishing.c);
+- [bounded offline MQTT 5 publishing](examples/offline_publishing.c);
 - [polling and timed waiting for tracked completions](examples/tracked_completion.c);
 - [manual acknowledgement](examples/manual_acknowledgement.c);
 - [graceful and immediate shutdown](examples/shutdown.c);

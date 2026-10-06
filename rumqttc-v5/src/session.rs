@@ -975,6 +975,8 @@ const fn decode_retain_forward_rule(
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionRestoreError {
+    #[error("persisted publish work exceeds the configured retained-work budget")]
+    PublishBudgetExceeded,
     #[error("unsupported persisted session format version {actual}")]
     UnsupportedFormatVersion { actual: u16 },
     #[error("persisted session belongs to client '{persisted}', not '{configured}'")]

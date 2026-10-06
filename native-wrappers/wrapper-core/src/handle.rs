@@ -444,12 +444,13 @@ impl ClientHandle {
         .map_err(|error| self.shared.contextualize(error))
     }
 
-    /// Waits asynchronously for bounded request-channel capacity.
+    /// Waits asynchronously for request-channel capacity and, for MQTT 5, negotiated
+    /// capabilities, checkpoint recovery and retained publish capacity.
     ///
     /// # Errors
     ///
     /// Returns an error when the command is invalid, the request channel closes, or the client is
-    /// shutting down.
+    /// shutting down. A publish exceeding its individual byte limit fails without waiting.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "mqtt.wrapper.admit", skip_all)
@@ -565,8 +566,33 @@ impl ClientHandle {
     }
 
     async fn publish(&self, command: PublishCommand) -> Result<Admission> {
-        self.retry_on_backpressure(|| self.try_publish(command.clone()))
-            .await
+        loop {
+            let native = self.shared.backend.publish_waiter();
+            let progress = self.shared.shutdown.notified();
+            tokio::pin!(progress);
+            progress.as_mut().enable();
+            match self.try_publish(command.clone()) {
+                Err(error) if error.kind() == ErrorKind::Backpressure => {
+                    if let Some(native) = native {
+                        tokio::select! { () = native.wait_async() => {}, () = &mut progress => {} }
+                    } else {
+                        progress.await;
+                    }
+                }
+                result => return result,
+            }
+        }
+    }
+
+    /// Coherent live publish accounting. Available only on MQTT 5 clients.
+    ///
+    /// # Errors
+    /// Returns an admission error for MQTT 3.1.1 clients.
+    pub fn publish_budget_snapshot(&self) -> Result<crate::PublishBudgetSnapshot> {
+        self.shared
+            .backend
+            .publish_budget_snapshot()
+            .map_err(|error| self.shared.contextualize(error))
     }
 
     fn try_subscribe(&self, command: SubscribeCommand) -> Result<Admission> {

@@ -39,6 +39,13 @@ and wrapper-control loops; there are no hard peer-latency guarantees.
 See the [C example](../c/examples/shared_execution.c) and
 [measurement method and results](benches/execution.md).
 
+## Publish admission
+
+MQTT 5 clients use strict negotiated-capability admission and finite publish
+limits (1,024 outstanding / 16 MiB charged data) by default. See the
+[publish admission and recovery contract](publish-admission.md) for policy
+selection, accounting, completion and retry semantics.
+
 ## Protocol support contract
 
 This crate supports both MQTT 3.1.1 and MQTT 5 through one shared API. Each
@@ -114,7 +121,9 @@ uses an independent channel and remains observable when the ordinary event
 buffer is full.
 Wrapper control traffic and MQTT polling use fair arbitration, so sustained
 diagnostics or completion traffic cannot indefinitely suppress network and
-keep-alive progress.
+keep-alive progress. MQTT 5 processes only bounded registration and ready-result
+batches before arbitration and yields after handling that work, preserving I/O,
+authentication-deadline and shutdown progress during overlapping reauthentication.
 
 Admission is distinct from MQTT completion. Dropping or timing out a
 `CompletionHandle` never cancels work already admitted to rumqttc.

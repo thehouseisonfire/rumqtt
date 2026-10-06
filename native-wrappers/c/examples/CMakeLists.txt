@@ -34,6 +34,7 @@ set(RUMQTTC_C_EXAMPLES
     event_polling
     multithreaded_publishing
     tracked_completion
+    offline_publishing
     manual_acknowledgement
     session_store
     authenticator

@@ -7,6 +7,9 @@ use tokio::sync::Notify;
 
 use crate::mqttbytes::QoS;
 use crate::mqttbytes::v5::{ConnAck, Publish};
+use crate::publish_budget::{
+    PublishBudget, PublishBudgetError, PublishBudgetLimits, PublishReservation, publish_charge,
+};
 
 /// Selects where MQTT 5 publish requests are validated against negotiated broker capabilities.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -37,10 +40,10 @@ pub enum PublishAdmissionError {
     TopicAliasUnmapped(u16),
 }
 
-/// Change notification returned when strict admission needs an active connection's capabilities.
+/// Change notification for capabilities, recovery, publish budget or request-channel capacity.
 #[derive(Clone)]
 pub struct PublishAdmissionWaiter {
-    admission: Arc<ManagedPublishAdmission>,
+    progress: Arc<PublishProgress>,
     revision: u64,
 }
 
@@ -53,21 +56,38 @@ impl fmt::Debug for PublishAdmissionWaiter {
     }
 }
 
+/// Separate lock from capability state: terminal senders can release capacity during cleanup.
+#[derive(Debug, Default)]
+pub(crate) struct PublishProgress {
+    revision: Mutex<u64>,
+    changed: Notify,
+    changed_blocking: Condvar,
+}
+impl PublishProgress {
+    pub(crate) fn notify(&self) {
+        let mut revision = self
+            .revision
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *revision = revision.wrapping_add(1);
+        drop(revision);
+        self.changed.notify_waiters();
+        self.changed_blocking.notify_all();
+    }
+}
 impl PublishAdmissionWaiter {
-    /// Waits until capability, reconnect, or request-channel progress makes a retry meaningful.
-    ///
-    /// Cancelling this future does not admit a request or change Topic Alias state.
+    /// Wait for capability, recovery, retained-work capacity or channel progress.
+    /// Cancelling this wait never admits a request.
     pub async fn wait_async(&self) {
         loop {
-            let changed = self.admission.changed.notified();
+            let changed = self.progress.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if self
-                .admission
-                .state
+            if *self
+                .progress
+                .revision
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .revision
                 != self.revision
             {
                 return;
@@ -75,17 +95,16 @@ impl PublishAdmissionWaiter {
             changed.await;
         }
     }
-
     pub(crate) fn wait_blocking(&self) {
-        let state = self
-            .admission
-            .state
+        let revision = self
+            .progress
+            .revision
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         drop(
-            self.admission
+            self.progress
                 .changed_blocking
-                .wait_while(state, |state| state.revision == self.revision)
+                .wait_while(revision, |revision| *revision == self.revision)
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
     }
@@ -100,7 +119,6 @@ struct Capabilities {
 
 #[derive(Debug)]
 struct AdmissionState {
-    revision: u64,
     closed: bool,
     generation: u64,
     capabilities: Option<Capabilities>,
@@ -110,14 +128,16 @@ struct AdmissionState {
 #[derive(Debug)]
 pub struct ManagedPublishAdmission {
     state: Mutex<AdmissionState>,
-    changed: Notify,
-    changed_blocking: Condvar,
+    policy: PublishAdmissionPolicy,
+    pub(crate) budget: Option<Arc<PublishBudget>>,
+    progress: Arc<PublishProgress>,
 }
 
 #[derive(Debug)]
 pub enum AdmissionFailure {
     CapabilitiesUnavailable(PublishAdmissionWaiter),
     Rejected(PublishAdmissionError),
+    Budget(PublishBudgetError, Option<PublishAdmissionWaiter>),
     Closed,
 }
 
@@ -134,32 +154,86 @@ impl Drop for ConnectionCleanupGuard<'_> {
             .expect("cleanup guard owns admission state");
         state.capabilities = None;
         state.aliases.clear();
-        state.revision = state.revision.wrapping_add(1);
         drop(state);
         self.admission.notify_waiters();
     }
 }
 
 impl ManagedPublishAdmission {
+    /// Close recovery admission after any producer transaction already in progress.
+    /// The lock is released before invoking or awaiting the session store.
+    pub(crate) fn begin_recovery(&self) {
+        let Some(budget) = &self.budget else {
+            return;
+        };
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        budget.set_recovery_pending(true);
+        drop(state);
+        self.notify_waiters();
+    }
+
+    #[cfg(test)]
     pub(crate) fn new() -> Arc<Self> {
+        Self::configured(
+            PublishAdmissionPolicy::RequireNegotiatedCapabilities,
+            None,
+            false,
+        )
+    }
+
+    pub(crate) fn configured(
+        policy: PublishAdmissionPolicy,
+        limits: Option<PublishBudgetLimits>,
+        recovery: bool,
+    ) -> Arc<Self> {
+        let progress = Arc::new(PublishProgress::default());
         Arc::new(Self {
             state: Mutex::new(AdmissionState {
-                revision: 0,
                 closed: false,
                 generation: 0,
                 capabilities: None,
                 aliases: HashMap::new(),
             }),
-            changed: Notify::new(),
-            changed_blocking: Condvar::new(),
+            policy,
+            budget: limits
+                .map(|limits| PublishBudget::new(limits, Arc::clone(&progress), recovery)),
+            progress,
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn try_admit<T, E>(
         self: &Arc<Self>,
         publish: &Publish,
         send: impl FnOnce() -> Result<T, E>,
     ) -> Result<Result<T, E>, AdmissionFailure> {
+        self.try_admit_reserved(publish, |_| send())
+    }
+
+    pub(crate) fn try_admit_reserved<T, E>(
+        self: &Arc<Self>,
+        publish: &Publish,
+        send: impl FnOnce(Option<PublishReservation>) -> Result<T, E>,
+    ) -> Result<Result<T, E>, AdmissionFailure> {
+        let progress = self.waiter();
+        let bytes = self
+            .budget
+            .as_ref()
+            .map(|budget| budget.check_size(publish_charge(publish)))
+            .transpose()
+            .map_err(|reason| AdmissionFailure::Budget(reason, None))?;
+        let reserve = || {
+            self.budget
+                .as_ref()
+                .map(|budget| budget.reserve(bytes.expect("budget charge exists")))
+                .transpose()
+                .map_err(|reason| {
+                    AdmissionFailure::Budget(reason, reason.can_wait().then(|| progress.clone()))
+                })
+        };
         let mut state = self
             .state
             .lock()
@@ -167,22 +241,30 @@ impl ManagedPublishAdmission {
         if state.closed {
             return Err(AdmissionFailure::Closed);
         }
+        if self
+            .budget
+            .as_ref()
+            .is_some_and(|budget| budget.snapshot().recovery_pending)
+        {
+            return Err(AdmissionFailure::Budget(
+                PublishBudgetError::RecoveryPending,
+                Some(progress),
+            ));
+        }
         let alias = publish
             .properties
             .as_ref()
             .and_then(|properties| properties.topic_alias);
         let depends_on_capabilities =
             publish.qos != QoS::AtMostOnce || publish.retain || alias.is_some();
+        if self.policy == PublishAdmissionPolicy::EventLoopValidated {
+            return Ok(send(reserve()?));
+        }
         let Some(capabilities) = state.capabilities else {
             if depends_on_capabilities {
-                return Err(AdmissionFailure::CapabilitiesUnavailable(
-                    PublishAdmissionWaiter {
-                        admission: Arc::clone(self),
-                        revision: state.revision,
-                    },
-                ));
+                return Err(AdmissionFailure::CapabilitiesUnavailable(self.waiter()));
             }
-            return Ok(send());
+            return Ok(send(reserve()?));
         };
 
         if publish.retain && !capabilities.retain_available {
@@ -219,7 +301,7 @@ impl ManagedPublishAdmission {
             }
         }
 
-        let result = send();
+        let result = send(reserve()?);
         if result.is_ok()
             && let Some(alias) = alias
             && !publish.topic.is_empty()
@@ -252,7 +334,6 @@ impl ManagedPublishAdmission {
                 .unwrap_or(0),
         });
         state.aliases.clear();
-        state.revision = state.revision.wrapping_add(1);
         drop(state);
         self.notify_waiters();
     }
@@ -300,13 +381,7 @@ impl ManagedPublishAdmission {
     }
 
     pub(crate) fn notify_progress(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.revision = state.revision.wrapping_add(1);
-        drop(state);
-        self.notify_waiters();
+        self.progress.notify();
     }
 
     pub(crate) fn close(&self) {
@@ -318,24 +393,22 @@ impl ManagedPublishAdmission {
             return;
         }
         state.closed = true;
-        state.revision = state.revision.wrapping_add(1);
         drop(state);
         self.notify_waiters();
     }
 
     fn notify_waiters(&self) {
-        self.changed.notify_waiters();
-        self.changed_blocking.notify_all();
+        self.progress.notify();
     }
 
     pub(crate) fn waiter(self: &Arc<Self>) -> PublishAdmissionWaiter {
-        let revision = self
-            .state
+        let revision = *self
+            .progress
+            .revision
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .revision;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         PublishAdmissionWaiter {
-            admission: Arc::clone(self),
+            progress: Arc::clone(&self.progress),
             revision,
         }
     }
@@ -451,6 +524,41 @@ mod tests {
                 .unwrap()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn exhausted_budget_does_not_commit_alias_bindings() {
+        let admission = ManagedPublishAdmission::configured(
+            PublishAdmissionPolicy::RequireNegotiatedCapabilities,
+            Some(PublishBudgetLimits {
+                max_outstanding: 1,
+                max_bytes: 65536,
+            }),
+            false,
+        );
+        admission.install_connack(&connack(2, 1, 1));
+        let held = admission
+            .try_admit_reserved(&publish("a", QoS::AtLeastOnce, false, None), Ok::<_, ()>)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            admission.try_admit_reserved(
+                &publish("mapped", QoS::AtMostOnce, false, Some(1)),
+                Ok::<_, ()>
+            ),
+            Err(AdmissionFailure::Budget(
+                PublishBudgetError::CountExhausted,
+                _
+            ))
+        ));
+        drop(held);
+        assert!(matches!(
+            admission
+                .try_admit_reserved(&publish("", QoS::AtMostOnce, false, Some(1)), Ok::<_, ()>),
+            Err(AdmissionFailure::Rejected(
+                PublishAdmissionError::TopicAliasUnmapped(1)
+            ))
+        ));
     }
 
     #[test]
