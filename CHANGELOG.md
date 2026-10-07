@@ -21,6 +21,8 @@
   configure limits and inspect usage. Add structured local publish failure details
   and C `LOCAL_REJECTED` without inventing broker ACKs; previously transmitted
   replay rejection remains ambiguous. Direct native Rust budgets are opt-in.
+  Reservations end at native termination; dropping completion observers cannot
+  free capacity early. Completed-result storage is outside the admission limits.
   Add an offline publishing example. Existing C record layouts remain unchanged;
   Rust `V5Config`, `ClientError` and `SessionRestoreError` gain fields/variants.
 - Native wrappers: Add cancellable deferred TLS verification, identity selection

@@ -61,8 +61,8 @@ topic with an alias pays its actual topic length. The reservation stays at its
 original charge until termination, even if QoS 2 discards its payload early.
 Restored PUBREL consumes one count slot and zero data bytes.
 
-This bounds outstanding operations and charged data, **not process RSS**. Fixed
-per-operation request/notice/registry metadata is bounded by the count limit;
+This bounds native outstanding operations and charged data, **not process RSS**.
+Fixed metadata for native outstanding requests/notices is bounded by the count limit;
 protocol tracking arrays, packet-ID storage and alias caches have separate
 native negotiated/configuration bounds. Cached alias topics can retain up to
 65,535 bytes per negotiated alias. Encoded network buffers, temporary clones,
@@ -71,7 +71,9 @@ checkpoint limits. Rust `Bytes` views can retain larger backing allocations,
 and strings/vectors can have spare capacity; the charge measures logical data,
 not backing allocation capacity. C copies its supplied views. Applications must
 separately bound producer concurrency, caller-owned commands awaiting admission,
-caller-retained completed results and host callback allocations. These publish
+completed results and host callback allocations. Native terminal outcomes release
+their reservations before wrapper completion delivery; results awaiting that
+delivery or retained by callers are outside the outstanding-work counters. These publish
 limits do not constrain subscription/control operations or inbound traffic.
 
 A configured session store gates new publish admission until checkpoint loading

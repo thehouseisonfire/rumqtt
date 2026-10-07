@@ -538,7 +538,28 @@ class Broker:
 
     def publish_admission(self, stream: socket.socket, client_id: bytes, attempt: int) -> None:
         name = client_id.decode("ascii")
-        replay = client_id == b"native-admission-replay"
+        if client_id.startswith(b"native-admission-capacity-"):
+            self.publish_admission_capacity(stream, client_id, attempt)
+            return
+        if client_id == b"native-admission-session-reset":
+            stream.sendall(frame(2, 0, b"\x00\x00\x00"))
+            while packet := read_frame(stream):
+                kind, flags, body = packet
+                if kind == 14:
+                    return
+                if kind != 3 or flags != 2 or body[:3] != b"\x00\x01a" or body[5:] != b"\x00data":
+                    raise AssertionError("unexpected session-reset PUBLISH")
+                if attempt == 1:
+                    self.signal(name + "-seen")
+                    self.barrier(name + "-drop")
+                    return
+                stream.sendall(frame(4, 0, body[3:5]))
+            return
+        if client_id.startswith(b"native-admission-matrix-") or client_id == b"native-admission-unbound":
+            self.publish_admission_matrix(stream, client_id, attempt)
+            return
+        replay = client_id.startswith(b"native-admission-replay")
+        retained = client_id == b"native-admission-replay-retain"
         if replay and attempt > 1:
             self.signal(f"{name}-ready-{attempt}")
             self.barrier(f"{name}-release-{attempt}")
@@ -559,7 +580,7 @@ class Broker:
                 if flags & 7:
                     raise AssertionError("locally rejected publish reached the broker")
             else:
-                if flags != (2 if attempt == 1 else 10):
+                if flags != (2 if attempt == 1 else 10) + int(retained):
                     raise AssertionError("replayed publish flags changed")
                 topic, offset = string_at(body, 0)
                 identifier = body[offset:offset + 2]
@@ -571,6 +592,107 @@ class Broker:
                 self.signal(f"{name}-seen-{attempt}")
                 self.barrier(f"{name}-drop-{attempt}")
                 return
+
+    def publish_admission_capacity(self, stream: socket.socket, client_id: bytes, attempt: int) -> None:
+        name = client_id.decode("ascii")
+        bytes_only = name.endswith("-1")
+        self.signal(f"{name}-ready-{attempt}")
+        self.barrier(f"{name}-release-{attempt}")
+        stream.sendall(frame(2, 0, bytes((int(attempt > 1), 0, 0))))
+        acknowledged = 0
+        while packet := read_frame(stream):
+            kind, flags, body = packet
+            if kind == 14:
+                return
+            if kind != 3 or flags not in (0, 2):
+                raise AssertionError("unexpected capacity fixture packet")
+            topic, offset = string_at(body, 0)
+            qos = flags >> 1 & 3
+            identifier = body[offset:offset + 2] if qos else b""
+            offset += 2 if qos else 0
+            if topic != b"a" or body[offset:] != b"\x00data":
+                raise AssertionError("capacity fixture publish data changed")
+            if qos:
+                if acknowledged == 0:
+                    self.signal(f"{name}-held-{attempt}")
+                    self.barrier(f"{name}-ack-{attempt}")
+                stream.sendall(frame(4, 0, identifier))
+                acknowledged += 1
+            elif acknowledged:
+                if attempt != 1 or acknowledged != (1 if bytes_only else 2):
+                    raise AssertionError("capacity fixture disconnected before completion")
+                return
+
+    def publish_admission_matrix(self, stream: socket.socket, client_id: bytes, attempt: int) -> None:
+        name = client_id.decode("ascii")
+        if client_id != b"native-admission-unbound":
+            self.signal(f"{name}-ready-{attempt}")
+            self.barrier(f"{name}-release-{attempt}")
+        stream.sendall(frame(2, 0, bytes((int(attempt > 1), 0))
+                             + b"\x03\x22\x00\x02"))
+        aliases: dict[int, bytes] = {}
+        held: list[bytes] = []
+        qos2: dict[bytes, bool] = {}
+        while packet := read_frame(stream):
+            kind, flags, body = packet
+            if kind == 14:
+                return
+            if kind == 6:
+                identifier = body[:2]
+                if identifier not in qos2:
+                    raise AssertionError("PUBREL without matching PUBLISH")
+                if qos2.pop(identifier):
+                    self.signal(name + "-pubrel")
+                    self.barrier(name + "-pubcomp")
+                stream.sendall(frame(7, 0, identifier))
+                continue
+            if kind != 3:
+                raise AssertionError("unexpected admission matrix packet")
+            qos = flags >> 1 & 3
+            topic, offset = string_at(body, 0)
+            identifier = body[offset:offset + 2] if qos else b""
+            offset += 2 if qos else 0
+            properties, offset = properties_at(body, offset)
+            if properties:
+                if len(properties) != 3 or properties[0] != 0x23:
+                    raise AssertionError("unexpected admission matrix properties")
+                alias = int.from_bytes(properties[1:], "big")
+                if not 1 <= alias <= 2:
+                    raise AssertionError("locally rejected alias reached the broker")
+                if topic:
+                    aliases[alias] = topic
+                elif alias in aliases:
+                    topic = aliases[alias]
+                else:
+                    raise AssertionError("unmapped alias reached the broker")
+            if body[offset:] != b"data":
+                raise AssertionError("admission matrix payload changed")
+            if client_id == b"native-admission-unbound" and attempt == 1:
+                if qos != 1 or topic != b"a":
+                    raise AssertionError("unexpected unbound-alias window filler")
+                self.restart_packet_ids[(client_id, b"unbound")] = identifier
+                self.signal(name + "-ready")
+                self.barrier(name + "-drop")
+                return
+            if client_id == b"native-admission-unbound" and flags & 8:
+                if identifier != self.restart_packet_ids[(client_id, b"unbound")]:
+                    raise AssertionError("window filler replay identifier changed")
+            if topic == b"matrix/drop":
+                return
+            if topic == b"hold":
+                if qos != 1:
+                    raise AssertionError("held PUBLISH must use QoS 1")
+                held.append(identifier)
+                if len(held) == 18:
+                    self.signal(name + "-held")
+                    self.barrier(name + "-ack")
+                    stream.sendall(b"".join(frame(4, 0, pkid) for pkid in held))
+                continue
+            if qos == 1:
+                stream.sendall(frame(4, 0, identifier))
+            elif qos == 2:
+                qos2[identifier] = topic == b"hold2"
+                stream.sendall(frame(5, 0, identifier))
 
     def batching(self, stream: socket.socket, protocol: int, client_id: bytes) -> None:
         name = client_id.decode("ascii")

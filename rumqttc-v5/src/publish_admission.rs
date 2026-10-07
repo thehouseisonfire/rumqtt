@@ -58,7 +58,7 @@ impl fmt::Debug for PublishAdmissionWaiter {
 
 /// Separate lock from capability state: terminal senders can release capacity during cleanup.
 #[derive(Debug, Default)]
-pub(crate) struct PublishProgress {
+pub struct PublishProgress {
     revision: Mutex<u64>,
     changed: Notify,
     changed_blocking: Condvar,

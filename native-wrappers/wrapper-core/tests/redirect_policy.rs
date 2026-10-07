@@ -214,8 +214,9 @@ fn redirect_reference_forms_select_isolated_endpoints_for_both_sources() {
                         DeliveryStatus::Ambiguous
                     } else {
                         DeliveryStatus::Rejected
-                    }
+                    },
                 );
+                assert_eq!(error.publish_failure(), Some(PublishFailure::Redirected));
                 assert_eq!(error.context().generation, disconnect.then_some(1));
                 client.closer().close(DEADLINE).unwrap();
                 broker.join();
@@ -505,6 +506,7 @@ fn srv_lookup_failure_empty_answers_and_cancellation_release_owner() {
         }
         let error = terminal(&operation).unwrap_err();
         assert_eq!(error.delivery_status(), DeliveryStatus::Rejected);
+        assert_eq!(error.publish_failure(), Some(PublishFailure::Redirected));
         assert_eq!(error.context().generation, None);
         assert!(weak.upgrade().is_none());
         broker.join();
@@ -576,6 +578,7 @@ fn redirect_loops_and_attempt_exhaustion_are_terminal() {
         client.join(DEADLINE).unwrap();
         let error = terminal(&operation).unwrap_err();
         assert_eq!(error.delivery_status(), DeliveryStatus::Rejected);
+        assert_eq!(error.publish_failure(), Some(PublishFailure::Redirected));
         assert_eq!(error.context().generation, None);
         broker.join();
     }

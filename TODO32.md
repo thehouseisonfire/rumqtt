@@ -90,22 +90,22 @@ requests remain subject to native processing and later connection changes.
 
 ## Verification and completion
 
-- [ ] Before first CONNACK, while connected, and during reconnect, compare both
+- [x] Before first CONNACK, while connected, and during reconnect, compare both
   policies using QoS 0/1/2, retained packets, topic aliases, full channels, and
   exhausted retained-work budgets in native C. Check the unchanged strict default,
   invalid selectors, v4 rejection, and configuration reuse without live mutation.
-- [ ] Verify later rejection when the broker advertises lower QoS or no retain,
+- [x] Verify later rejection when the broker advertises lower QoS or no retain,
   including changed capabilities after reconnect. Check structured reasons,
   retryability, delivery status, and exact terminal outcomes after session loss
   or alias replay failure. Local negotiated rejection must not abort unrelated
   valid operations or masquerade as a broker ACK.
-- [ ] With small count/byte limits and continuously active producers, repeat
+- [x] With small count/byte limits and continuously active producers, repeat
   connection loss and session resume while preventing MQTT completions. Assert
   that total outstanding work and retained bytes stay within the defined bounds
   as requests transfer through native queues. Cover failed establishment,
   sustained outages, large payloads/properties, and restored replay work; checking
   request-channel length alone is insufficient.
-- [ ] Verify capacity is reclaimed exactly once on every terminal path. Cover
+- [x] Verify capacity is reclaimed exactly once on every terminal path. Cover
   cancelled admission waits, dropped completion observers, concurrent producers,
   alias binding on failed admission, and shutdown while blocked. Use deterministic
   broker/callback barriers for wakeup and queue-transfer races.
@@ -132,18 +132,52 @@ ambiguous replay rejection. See
 [`publish-admission.md`](native-wrappers/wrapper-core/publish-admission.md)
 for the public accounting and retry contract.
 
-Socket-free native C verification passed for strict defaults, alias checks,
-policy/limit configuration, channel/count/byte failure reasons, config reuse,
-observer release and shutdown reclamation. Rust memory tests passed for deferred
-connected/offline rejection, repeated session replay with changed capabilities,
-QoS 2 lifetime, recovery gating, over-budget checkpoint preservation/retry,
-concurrent producers, repeated cleanup and admission wakeups/cancellation.
-Header/export checks, native C/example compilation and workspace checks passed.
+Contract coverage now includes:
 
-The broader native C broker scenarios and socket-based full suites remain
-pending on an unrestricted host: this sandbox prohibits sockets. SCRAM feature
-matrix execution is also blocked by its dependency build script writing to a
-read-only registry directory. These limitations do not count as passing the
-unchecked exhaustive verification items above. Dedicated in-memory feature
-matrices cover the available features, excluding SCRAM and named existing socket
-unit tests. macOS/Windows native execution remains in the platform CI matrix.
+- `native_publish_admission`: both policies before CONNACK, while connected and
+  during reconnect; QoS 0/1/2 and retain combinations; bound and alias-only topics;
+  channel/count/byte exhaustion; strict defaults, invalid selectors, v4 rejection
+  and configuration reuse. Broker barriers verify failed alias binding rollback,
+  observer release, QoS 2 through PUBCOMP, changed QoS/retain capabilities,
+  session loss and unsent alias replay failure. Structured reason, delivery and
+  retry fields are checked without inventing broker reasons; valid work continues.
+- Wrapper `publish_admission` tests: continuously active producers retain large
+  payloads/properties across repeated loss, failed establishment and session
+  resume, with separate count/byte saturation and a smaller request channel.
+  Snapshots remain within limits, replay retains identifiers/data, cancelled waits
+  change no accounting, and ACK progress wakes blocked admission.
+- Native `publish_budget`/`publish_budget_regressions` and recovery unit tests:
+  repeated queue transfers, concurrent producers, rendezvous readiness and
+  cancellation, checkpoint count/byte preflight, mixed PUBLISH/PUBREL restoration,
+  and recovery gating after redirects or public session-key changes. Failed or
+  cancelled loads stay gated; failed preflight preserves the checkpoint for retry.
+- Native notice tests: every terminal success/error variant and sender destruction
+  reclaim capacity exactly once, including dropped observers. Success/error results
+  release before observation, and reading a result cannot release a subsequent
+  reservation. Wrapper/C tests cover blocked shutdown,
+  failed admission rollback, repeated completion reads and QoS 2 lifetime.
+  Sustained registration traffic tests preserve MQTT/authentication/shutdown progress.
+
+Completed Linux validation on 2026-10-06:
+
+- Default v4/v5 client suites: 970 passed; wrapper-core/C suites: 292 passed.
+  The separately enabled ordered-shutdown v5 library suite passed 575 tests.
+  The optional real-Mosquitto wrapper will test also passed.
+- `cargo hack test --each-feature --exclude-all-features` passed all 36 client
+  configurations and all 33 wrapper-core/C configurations, including SCRAM.
+- Client-library Clippy passed all 36 feature configurations with `--no-dev-deps`,
+  `--lib`, `--no-deps`, `-D warnings`, `clippy::pedantic` and `clippy::nursery`.
+  The native wrapper workspace passed the same strict lints with `--all-targets`.
+- The native C suite and examples passed all 63 tests using the C library built
+  with `tls12,use-native-tls,proxy,auth-scram`. The expanded admission fixture
+  passed repeated targeted runs. `native-wrappers/c/tests/abi/check.sh all` passed
+  header/source parity, exports, C/C++ consumers and relocated static pkg-config.
+- Main and session-store-file workspace checks passed. Rust formatting checks,
+  Python fixture compilation and `git diff --check` passed.
+
+The C suite passed serially. An initial parallel run failed the existing stress
+and invalid-auth fixtures; both passed isolated reruns and two complete serial
+runs. Existing skipped documentation examples and legacy ordered-disconnect
+placeholders remain ignored; ordered-shutdown feature tests execute separately.
+These results replace the earlier socket/SCRAM restrictions. macOS/Windows native
+execution remains in the platform CI matrix.

@@ -267,6 +267,220 @@ async fn replay_keeps_capacity_and_previously_sent_rejection_is_ambiguous() {
     finish(client);
 }
 
+struct PublishProducers {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    threads: Vec<std::thread::JoinHandle<usize>>,
+}
+
+impl PublishProducers {
+    fn start(handle: &ClientHandle, command: &Command) -> Self {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = Arc::new(AtomicBool::new(false));
+        let threads = (0..2)
+            .map(|_| {
+                let stop = stop.clone();
+                let handle = handle.clone();
+                let command = command.clone();
+                std::thread::spawn(move || {
+                    let mut admitted = 0;
+                    while !stop.load(Ordering::Acquire) {
+                        match handle.try_admit(command.clone()) {
+                            Ok(admission) => {
+                                drop(admission);
+                                admitted += 1;
+                            }
+                            Err(error) if error.kind() == ErrorKind::Backpressure => {
+                                assert!(matches!(
+                                    error.publish_failure(),
+                                    Some(
+                                        PublishFailure::CapabilitiesPending
+                                            | PublishFailure::RequestChannelFull
+                                            | PublishFailure::CountExhausted
+                                            | PublishFailure::BytesExhausted
+                                    )
+                                ));
+                                assert_eq!(error.delivery_status(), DeliveryStatus::NotAdmitted);
+                            }
+                            Err(error) => panic!("unexpected producer result: {error}"),
+                        }
+                        let usage = handle.publish_budget_snapshot().unwrap();
+                        assert!(usage.outstanding <= usage.limits.max_outstanding);
+                        assert!(usage.retained_bytes <= usage.limits.max_bytes);
+                        std::thread::yield_now();
+                    }
+                    admitted
+                })
+            })
+            .collect();
+        Self { stop, threads }
+    }
+
+    fn finish(mut self) -> usize {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.threads
+            .drain(..)
+            .map(|thread| thread.join().unwrap())
+            .sum()
+    }
+}
+
+impl Drop for PublishProducers {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep producer, reconnect and wakeup assertions together"
+)]
+async fn active_producers_and_failed_connections_preserve_large_publish_budgets() {
+    fn identifier(frame: &[u8]) -> [u8; 2] {
+        let mut packet = bytes::BytesMut::from(frame);
+        let rumqttc_v5::Packet::Publish(publish) =
+            rumqttc_v5::Packet::read(&mut packet, None).unwrap()
+        else {
+            unreachable!()
+        };
+        publish.pkid.to_be_bytes()
+    }
+    let properties = V5OutgoingPublishProperties {
+        response_topic: Some("response".into()),
+        correlation_data: Some(Bytes::from(vec![0; 64])),
+        content_type: Some("c".repeat(8192)),
+        user_properties: vec![
+            ("key".into(), "v".repeat(8192)),
+            (String::new(), String::new()),
+        ],
+        ..Default::default()
+    };
+    let charged_bytes =
+        1 + 8192 + 8 + 64 + 8192 + 3 + 8192 + 2 * std::mem::size_of::<(String, String)>();
+    let command = Command::Publish(PublishCommand {
+        topic: "a".into(),
+        payload: Bytes::from(vec![0; 8192]),
+        qos: QoS::AtLeastOnce,
+        retain: false,
+        protocol: PublishProtocolOptions::V5(properties),
+    });
+    for policy in [
+        PublishAdmissionPolicy::RequireNegotiatedCapabilities,
+        PublishAdmissionPolicy::EventLoopValidated,
+    ] {
+        for count_limit in [3, 4] {
+            // Three messages fit. The fourth is rejected by either the count or
+            // byte limit; the one-slot native channel is smaller than both limits.
+            let (mut config, mut rx) = configuration(policy, count_limit, charged_bytes * 3);
+            config.common.request_channel_capacity = 1;
+            let mut client = NativeClient::start(config).unwrap();
+            let mut events = client.take_events().unwrap();
+            let handle = client.handle();
+            let mut stream = server(&mut rx).await;
+            stream.write_all(&[0x20, 3, 0, 0, 0]).await.unwrap();
+            connected(&mut events).await;
+            let producers = PublishProducers::start(&handle, &command);
+            let mut originals = Vec::new();
+            for _ in 0..3 {
+                let packet = frame(&mut stream).await;
+                assert_eq!(packet[0], 0x32);
+                originals.push(packet);
+            }
+            let assert_usage = || {
+                let usage = handle.publish_budget_snapshot().unwrap();
+                assert_eq!(
+                    (usage.outstanding, usage.retained_bytes),
+                    (3, charged_bytes * 3)
+                );
+            };
+            assert_usage();
+            // Cancelling a blocked admission leaves every existing reservation intact.
+            {
+                let wait = handle.admit_async(command.clone());
+                tokio::pin!(wait);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(10), &mut wait)
+                        .await
+                        .is_err()
+                );
+            }
+            assert_usage();
+            for generation in 0..3 {
+                drop(stream); // No ACKs: all previously transmitted work must survive.
+                stream = server(&mut rx).await;
+                assert_usage();
+                // Also fail establishment while producers remain active and the
+                // native channel/replay queues keep transferring retained work.
+                if generation != 1 {
+                    drop(stream);
+                    stream = server(&mut rx).await;
+                    assert_usage();
+                }
+                let error = handle.try_admit(command.clone()).unwrap_err();
+                assert_eq!(
+                    error.publish_failure(),
+                    Some(match policy {
+                        PublishAdmissionPolicy::RequireNegotiatedCapabilities =>
+                            PublishFailure::CapabilitiesPending,
+                        PublishAdmissionPolicy::EventLoopValidated if count_limit == 3 =>
+                            PublishFailure::CountExhausted,
+                        PublishAdmissionPolicy::EventLoopValidated =>
+                            PublishFailure::BytesExhausted,
+                    })
+                );
+                stream.write_all(&[0x20, 3, 1, 0, 0]).await.unwrap();
+                connected(&mut events).await;
+                let mut replayed = std::collections::BTreeSet::new();
+                for _ in 0..3 {
+                    let mut packet = frame(&mut stream).await;
+                    assert_eq!(packet[0], 0x3a);
+                    packet[0] &= !8;
+                    let index = originals
+                        .iter()
+                        .position(|original| original == &packet)
+                        .unwrap();
+                    assert!(replayed.insert(index));
+                }
+                assert_eq!(replayed.len(), 3);
+                assert_usage();
+            }
+            assert_eq!(producers.finish(), 3);
+            let wait = handle.admit_async(command.clone());
+            tokio::pin!(wait);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), &mut wait)
+                    .await
+                    .is_err()
+            );
+            // One ACK must wake admission without exceeding either bound.
+            let first = &originals[0];
+            let id = identifier(first);
+            stream.write_all(&[0x40, 2, id[0], id[1]]).await.unwrap();
+            let admitted = tokio::time::timeout(DEADLINE, wait).await.unwrap().unwrap();
+            assert_usage();
+            let mut packet = bytes::BytesMut::from(frame(&mut stream).await.as_slice());
+            let rumqttc_v5::Packet::Publish(publish) =
+                rumqttc_v5::Packet::read(&mut packet, None).unwrap()
+            else {
+                unreachable!()
+            };
+            for original in &originals[1..] {
+                let id = identifier(original);
+                stream.write_all(&[0x40, 2, id[0], id[1]]).await.unwrap();
+            }
+            let id = publish.pkid.to_be_bytes();
+            stream.write_all(&[0x40, 2, id[0], id[1]]).await.unwrap();
+            assert!(result(&admitted).await.is_ok());
+            assert_eq!(handle.publish_budget_snapshot().unwrap().retained_bytes, 0);
+            assert_eq!(handle.publish_budget_snapshot().unwrap().outstanding, 0);
+            finish(client);
+        }
+    }
+}
+
 #[tokio::test]
 async fn cancelled_wait_and_dropped_observer_do_not_change_admitted_work() {
     let (mut client, mut rx) = start(PublishAdmissionPolicy::EventLoopValidated, 1, 5);

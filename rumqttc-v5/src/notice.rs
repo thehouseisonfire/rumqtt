@@ -230,6 +230,7 @@ impl PublishNotice {
     ///
     /// # Panics
     /// Panics if called in an async context.
+    #[must_use]
     pub fn wait_outcome(self) -> PublishNoticeOutcome {
         self.0.blocking_recv().unwrap_or(PublishNoticeOutcome {
             result: Err(PublishNoticeError::Recv),
@@ -607,7 +608,7 @@ impl PublishNoticeTx {
         self.reservation = reservation;
     }
 
-    pub(crate) fn mark_transmission_started(&mut self) {
+    pub(crate) const fn mark_transmission_started(&mut self) {
         self.possibly_transmitted = true;
     }
 
@@ -800,6 +801,124 @@ fn validate_v5_unsuback_completion(unsuback: &UnsubAck) -> Result<(), Unsubscrib
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::publish_admission::PublishProgress;
+    use crate::publish_budget::{PublishBudget, PublishBudgetLimits};
+
+    fn one_publish_budget() -> std::sync::Arc<PublishBudget> {
+        PublishBudget::new(
+            PublishBudgetLimits {
+                max_outstanding: 1,
+                max_bytes: 5,
+            },
+            std::sync::Arc::new(PublishProgress::default()),
+            false,
+        )
+    }
+
+    #[test]
+    fn terminal_publish_results_release_capacity_before_observation() {
+        let mut recovered = PubComp::new(1, None);
+        recovered.reason = PubCompReason::PacketIdentifierNotFound;
+        let mut rejected = PubRec::new(1, None);
+        rejected.reason = PubRecReason::NotAuthorized;
+        for result in [
+            PublishResult::Qos0Flushed,
+            PublishResult::Qos1(PubAck::new(1, None)),
+            PublishResult::Qos2Completed(PubComp::new(1, None)),
+            PublishResult::Qos2Recovered(recovered),
+            PublishResult::Qos2PubRecRejected(rejected),
+        ] {
+            let budget = one_publish_budget();
+            let (mut sender, notice) = PublishNoticeTx::new();
+            sender.reserve(Some(budget.reserve(5).unwrap()));
+            sender.success(result.clone());
+            let next = budget
+                .reserve(5)
+                .expect("terminal work releases before observation");
+            assert_eq!(notice.wait(), Ok(result));
+            assert_eq!(budget.snapshot().outstanding, 1);
+            assert_eq!(budget.snapshot().retained_bytes, 5);
+            drop(next);
+            assert_eq!(budget.snapshot().outstanding, 0);
+            assert_eq!(budget.snapshot().retained_bytes, 0);
+        }
+    }
+
+    #[test]
+    fn terminal_publish_errors_release_capacity_with_dropped_observers() {
+        let errors = vec![
+            PublishNoticeError::Recv,
+            PublishNoticeError::SessionReset,
+            PublishNoticeError::Redirected,
+            PublishNoticeError::BrokerOnlySessionResume,
+            PublishNoticeError::RetainNotSupported,
+            PublishNoticeError::QoSNotSupported {
+                requested: QoS::ExactlyOnce,
+                maximum: QoS::AtMostOnce,
+            },
+            PublishNoticeError::TopicAliasReplayUnavailable(1),
+            PublishNoticeError::TopicAliasInvalid {
+                alias: 2,
+                maximum: 1,
+            },
+            PublishNoticeError::TopicAliasMappingUnavailable(1),
+            PublishNoticeError::Qos0NotFlushed,
+            PublishNoticeError::SessionPersistence("store unavailable".into()),
+            PublishNoticeError::V5PubAck(PubAckReason::NotAuthorized),
+            PublishNoticeError::V5PubRec(PubRecReason::NotAuthorized),
+            PublishNoticeError::V5PubComp(PubCompReason::PacketIdentifierNotFound),
+        ];
+        #[cfg(feature = "ordered-shutdown")]
+        let errors = errors.into_iter().chain([
+            PublishNoticeError::DiscardedAfterDisconnectBarrier,
+            PublishNoticeError::ShutdownSupersededByImmediate,
+            PublishNoticeError::ShutdownInterrupted,
+        ]);
+        for error in errors {
+            for observe in [false, true] {
+                let budget = one_publish_budget();
+                let (mut sender, notice) = PublishNoticeTx::new();
+                sender.reserve(Some(budget.reserve(5).unwrap()));
+                let notice = observe.then_some(notice);
+                assert_eq!(budget.snapshot().outstanding, 1);
+                assert!(budget.reserve(5).is_err());
+                sender.error(error.clone());
+                let next = budget
+                    .reserve(5)
+                    .expect("error releases without an observer");
+                if let Some(notice) = notice {
+                    assert_eq!(notice.wait(), Err(error.clone()));
+                }
+                assert_eq!(budget.snapshot().outstanding, 1);
+                assert_eq!(budget.snapshot().retained_bytes, 5);
+                drop(next);
+                assert_eq!(budget.snapshot().outstanding, 0);
+                assert_eq!(budget.snapshot().retained_bytes, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn abandoning_native_publish_releases_capacity_without_observer_ownership() {
+        for observe in [false, true] {
+            let budget = one_publish_budget();
+            let (mut sender, notice) = PublishNoticeTx::new();
+            sender.reserve(Some(budget.reserve(5).unwrap()));
+            let notice = observe.then_some(notice);
+            assert_eq!(budget.snapshot().outstanding, 1);
+            drop(sender);
+            let next = budget
+                .reserve(5)
+                .expect("abandoned native work releases capacity");
+            if let Some(notice) = notice {
+                assert_eq!(notice.wait(), Err(PublishNoticeError::Recv));
+            }
+            assert_eq!(budget.snapshot().outstanding, 1);
+            drop(next);
+            assert_eq!(budget.snapshot().outstanding, 0);
+            assert_eq!(budget.snapshot().retained_bytes, 0);
+        }
+    }
 
     #[test]
     fn blocking_publish_wait_returns_result() {

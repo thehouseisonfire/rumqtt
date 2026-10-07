@@ -278,11 +278,26 @@ MQTT 5 publish admission adds C policy/limit setters, usage snapshots,
 structured local failure reasons and `LOCAL_REJECTED`, preserving C record
 layouts and the strict policy default. JavaScript/Python inherit finite budgets
 without new selectors. See [the resource and retry contract](publish-admission.md).
-In-memory Rust tests cover negotiated deferral, repeated reconnect replay,
-QoS 2 reservation lifetime, observer cancellation, shutdown and restore preflight.
+Rust tests cover negotiated deferral, QoS 2 lifetime, cancellation, shutdown,
+checkpoint count/byte preflight and recovery gating after redirects or public
+session-key changes. Continuously active producers retain large payloads and
+properties through repeated outages, failed establishment and session resume;
+count/data usage stays bounded and ACK progress wakes blocked admission.
+Native terminal tests check reclamation before result observation, with dropped
+observers, and on sender destruction. Rendezvous and sustained registration
+traffic regressions cover admission wakeups and fair driver progress.
+
 `native_publish_admission_offline` executes public C APIs using a held transport
 callback: strict default, aliases, channel/count/byte rejection, config isolation,
 observer release and shutdown reclamation all run without sockets.
-The native C broker fixture covers selectors, configuration reuse, nonblocking
-channel/count failure, connected deferral and repeated replay with changed QoS.
-Native C broker execution requires a host that permits loopback sockets.
+`native_publish_admission` compares both policies before CONNACK, while connected
+and during reconnect with QoS/retain combinations, aliases, full channels and
+count/byte exhaustion. Broker barriers verify dropped observers, failed alias
+binding, QoS 2 through PUBCOMP, changed capabilities, session loss and unsent
+alias replay failure. Local failures retain structured reasons/delivery/retry
+status without broker reasons, and unrelated valid operations continue.
+
+Linux execution passed the native C suite and examples (63 tests), C ABI/header/
+export and C/C++ consumer checks, including the expanded admission fixture.
+See [TODO32](../../TODO32.md) for feature-matrix and lint evidence.
+macOS/Windows native execution remains in platform CI.

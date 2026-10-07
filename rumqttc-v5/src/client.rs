@@ -1073,13 +1073,13 @@ impl AsyncClient {
         loop {
             let progress = admission.waiter();
             match self.try_send_managed_publish(publish.clone()) {
-                Err(ClientError::PublishBudget {
-                    waiter: Some(waiter),
-                    ..
-                }) => {
-                    waiter.wait_async().await;
-                }
-                Err(ClientError::PublishAdmissionPending { waiter, .. }) => {
+                Err(
+                    ClientError::PublishBudget {
+                        waiter: Some(waiter),
+                        ..
+                    }
+                    | ClientError::PublishAdmissionPending { waiter, .. },
+                ) => {
                     waiter.wait_async().await;
                 }
                 Err(ClientError::RequestChannelFull(_)) => {
@@ -1189,13 +1189,13 @@ impl AsyncClient {
         loop {
             let progress = admission.waiter();
             match self.try_send_tracked_publish(publish.clone()) {
-                Err(ClientError::PublishBudget {
-                    waiter: Some(waiter),
-                    ..
-                }) => {
-                    waiter.wait_async().await;
-                }
-                Err(ClientError::PublishAdmissionPending { waiter, .. }) => {
+                Err(
+                    ClientError::PublishBudget {
+                        waiter: Some(waiter),
+                        ..
+                    }
+                    | ClientError::PublishAdmissionPending { waiter, .. },
+                ) => {
                     waiter.wait_async().await;
                 }
                 Err(ClientError::RequestChannelFull(_)) => {

@@ -1530,12 +1530,9 @@ impl EventLoop {
             let costs = session
                 .replay
                 .iter()
-                .map(crate::publish_budget::replay_charge)
-                .collect::<Option<Vec<_>>>()
-                .ok_or(crate::SessionRestoreError::PublishBudgetExceeded)?;
-            budget
-                .reserve_replay(&costs.into_iter().flatten().collect::<Vec<_>>())?
-                .into_iter()
+                .filter_map(crate::publish_budget::replay_charge)
+                .collect::<Result<Vec<_>, _>>()?;
+            budget.reserve_replay(&costs)?.into_iter()
         } else {
             Vec::new().into_iter()
         };

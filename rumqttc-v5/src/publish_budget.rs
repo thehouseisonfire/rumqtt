@@ -45,14 +45,14 @@ impl PublishBudgetError {
 }
 
 #[derive(Debug)]
-pub(crate) struct PublishBudget {
+pub struct PublishBudget {
     state: Mutex<PublishBudgetSnapshot>,
     progress: Arc<PublishProgress>,
 }
 
 /// Owned only by the native terminal sender, never by a completion observer.
 #[derive(Debug)]
-pub(crate) struct PublishReservation {
+pub struct PublishReservation {
     budget: Arc<PublishBudget>,
     bytes: usize,
     notify_on_drop: bool,
@@ -146,6 +146,7 @@ impl PublishBudget {
         }
         state.outstanding += 1;
         state.retained_bytes += bytes;
+        drop(state);
         Ok(PublishReservation {
             budget: Arc::clone(self),
             bytes,
@@ -171,6 +172,7 @@ impl PublishBudget {
         }
         state.outstanding += costs.len();
         state.retained_bytes += bytes.expect("checked replay byte sum");
+        drop(state);
         Ok(costs
             .iter()
             .map(|bytes| PublishReservation {
@@ -209,7 +211,7 @@ fn data_charge(
     Some(bytes)
 }
 
-pub(crate) fn publish_charge(publish: &Publish) -> Option<usize> {
+pub fn publish_charge(publish: &Publish) -> Option<usize> {
     let topic = if publish.topic.is_empty() {
         usize::from(u16::MAX)
     } else {
@@ -229,26 +231,29 @@ pub(crate) fn publish_charge(publish: &Publish) -> Option<usize> {
     )
 }
 
-pub(crate) fn replay_charge(request: &PersistedRequest) -> Option<Option<usize>> {
+pub fn replay_charge(
+    request: &PersistedRequest,
+) -> Option<Result<usize, crate::SessionRestoreError>> {
     match request {
         PersistedRequest::Publish(publish) => {
-            let bytes = if let Some(p) = &publish.properties {
-                data_charge(
-                    publish.topic.len(),
-                    publish.payload.len(),
-                    p.response_topic.as_deref(),
-                    p.correlation_data.as_ref().map(Vec::len),
-                    p.content_type.as_deref(),
-                    &p.user_properties,
-                    p.subscription_identifiers.len(),
-                )?
-            } else {
-                publish.topic.len().checked_add(publish.payload.len())?
-            };
-            Some(Some(bytes))
+            let bytes = publish.properties.as_ref().map_or_else(
+                || publish.topic.len().checked_add(publish.payload.len()),
+                |p| {
+                    data_charge(
+                        publish.topic.len(),
+                        publish.payload.len(),
+                        p.response_topic.as_deref(),
+                        p.correlation_data.as_ref().map(Vec::len),
+                        p.content_type.as_deref(),
+                        &p.user_properties,
+                        p.subscription_identifiers.len(),
+                    )
+                },
+            );
+            Some(bytes.ok_or(crate::SessionRestoreError::PublishBudgetExceeded))
         }
         // PUBREL is one outstanding publish; its payload has already been discarded.
-        PersistedRequest::PubRel(_) => Some(Some(0)),
-        _ => Some(None),
+        PersistedRequest::PubRel(_) => Some(Ok(0)),
+        _ => None,
     }
 }
