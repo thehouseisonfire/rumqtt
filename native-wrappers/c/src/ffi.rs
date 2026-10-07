@@ -31,6 +31,10 @@ pub use transport::*;
 mod acknowledgement;
 pub use acknowledgement::*;
 
+#[path = "reconnect.rs"]
+mod reconnect;
+pub use reconnect::*;
+
 #[path = "ordered.rs"]
 mod ordered;
 pub use ordered::*;

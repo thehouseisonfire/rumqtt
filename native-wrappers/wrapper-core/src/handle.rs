@@ -52,6 +52,7 @@ impl AdmissionGate {
 pub static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct Shared {
+    pub(crate) reconnect: Arc<crate::reconnect::Controller>,
     error_context: Mutex<crate::ErrorContext>,
     backend: BackendClient,
     handle_count: AtomicUsize,
@@ -74,12 +75,14 @@ impl Shared {
         operations: OperationRegistry,
         shutdown: Arc<ShutdownCoordinator>,
         panic_tx: Sender<()>,
+        reconnect: Arc<crate::reconnect::Controller>,
     ) -> Arc<Self> {
         let protocol = match backend {
             BackendClient::V4(_) => ProtocolVersion::V4,
             BackendClient::V5(_) => ProtocolVersion::V5,
         };
         Arc::new(Self {
+            reconnect,
             error_context: Mutex::new(crate::ErrorContext {
                 protocol: Some(protocol),
                 phase: Some(crate::ConnectionPhase::Attempt),
@@ -158,15 +161,26 @@ impl Shared {
         self.shutdown.wait_ordered_abort().await;
     }
     #[cfg(feature = "ordered-shutdown")]
+    pub(crate) fn ordered_deadline_expired(&self) -> bool {
+        self.shutdown
+            .ordered_deadline()
+            .is_some_and(|deadline| deadline <= std::time::Instant::now())
+    }
+    #[cfg(feature = "ordered-shutdown")]
     pub(crate) async fn wait_ordered_deadline(&self) {
         self.shutdown.wait_ordered_deadline().await;
     }
     pub(crate) fn ordered_diagnostics(&self, snapshot: &mut crate::DiagnosticsSnapshot) {
         self.shutdown.ordered_diagnostics(snapshot);
+        snapshot.reconnect = Some(Box::new(self.reconnect.snapshot()));
     }
 
     pub(crate) async fn wait_graceful_timeout(&self) {
         self.shutdown.wait_graceful_timeout().await;
+    }
+
+    pub(crate) async fn wait_retry_shutdown(&self) {
+        self.shutdown.wait_retry_shutdown().await;
     }
 
     pub(crate) fn notify_progress(&self) {
@@ -245,11 +259,15 @@ impl Shared {
     }
 
     pub(crate) fn poll_error_action(&self) -> PollErrorAction {
+        self.reconnect_action(false)
+    }
+
+    pub(crate) fn reconnect_action(&self, initial_cycle: bool) -> PollErrorAction {
         // Shutdown admission holds this gate from the lifecycle transition through request and
         // completion registration. Waiting here prevents the driver from observing a transient
         // `Closing` state whose admission may still restore `Running`.
         let _admission_guard = self.admission_gate.lock();
-        self.shutdown.poll_error_action()
+        self.shutdown.reconnect_action(initial_cycle)
     }
 
     pub(crate) fn should_drain_admitted_work(&self) -> bool {
@@ -361,6 +379,12 @@ impl Drop for ClientHandle {
 }
 
 impl ClientHandle {
+    /// Owned retry observation, available after driver termination.
+    #[must_use]
+    pub fn reconnect_diagnostics(&self) -> crate::ReconnectDiagnostics {
+        self.shared.reconnect.snapshot()
+    }
+
     pub(crate) fn has_ordered_close(&self) -> bool {
         self.shared.has_ordered()
     }
@@ -841,6 +865,7 @@ mod acknowledgement_tests {
             operations,
             shutdown,
             panic_tx,
+            crate::reconnect::Controller::new(crate::ReconnectPolicy::Legacy),
         );
         shared.begin_connection(ProtocolVersion::V5, false, Some(100), || {});
         (ClientHandle::new(shared), rx)

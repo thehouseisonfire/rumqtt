@@ -51,6 +51,7 @@ pub struct ErrorHandle {
     pub generation: Option<u64>,
     pub delivery_status: u32,
     failures: Option<Arc<FailureDetails>>,
+    pub exhaustion: Option<Arc<rumqttc_wrapper_core::ReconnectExhaustion>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -195,6 +196,7 @@ impl ErrorHandle {
             generation: None,
             delivery_status: 0,
             failures: None,
+            exhaustion: None,
         }
     }
 
@@ -240,6 +242,7 @@ impl ErrorHandle {
                 DeliveryStatus::Ambiguous => 3,
             },
             failures,
+            exhaustion: error.reconnect_exhaustion().cloned().map(Arc::new),
         }
     }
 

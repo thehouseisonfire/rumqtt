@@ -2,6 +2,20 @@
 
 ### Added
 
+- Native wrappers: Add opt-in classified reconnect policy shared by MQTT v4/v5,
+  with exponential backoff, capped full jitter, finite or explicit unlimited
+  retry budgets, and reset after stable connectivity. Preserve legacy defaults,
+  native replay/session reconciliation, responsive observation/close during
+  backoff, and ordered shutdown deadlines and terminal persistence cleanup.
+  Add owned C configuration and retry snapshots, sanitized last-error accessors,
+  and nonretryable `RECONNECT_EXHAUSTED` details distinct from observer timeout.
+  Existing C layouts and statuses are preserved. Rust `CommonConfig` and
+  `DiagnosticsSnapshot` gain fields and `ErrorCode` gains a variant; exhaustive
+  literals/matches need updating. Include deterministic policy tests, native C
+  recovery/exhaustion consumers and a retry example. Custom decisions and
+  scheduling controls remain follow-up work.
+  Persistence failures remain terminal even when their nested cause resembles
+  a retryable transport failure.
 - Native wrappers: Add opt-in, explicitly owned shared execution contexts to
   wrapper-core and the standard C API. Configure client capacity, scheduler
   workers and the blocking pool; retain contexts through configurations and
@@ -149,6 +163,23 @@
   ready, including after a cancelled receive. Rearm publish recovery admission
   before redirects change persistent session scope or client identity so new
   submissions cannot consume capacity needed by the target checkpoint.
+- Native wrappers: End MQTT 5 stability tracking when broker DISCONNECT is
+  observed, before blocked event delivery or deferred native cleanup. Event
+  backpressure cannot reset the retry budget or backoff after a short connection;
+  connections that already earned a stability reset retain it.
+- Native wrappers: Preserve the initial connection and queued operation drain
+  when graceful shutdown is admitted before the driver's first poll, under both
+  legacy and classified reconnect policies. Failed cycles during graceful
+  shutdown still terminate without retrying.
+- Native wrappers: Retry typed SOCKS availability failures under classified
+  reconnect policy, including refused connections and unreachable hosts or
+  networks, subject to the configured budget. Authentication, ruleset and
+  protocol failures remain terminal.
+- Native wrappers: Classify WebSocket errors retained inside stream I/O errors
+  before applying generic reconnect eligibility. Under classified policy,
+  malformed WS/WSS frames terminate both MQTT drivers; normal closure and EOF
+  without a WebSocket closing handshake remain retryable. Legacy retry
+  decisions are preserved.
 - Native wrappers: Preserve deferred TLS future destruction panics during
   cancellation as terminal callback failures in both MQTT drivers, including
   broker, proxy and redirect TLS. Fail pending operations and shutdown instead

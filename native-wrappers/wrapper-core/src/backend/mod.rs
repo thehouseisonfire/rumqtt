@@ -4,6 +4,7 @@ pub mod tls;
 pub use tls::build_tls;
 
 mod auth;
+mod reconnect;
 mod redirect;
 pub mod session;
 mod transport;

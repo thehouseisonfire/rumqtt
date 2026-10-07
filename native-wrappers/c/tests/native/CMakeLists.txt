@@ -119,6 +119,7 @@ rumqttc_native_target(rumqttc-native-store-write-failure native_store_write_fail
 rumqttc_native_target(rumqttc-native-wire-options native_wire_options.c)
 rumqttc_native_target(rumqttc-native-runtime-limits native_runtime_limits.c)
 rumqttc_native_target(rumqttc-native-runtime-batching native_runtime_batching.c)
+rumqttc_native_target(rumqttc-native-reconnect native_reconnect.c)
 rumqttc_native_target(rumqttc-native-tls-matrix native_tls_matrix.c)
 rumqttc_native_target(rumqttc-native-tls-profiles native_tls_profiles.c)
 rumqttc_native_target(rumqttc-native-callback-races native_callback_races.c)
@@ -311,6 +312,10 @@ set_tests_properties(rumqttc-native-will-process PROPERTIES LABELS "native;will"
 add_test(NAME rumqttc-native-runtime-limits
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-runtime-limits>)
 set_tests_properties(rumqttc-native-runtime-limits PROPERTIES LABELS "native;wire" TIMEOUT 90)
+
+add_test(NAME rumqttc-native-reconnect
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-reconnect>)
+set_tests_properties(rumqttc-native-reconnect PROPERTIES LABELS "native;reconnect" TIMEOUT 90)
 
 add_test(NAME rumqttc-native-runtime-batching
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-runtime-batching>)

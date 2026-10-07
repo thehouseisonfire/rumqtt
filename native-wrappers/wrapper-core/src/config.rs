@@ -217,6 +217,7 @@ pub struct CommonConfig {
     pub transport: TransportConfig,
     pub keep_alive: Duration,
     pub connection_timeout: Duration,
+    pub reconnect: crate::ReconnectPolicy,
     pub username: Option<String>,
     pub password: Option<Bytes>,
     pub request_channel_capacity: usize,
@@ -247,6 +248,7 @@ impl std::fmt::Debug for CommonConfig {
             .field("transport", &self.transport)
             .field("keep_alive", &self.keep_alive)
             .field("connection_timeout", &self.connection_timeout)
+            .field("reconnect", &self.reconnect)
             .field("username", &self.username.as_ref().map(|_| "[REDACTED]"))
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
             .field("request_channel_capacity", &self.request_channel_capacity)
@@ -281,6 +283,7 @@ impl CommonConfig {
             transport: TransportConfig::Tcp,
             keep_alive: Duration::from_secs(60),
             connection_timeout: DEFAULT_TIMEOUT,
+            reconnect: crate::ReconnectPolicy::Legacy,
             username: None,
             password: None,
             request_channel_capacity: DEFAULT_REQUEST_CAPACITY,
@@ -303,6 +306,9 @@ impl CommonConfig {
 
     pub(crate) fn validate(&self) -> Result<()> {
         self.validate_endpoint()?;
+        if let crate::ReconnectPolicy::Classified(config) = &self.reconnect {
+            config.validate()?;
+        }
         if self.request_channel_capacity == 0 || self.event_buffer_capacity == 0 {
             return Err(Error::configuration("channel capacities must be nonzero"));
         }

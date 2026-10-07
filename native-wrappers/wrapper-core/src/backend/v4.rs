@@ -28,12 +28,6 @@ pub fn map_connection_error(error: &rumqttc_v4::ConnectionError) -> Error {
     {
         return Error::websocket(*failure);
     }
-    if let Some(failure) = crate::tls_advanced::callback_failure(error) {
-        return Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous);
-    }
-    if let Some(failure) = super::transport::failure(error) {
-        return Error::transport(failure).with_delivery(DeliveryStatus::Ambiguous);
-    }
     if let rumqttc_v4::ConnectionError::SessionStore(source) = error {
         return Error::store(
             source
@@ -51,6 +45,12 @@ pub fn map_connection_error(error: &rumqttc_v4::ConnectionError) -> Error {
             _ => crate::StoreFailure::Corrupt,
         };
         return Error::store(failure).with_delivery(DeliveryStatus::Ambiguous);
+    }
+    if let Some(failure) = crate::tls_advanced::callback_failure(error) {
+        return Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous);
+    }
+    if let Some(failure) = super::transport::failure(error) {
+        return Error::transport(failure).with_delivery(DeliveryStatus::Ambiguous);
     }
     let kind = match error {
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
@@ -366,6 +366,11 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     let mut pending = FuturesUnordered::<PendingFuture>::new();
     let mut senders = HashMap::<OperationId, PendingSender>::new();
     let mut connected = false;
+    #[allow(
+        unused_mut,
+        reason = "Ordered shutdown enables native terminal cleanup"
+    )]
+    let mut native_cleanup = false;
     let mut diagnostics = snapshot_v4(&eventloop);
     let shutdown = ShutdownInputs::new(&shared, &completion_rx, &diagnostics_rx);
     let delivery = EventDelivery {
@@ -378,6 +383,23 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         staged: std::sync::Mutex::new(None),
     };
     loop {
+        if !connected && !native_cleanup {
+            match crate::runtime::wait_reconnect(
+                &shutdown,
+                &diagnostics,
+                &mut pending,
+                &mut senders,
+                &immediate_shutdown_rx,
+                &panic_rx,
+            )
+            .await
+            {
+                crate::runtime::RetryReady::Poll => {}
+                #[cfg(feature = "ordered-shutdown")]
+                crate::runtime::RetryReady::Cleanup => native_cleanup = true,
+                crate::runtime::RetryReady::Terminal(status) => return status,
+            }
+        }
         // `EventLoop::poll` can dequeue requests and mutate protocol state before awaiting I/O.
         tokio::task::yield_now().await;
         // Keep the same future alive across wrapper-control wakeups so those side effects cannot
@@ -410,6 +432,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         resolve_pending(result, &mut senders);
                         tokio::task::yield_now().await;
                     },
+                    () = shared.reconnect.stability() => { shared.reconnect.refresh(); },
                     result = &mut poll => break Some(result),
                 }
             }
@@ -443,6 +466,12 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         diagnostics = snapshot_v4(&eventloop);
         match polled {
             Ok(event) => {
+                if matches!(
+                    &event,
+                    rumqttc_v4::Event::Incoming(rumqttc_v4::Packet::ConnAck(_))
+                ) {
+                    shared.reconnect.connected();
+                }
                 if let Some(event) = map_v4_event(
                     &mut eventloop,
                     event,
@@ -470,19 +499,27 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     // The native error can precede wrapper admission commitment (e.g. zero deadline).
                     // It remains the authority: further native polls own pending terminal cleanup.
                     connected = false;
+                    native_cleanup = true;
                     continue;
                 }
+                let classified = shared.reconnect.classified();
+                let eligible = super::reconnect::v4(&error);
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v4::ConnectionError::DisconnectTimeout);
-                let error = shared.contextualize(
+                let mut error = shared.contextualize(
                     websocket
                         .failure()
                         .map_or_else(|| map_connection_error(&error), Error::websocket),
                 );
+                if classified {
+                    let retryable = super::reconnect::mapped(&error, eligible);
+                    error = error.with_retryable(retryable);
+                }
                 if error.kind() == ErrorKind::Persistence
                     || (error.transport_failure().is_some() && !error.retryable())
                     || (error.tls_callback_failure().is_some() && !error.retryable())
                     || (error.websocket_failure().is_some() && !error.retryable())
+                    || (classified && !error.retryable() && !graceful_disconnect_timed_out)
                 {
                     shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);
@@ -511,6 +548,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 };
                 connected = false;
                 shared.invalidate_connection(&error);
+                shared.reconnect.failed(error.clone());
                 if !deliver(&delivery, WrapperEvent::Disconnected { phase, error }).await {
                     let error = overflow_error();
                     shared.fail_acknowledgements(&error);
@@ -603,6 +641,7 @@ fn map_v4_event(
 fn snapshot_v4(eventloop: &rumqttc_v4::EventLoop) -> DiagnosticsSnapshot {
     let diagnostics = eventloop.diagnostics();
     DiagnosticsSnapshot {
+        reconnect: None,
         #[cfg(not(feature = "ordered-shutdown"))]
         ordered_shutdown: None,
         #[cfg(feature = "ordered-shutdown")]

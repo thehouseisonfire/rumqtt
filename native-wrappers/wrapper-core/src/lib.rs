@@ -32,7 +32,12 @@ pub use publish::{
     PublishAdmissionPolicy, PublishBudgetLimits, PublishBudgetSnapshot, PublishFailure,
 };
 mod proxy;
+mod reconnect;
 mod redirect;
+pub use reconnect::{
+    ReconnectConfig, ReconnectDiagnostics, ReconnectExhaustion, ReconnectJitter, ReconnectPhase,
+    ReconnectPolicy, ReconnectStopReason, RetryBudget,
+};
 mod runtime;
 pub mod rust_session_store;
 mod session;

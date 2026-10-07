@@ -299,13 +299,32 @@ impl ShutdownCoordinator {
         true
     }
 
+    pub(crate) async fn wait_retry_shutdown(&self) {
+        loop {
+            let changed = self.progress.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.poll_error_action() != PollErrorAction::Reconnect {
+                return;
+            }
+            changed.await;
+        }
+    }
+
     pub(crate) fn poll_error_action(&self) -> PollErrorAction {
+        self.reconnect_action(false)
+    }
+
+    pub(crate) fn reconnect_action(&self, initial_cycle: bool) -> PollErrorAction {
         match &*self
             .record
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
         {
             ShutdownRecord::Running | ShutdownRecord::Ordered => PollErrorAction::Reconnect,
+            // Graceful close drains admitted work through the initial connection,
+            // but never starts another cycle after a connection failure.
+            ShutdownRecord::Graceful { .. } if initial_cycle => PollErrorAction::Reconnect,
             ShutdownRecord::Graceful { .. }
             | ShutdownRecord::Closed { .. }
             | ShutdownRecord::Failed => PollErrorAction::Fail,
@@ -705,6 +724,7 @@ mod tests {
         shutdown.commit_graceful(&admission);
         assert!(shutdown.should_drain_admitted_work());
         assert_eq!(shutdown.poll_error_action(), PollErrorAction::Fail);
+        assert_eq!(shutdown.reconnect_action(true), PollErrorAction::Reconnect);
 
         let progress = shutdown.notified();
         tokio::pin!(progress);
@@ -719,12 +739,21 @@ mod tests {
             crate::Completion::GracefulShutdown
         );
         assert_eq!(shutdown.state(), LifecycleState::Closed);
+        assert_eq!(shutdown.reconnect_action(true), PollErrorAction::Fail);
         assert_eq!(shutdown.reconcile_closed(), ClosedOutcome::Graceful);
         assert_eq!(
             admission.completion.wait().unwrap(),
             crate::Completion::GracefulShutdown
         );
         assert!(shutdown.transition_to_closing().is_err());
+    }
+
+    #[test]
+    fn failed_shutdown_never_allows_an_initial_connection() {
+        let (shutdown, _) = coordinator();
+        shutdown.reconcile_failed(Error::new(ErrorKind::Internal, "driver failed"));
+        assert_eq!(shutdown.reconnect_action(true), PollErrorAction::Fail);
+        assert_eq!(shutdown.poll_error_action(), PollErrorAction::Fail);
     }
 
     #[test]
@@ -735,6 +764,10 @@ mod tests {
         shutdown.commit_immediate(Some(&admission));
 
         assert!(shutdown.immediate_requested());
+        assert_eq!(
+            shutdown.reconnect_action(true),
+            PollErrorAction::CompleteImmediateClose
+        );
         assert!(!shutdown.should_drain_admitted_work());
         assert_eq!(
             shutdown.poll_error_action(),

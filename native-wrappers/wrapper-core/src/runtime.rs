@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use flume::{Receiver, Sender};
 use futures_util::FutureExt;
-use futures_util::stream::FuturesUnordered;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
 
 use crate::acknowledgement::AcknowledgementCoordinator;
@@ -17,7 +17,7 @@ use crate::handle::{ClientHandle, NEXT_CLIENT_ID, Shared};
 use crate::operations::OperationRegistry;
 use crate::operations::{
     CompletionRegistration, DiagnosticsRequest, PendingFuture, PendingSender, accept_registration,
-    complete_queued_diagnostics, drain_pending, fail_unfinished,
+    complete_queued_diagnostics, drain_pending, fail_unfinished, resolve_pending,
 };
 
 use crate::shutdown::{ClosedOutcome, ShutdownCoordinator};
@@ -157,6 +157,10 @@ impl DriverTerminal {
             }
             other @ TerminalStatus::Closed { .. } => other,
         };
+        self.shared.reconnect.terminate(match &terminal {
+            TerminalStatus::Failed(error) => Some(error),
+            TerminalStatus::Closed { .. } => None,
+        });
         let unresolved = match &terminal {
             TerminalStatus::Closed { graceful } => Error::new(
                 ErrorKind::Shutdown,
@@ -719,6 +723,7 @@ impl NativeClient {
     fn prepare(config: ClientConfig) -> Result<PreparedClient> {
         install_boundary_panic_hook();
         config.validate()?;
+        let reconnect = crate::reconnect::Controller::new(config.common.reconnect.clone());
         let protocol = config.protocol_version();
         let reauthentication_enabled = matches!(&config.protocol, crate::ProtocolConfig::V5(v5)
             if v5.authenticator.is_some() || v5.async_authenticator.is_some() || v5.scram.is_some());
@@ -753,6 +758,7 @@ impl NativeClient {
             operations,
             shutdown,
             panic_tx,
+            reconnect,
         );
         shared.set_protocol_admission_state(session_expiry_zero, reauthentication_enabled);
         let context = DriverContext {
@@ -867,6 +873,96 @@ pub struct ShutdownInputs<'a> {
     shared: &'a Shared,
     completion_rx: &'a Receiver<CompletionRegistration>,
     diagnostics_rx: &'a Receiver<DiagnosticsRequest>,
+}
+
+pub enum RetryReady {
+    Poll,
+    /// Expired ordered shutdown must be polled for native terminal cleanup only.
+    #[cfg(feature = "ordered-shutdown")]
+    Cleanup,
+    Terminal(TerminalStatus),
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Reuse existing driver-owned observation and shutdown resources"
+)]
+pub async fn wait_reconnect(
+    shutdown: &ShutdownInputs<'_>,
+    diagnostics: &DiagnosticsSnapshot,
+    pending: &mut FuturesUnordered<PendingFuture>,
+    senders: &mut HashMap<OperationId, PendingSender>,
+    immediate: &Receiver<()>,
+    panic: &Receiver<()>,
+) -> RetryReady {
+    let shared = shutdown.shared;
+    // An in-progress cycle can yield buffered AUTH/redirect events. It remains
+    // open across subsequent polls, without another budget debit or backoff.
+    if shared.reconnect.snapshot().phase == crate::ReconnectPhase::Attempting {
+        return RetryReady::Poll;
+    }
+    let snapshot = shared.reconnect.snapshot();
+    let due = snapshot
+        .captured_at
+        .checked_add(snapshot.remaining_delay.unwrap_or_default());
+    loop {
+        match shared.reconnect_action(snapshot.phase == crate::ReconnectPhase::Initial) {
+            crate::shutdown::PollErrorAction::CompleteImmediateClose => {
+                return RetryReady::Terminal(
+                    finish_close(shutdown, diagnostics, pending, senders).await,
+                );
+            }
+            crate::shutdown::PollErrorAction::Fail => {
+                let error = shared.reconnect.snapshot().last_failure.unwrap_or_else(|| {
+                    Error::new(
+                        ErrorKind::Shutdown,
+                        "client closed before connection establishment",
+                    )
+                });
+                return RetryReady::Terminal(TerminalStatus::Failed(error));
+            }
+            crate::shutdown::PollErrorAction::Reconnect => {}
+        }
+        // Observe an expired fence before exhaustion, so native deadline/checkpoint
+        // processing stays authoritative. This branch must never establish a socket.
+        #[cfg(feature = "ordered-shutdown")]
+        if shared.ordered_deadline_expired() {
+            return RetryReady::Cleanup;
+        }
+        if let Err(error) = shared.reconnect.check_budget() {
+            return RetryReady::Terminal(TerminalStatus::Failed(error));
+        }
+        if due.is_none_or(|due| due <= tokio::time::Instant::now().into_std()) {
+            return match shared.reconnect.start() {
+                Ok(()) => RetryReady::Poll,
+                Err(error) => RetryReady::Terminal(TerminalStatus::Failed(error)),
+            };
+        }
+        tokio::select! {
+            _ = panic.recv_async() => terminate_driver_for_boundary_panic(),
+            _ = immediate.recv_async() => {},
+            () = shared.wait_retry_shutdown() => {},
+            () = async {
+                #[cfg(feature = "ordered-shutdown")]
+                shared.wait_ordered_deadline().await;
+                #[cfg(not(feature = "ordered-shutdown"))]
+                std::future::pending::<()>().await;
+            } => {},
+            registration = shutdown.completion_rx.recv_async() => if let Ok(registration) = registration {
+                accept_registration(registration, pending, senders);
+            },
+            request = shutdown.diagnostics_rx.recv_async() => if let Ok(request) = request {
+                let mut snapshot = diagnostics.clone();
+                shared.ordered_diagnostics(&mut snapshot);
+                request.resolve(snapshot);
+            },
+            result = pending.next(), if !pending.is_empty() => if let Some(result) = result {
+                resolve_pending(result, senders);
+            },
+            () = tokio::time::sleep_until(due.expect("checked retry deadline").into()) => {},
+        }
+        tokio::task::yield_now().await;
+    }
 }
 
 impl<'a> ShutdownInputs<'a> {
@@ -1012,7 +1108,9 @@ pub async fn complete_shutdown(
         "driver closed before acknowledgement transmission was observed",
     ));
     if shutdown.shared.should_drain_admitted_work() {
-        complete_queued_diagnostics(shutdown.diagnostics_rx, diagnostics);
+        let mut diagnostics = diagnostics.clone();
+        shutdown.shared.ordered_diagnostics(&mut diagnostics);
+        complete_queued_diagnostics(shutdown.diagnostics_rx, &diagnostics);
         drain_pending(pending, senders).await;
     }
     fail_unfinished(senders);

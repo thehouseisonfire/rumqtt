@@ -301,3 +301,29 @@ Linux execution passed the native C suite and examples (63 tests), C ABI/header/
 export and C/C++ consumer checks, including the expanded admission fixture.
 See [TODO32](../../TODO32.md) for feature-matrix and lint evidence.
 macOS/Windows native execution remains in platform CI.
+
+## Core reconnect policy (TODO34)
+
+C and wrapper-core expose classified timing, jitter, finite/unlimited budgets,
+stable-connection reset, typed native eligibility and owned retry observations.
+Legacy startup remains the default. C additions preserve existing records and
+export names; `RECONNECT_EXHAUSTED` distinguishes terminal exhaustion from wait
+timeouts and retains the last failure and counters. Python/JavaScript continue
+using legacy defaults without new public policy controls.
+
+`reconnect_policy` covers both protocols, retained publish replay/completions,
+first-connection exhaustion, backoff close/diagnostics, idle reset, shared-worker
+independence, native ordered deadline cleanup, MQTT 5 SRV fallback within
+one cycle, and established redirects subject to backoff and budgets.
+`reconnect_startup` deterministically admits graceful/immediate shutdown before
+the first poll on a shared worker, covering both protocols and policies.
+`socks_reconnect` covers typed transient proxy replies, recovery and exhaustion,
+and terminal policy/protocol replies in both protocols.
+`reconnect_stability` covers MQTT 5 DISCONNECT under event backpressure, including
+queued packets, synchronous observations and deferred native error cleanup.
+`native_reconnect` and the retry example cover the real C surface,
+validation rollback, recovery, exhaustion, retained owned errors/snapshots and
+terminal authentication refusal. Native redirect limits and replay remain
+client-owned. Optional decision callbacks and pause/resume/request-attempt are
+not implemented; runtime updates and full structured diagnostics remain in
+TODO35/TODO37.

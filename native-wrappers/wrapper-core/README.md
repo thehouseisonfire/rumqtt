@@ -597,3 +597,35 @@ updating. See the [C contract](../c/README.md#ordered-publish-shutdown-optional)
 [recipe](../../docs/recipes/ordered-shutdown.md), and
 [performance harness](benches/README.md). Cargo feature unification can activate
 native costs even if wrapper ordered API support is disabled.
+
+## Reconnect policy
+
+`CommonConfig::reconnect` defaults to `ReconnectPolicy::Legacy`, preserving
+immediate retries and existing terminal checks. Opt into
+`ReconnectPolicy::Classified(ReconnectConfig::default())` for typed error
+classification, exponential backoff with full jitter, explicit unlimited retries,
+and reset after 30 seconds of stable connectivity. The first cycle is free;
+`RetryBudget::Limited(0)` allows no subsequent cycles. Configuration is validated
+at startup and shared policy state is independent for every client.
+
+`ClientHandle::reconnect_diagnostics()` captures an owned observation without
+waiting for MQTT polling and remains usable after termination. Existing
+`Completion::Diagnostics` results include a captured `reconnect` snapshot.
+`ErrorCode::ReconnectExhausted` and `Error::reconnect_exhaustion()` retain counts
+and the sanitized last failure separately from an observer's timeout. Pending
+admitted delivery remains conservative; retained MQTT notices and session replay
+are still native-owned.
+
+Backoff services diagnostics, completions and close; healthy polling continues
+through idle stability reset. Broker DISCONNECT ends stability tracking as soon
+as it is observed; event delivery and deferred cleanup cannot extend that interval.
+Graceful close before the first driver poll allows
+the initial connection to drain admitted work, but a failed cycle during graceful
+close still terminates without retrying. Typed SOCKS availability failures retry
+within the configured budget; authentication, ruleset and protocol failures stop.
+Native ordered shutdown cleanup interrupts an
+expired total deadline during backoff. MQTT 5 buffered events, handshake
+redirects and SRV candidate fallback do not spend additional cycle retries.
+See the [C contract and classification table](../c/README.md#reconnect-policy)
+for exact budgets, jitter, deadline scopes, legacy metadata differences and
+redirect behavior. Custom decisions and host scheduling are deferred.

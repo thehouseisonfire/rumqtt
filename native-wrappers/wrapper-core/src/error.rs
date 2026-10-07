@@ -43,6 +43,7 @@ pub enum ErrorCode {
     BrokerRejected,
     EventBufferOverflow,
     InternalPanic,
+    ReconnectExhausted,
     WebSocketHandshake,
     Internal,
 }
@@ -74,6 +75,7 @@ impl ErrorCode {
             Self::EventBufferOverflow => "EVENT_BUFFER_OVERFLOW",
             Self::WebSocketHandshake => "WEBSOCKET_HANDSHAKE",
             Self::InternalPanic => "INTERNAL_PANIC",
+            Self::ReconnectExhausted => "RECONNECT_EXHAUSTED",
             Self::Internal => "INTERNAL",
         }
     }
@@ -131,12 +133,31 @@ pub struct Error {
     websocket_failure: Option<crate::WebSocketHandshakeFailure>,
     tls_callback_failure: Option<crate::TlsCallbackFailure>,
     ordered_failure: Option<crate::OrderedDisconnectFailure>,
+    exhaustion: Option<Arc<crate::ReconnectExhaustion>>,
     context: ErrorContext,
     #[source]
     source: Option<Arc<dyn StdError + Send + Sync>>,
 }
 
 impl Error {
+    pub(crate) fn reconnect_exhausted(details: crate::ReconnectExhaustion) -> Self {
+        let context = details
+            .last_failure
+            .as_ref()
+            .map_or_else(ErrorContext::default, Self::context);
+        let mut error = Self::new(ErrorKind::Network, "reconnect retry budget exhausted")
+            .with_code(ErrorCode::ReconnectExhausted)
+            .with_retryable(false)
+            .with_context(context);
+        error.exhaustion = Some(Arc::new(details));
+        error
+    }
+
+    #[must_use]
+    pub fn reconnect_exhaustion(&self) -> Option<&crate::ReconnectExhaustion> {
+        self.exhaustion.as_deref()
+    }
+
     #[must_use]
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         let (code, retryable) = defaults(kind);
@@ -155,6 +176,7 @@ impl Error {
             websocket_failure: None,
             tls_callback_failure: None,
             ordered_failure: None,
+            exhaustion: None,
             context: ErrorContext::default(),
             source: None,
         }
@@ -185,6 +207,7 @@ impl Error {
             websocket_failure: None,
             tls_callback_failure: None,
             ordered_failure: None,
+            exhaustion: None,
             context: ErrorContext::default(),
             source: Some(Arc::new(error)),
         }

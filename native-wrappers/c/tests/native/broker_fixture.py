@@ -875,6 +875,16 @@ class Broker:
             if client_id.startswith(b"native-admission-"):
                 self.publish_admission(stream, client_id, attempt)
                 return
+            if client_id == b"c-reconnect-example" and attempt <= 2:
+                stream.sendall(frame(2, 0, b"\x00\x89\x00"))
+                return
+            if client_id.startswith(b"native-reconnect-"):
+                if client_id.startswith(b"native-reconnect-auth-"):
+                    stream.sendall(frame(2, 0, b"\x00\x87\x00" if protocol == 5 else b"\x00\x05"))
+                    return
+                if not client_id.startswith(b"native-reconnect-recover-") or attempt <= 2:
+                    stream.sendall(frame(2, 0, b"\x00\x89\x00" if protocol == 5 else b"\x00\x03"))
+                    return
             if client_id.startswith(b"native-terminal-"):
                 self.acknowledgement_results(stream, protocol, client_id, attempt)
                 return

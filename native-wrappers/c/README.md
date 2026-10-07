@@ -1075,11 +1075,113 @@ reported by `result_count`'s presence output. Non-filter packet kinds reject
 filter accessors. These are native decoded terminal details, not raw wire tracing.
 Python and JavaScript retain their existing coarse result APIs.
 
+## Reconnect policy
+
+Unconfigured clients retain legacy immediate retries and existing terminal
+checks. To opt into classified retry decisions, initialize
+`rumqttc_reconnect_options_t` with `RUMQTTC_RECONNECT_OPTIONS_INIT` and install it
+with `rumqttc_config_set_reconnect_policy` before startup. Defaults are a
+1-second initial delay, 60-second cap, integer multiplier 2, full jitter,
+explicit unlimited retries, and a 30-second stability interval.
+`rumqttc_config_clear_reconnect_policy` restores legacy behavior for future
+clients; neither setter modifies an already running client.
+
+```c
+rumqttc_reconnect_options_t retry = RUMQTTC_RECONNECT_OPTIONS_INIT;
+retry.budget_kind = RUMQTTC_RECONNECT_BUDGET_FINITE;
+retry.retry_limit = 5;
+rumqttc_config_set_reconnect_policy(config, &retry, &error);
+```
+
+The first connection cycle starts immediately and is free. Each subsequent
+cycle consumes a retry when started, including retries before the first
+successful connection. Finite zero permits only the initial cycle. The
+exponential base grows after each failure and is capped before full jitter
+samples uniformly from zero through that base; `JITTER_NONE` uses the base
+unchanged. Zero delays and multiplier 1 are valid. Unlimited requires
+`retry_limit=0`; malformed selectors, reserved fields, invalid ranges and
+unrepresentable timer durations are rejected atomically.
+
+Successful CONNACK alone does not reset retries or backoff. Reset requires an
+uninterrupted connection lasting `stability_interval_ms`, including idle time.
+Zero stability resets on CONNACK and permits indefinitely repeated short
+connections. MQTT 5 handshake redirects, buffered events, and native SRV
+fallback remain within the current cycle. A redirect from an established
+connection consumes a new cycle and uses backoff. Native redirect authority,
+limits and session isolation remain in force. This budget does not bound
+individual SRV candidate dials.
+
+Classified decisions inspect typed native variants and causes, not formatted
+text or the historical coarse error kind:
+
+| Failure | Classified decision |
+| --- | --- |
+| Transport I/O, DNS/connect failures, peer closure, missed PING, connection/flush timeout | Retry; invalid input/data, unsupported operations and permission denial stop |
+| v4 CONNACK service unavailable | Retry; other refusals stop |
+| v5 CONNACK service/server unavailable, server busy, connection rate exceeded | Retry; other refusals stop or follow native redirect processing |
+| v5 DISCONNECT normal, server busy/shutdown, keepalive timeout, connection rate exceeded, maximum connection time | Retry; other reasons stop or follow native redirect processing |
+| Malformed protocol data, session mismatch, invalid configuration, authentication rejection, persistence failure | Stop |
+| TLS verification/configuration and opaque TLS/proxy failures without a typed transient transport cause | Stop |
+| SOCKS proxy/target unavailable, general server failure, unreachable host/network, refused connection or expired TTL | Retry; authentication, ruleset, address and protocol failures stop |
+| WebSocket HTTP 408, 429, 5xx or transport closure | Retry; malformed frames and other HTTP/protocol failures stop |
+| Typed transport/TLS/WebSocket callbacks | Existing typed eligibility; mandatory callback/destructor failures stop |
+| Unclassified failures | Stop |
+
+WebSocket classification also inspects errors wrapped as stream I/O. EOF
+without a WebSocket closing handshake remains a retryable transport loss.
+
+MQTT 5 broker DISCONNECT ends stability tracking when observed, including when
+earlier packets are still queued for delivery. Event backpressure and deferred
+native cleanup cannot earn a stability reset after the connection ends; a reset
+already earned before DISCONNECT is preserved.
+
+Under classified policy, exposed error retryability matches the decision.
+Legacy decisions retain their historical metadata differences; an error with
+`retryable=0` alone does not describe whether a legacy driver will reconnect.
+
+`rumqttc_client_reconnect_diagnostics` returns an owned scalar snapshot without
+waiting for native polling. It remains available after termination while the
+client handle lives. `rumqttc_completion_reconnect_diagnostics` observes an
+immutable snapshot from an existing diagnostics completion. Durations refer to
+capture time; `snapshot_age_ms` exposes the age of retained completion snapshots.
+Lifetime cycle counts include the free initial cycle; retries since reset and
+reset counts are separate. Last-error accessors return independent owned error
+handles, or NULL when absent, and must not alias `error_out`.
+
+Exhaustion produces nonretryable `RECONNECT_EXHAUSTED`, with cycle/retry counts
+through `rumqttc_error_reconnect_exhaustion` and the last sanitized failure
+through `rumqttc_error_reconnect_last_error`. Observer timeouts remain separate
+and do not stop retries. First-connection observers and unfinished operations
+resolve at terminal exhaustion, completed outcomes remain repeatable, and
+unfinished admitted delivery can remain ambiguous. Exhaustion does not prove
+non-delivery or make resubmission safe.
+
+Backoff keeps diagnostics, completion observation and immediate close
+responsive. Ordinary graceful close admitted before the initial driver poll
+allows the initial connection to drain queued operations. After a failed cycle,
+ordinary graceful close terminates without retrying. Ordered close may recover
+under native session rules, subject to the same retry budget; its total deadline
+interrupts backoff and drives native terminal persistence cleanup. Per-attempt
+handshake timeouts refresh for a new
+attempt; shutdown totals and authentication exchange deadlines retain their
+scope. No total connection timeout or live policy mutation is introduced.
+Mandatory native terminal failures are handled before retry gating. At the
+gate, immediate shutdown and graceful shutdown after a failed cycle take
+precedence, followed by expired ordered shutdown cleanup, retry exhaustion,
+and finally a ready retry timer.
+Admission remains bounded, and applications must continue draining events to
+avoid existing event-delivery overflow termination. MQTT replay and Session
+Present reconciliation remain native-owned.
+
+See the [retry example](examples/reconnect.c). Custom retry decisions and
+pause/resume/request-attempt commands remain follow-up work.
+
 ## Complete C examples
 
 The [`examples`](examples) directory contains warning-clean C11 programs for:
 
 - [single-threaded event polling](examples/event_polling.c);
+- [classified reconnects and finite retry budgets](examples/reconnect.c);
 - [publishing from multiple native threads](examples/multithreaded_publishing.c);
 - [bounded offline MQTT 5 publishing](examples/offline_publishing.c);
 - [polling and timed waiting for tracked completions](examples/tracked_completion.c);

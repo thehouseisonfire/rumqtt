@@ -373,6 +373,64 @@ typedef struct rumqttc_execution_options_t {
 } rumqttc_execution_options_t;
 #define RUMQTTC_EXECUTION_OPTIONS_INIT { sizeof(rumqttc_execution_options_t), 2u, 32u, 0u, 1024u }
 
+/* Legacy is the unconfigured default. The initializer opts into classified retries.
+ * The initial cycle is free; retry_limit counts subsequently started cycles.
+ * Unlimited requires retry_limit=0. Configuration is copied and affects future clients only. */
+#define RUMQTTC_RECONNECT_LEGACY 0u
+#define RUMQTTC_RECONNECT_CLASSIFIED 1u
+#define RUMQTTC_RECONNECT_JITTER_NONE 0u
+#define RUMQTTC_RECONNECT_JITTER_FULL 1u
+#define RUMQTTC_RECONNECT_BUDGET_FINITE 0u
+#define RUMQTTC_RECONNECT_BUDGET_UNLIMITED 1u
+#define RUMQTTC_RECONNECT_PHASE_INITIAL 0u
+#define RUMQTTC_RECONNECT_PHASE_ATTEMPTING 1u
+#define RUMQTTC_RECONNECT_PHASE_CONNECTED 2u
+#define RUMQTTC_RECONNECT_PHASE_WAITING 3u
+#define RUMQTTC_RECONNECT_PHASE_STOPPED 4u
+#define RUMQTTC_RECONNECT_STOP_NONE 0u
+#define RUMQTTC_RECONNECT_STOP_SHUTDOWN 1u
+#define RUMQTTC_RECONNECT_STOP_TERMINAL_FAILURE 2u
+#define RUMQTTC_RECONNECT_STOP_EXHAUSTED 3u
+
+typedef struct rumqttc_reconnect_options_t {
+    uint32_t struct_size;
+    uint32_t mode;
+    uint32_t jitter;
+    uint32_t budget_kind;
+    uint32_t multiplier;
+    uint32_t reserved;
+    uint64_t initial_delay_ms;
+    uint64_t maximum_delay_ms;
+    uint64_t retry_limit;
+    uint64_t stability_interval_ms;
+} rumqttc_reconnect_options_t;
+#define RUMQTTC_RECONNECT_OPTIONS_INIT \
+    { sizeof(rumqttc_reconnect_options_t), 1u, 1u, 1u, 2u, 0u, 1000u, 60000u, 0u, 30000u }
+
+/* Relative durations describe capture time. Completion snapshots are immutable;
+ * direct client snapshots remain available after termination while the handle lives.
+ * Lifetime cycle counts include the initial cycle, but not internal SRV candidate dials. */
+typedef struct rumqttc_reconnect_diagnostics_t {
+    uint32_t struct_size;
+    uint32_t mode;
+    uint32_t phase;
+    uint32_t budget_kind;
+    uint64_t cycles_started;
+    uint64_t retries_since_reset;
+    uint64_t retry_limit;
+    uint64_t reset_count;
+    uint8_t delay_present;
+    uint8_t stability_present;
+    uint8_t last_failure_present;
+    uint8_t reserved;
+    uint32_t stop_reason;
+    uint64_t remaining_delay_at_capture_ms;
+    uint64_t remaining_stability_at_capture_ms;
+    uint64_t snapshot_age_ms;
+} rumqttc_reconnect_diagnostics_t;
+#define RUMQTTC_RECONNECT_DIAGNOSTICS_INIT \
+    { sizeof(rumqttc_reconnect_diagnostics_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+
 typedef struct rumqttc_config_t rumqttc_config_t;
 typedef struct rumqttc_tls_profile_t rumqttc_tls_profile_t;
 typedef struct rumqttc_tls_verifier_registration_t rumqttc_tls_verifier_registration_t;
@@ -1755,6 +1813,35 @@ RUMQTTC_API uint32_t rumqttc_event_redirect_selected_reference(const struct rumq
                                                    uint8_t *present_out,
                                                    struct rumqttc_string_view_t *out,
                                                    struct rumqttc_error_t **error_out);
+
+/* Additive reconnect policy and owned observations. Last-error accessors allocate
+ * independent rumqttc_error_t handles (NULL when absent); destroy them normally.
+ * out and error_out must not alias. Exhaustion has code RECONNECT_EXHAUSTED,
+ * is nonretryable, and never implies non-delivery or safe resubmission. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_reconnect_policy(rumqttc_config_t *config,
+                                                               const rumqttc_reconnect_options_t *options,
+                                                               rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_clear_reconnect_policy(rumqttc_config_t *config,
+                                                                 rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_reconnect_diagnostics(rumqttc_client_t *client,
+                                                               rumqttc_reconnect_diagnostics_t *out,
+                                                               rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_reconnect_diagnostics(const rumqttc_completion_t *completion,
+                                                                   rumqttc_reconnect_diagnostics_t *out,
+                                                                   rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_reconnect_last_error(rumqttc_client_t *client,
+                                                              rumqttc_error_t **out,
+                                                              rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_completion_reconnect_last_error(const rumqttc_completion_t *completion,
+                                                                  rumqttc_error_t **out,
+                                                                  rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_error_reconnect_exhaustion(const rumqttc_error_t *error,
+                                                             uint8_t *present_out,
+                                                             uint64_t *cycles_started_out,
+                                                             uint64_t *retries_since_reset_out);
+RUMQTTC_API rumqttc_status_t rumqttc_error_reconnect_last_error(const rumqttc_error_t *error,
+                                                             rumqttc_error_t **out,
+                                                             rumqttc_error_t **error_out);
 
 #ifdef __cplusplus
 }

@@ -54,6 +54,10 @@ int main(void) {
       RUMQTTC_V5_UNSUBSCRIBE_PROPERTIES_INIT;
   rumqttc_unsubscribe_options_t unsubscribe_options =
       RUMQTTC_UNSUBSCRIBE_OPTIONS_INIT;
+  rumqttc_reconnect_options_t reconnect = RUMQTTC_RECONNECT_OPTIONS_INIT;
+  rumqttc_reconnect_diagnostics_t retry_diagnostics = RUMQTTC_RECONNECT_DIAGNOSTICS_INIT;
+  assert(reconnect.struct_size == sizeof(reconnect) && reconnect.mode == RUMQTTC_RECONNECT_CLASSIFIED);
+  assert(retry_diagnostics.struct_size == sizeof(retry_diagnostics));
   rumqttc_diagnostics_t diagnostics = RUMQTTC_DIAGNOSTICS_INIT;
   rumqttc_tls_options_t tls_options = RUMQTTC_TLS_OPTIONS_INIT;
   rumqttc_tls_pin_t tls_pin = RUMQTTC_TLS_PIN_INIT;

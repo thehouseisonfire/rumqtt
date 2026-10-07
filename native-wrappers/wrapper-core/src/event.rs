@@ -126,6 +126,7 @@ pub struct ConnAckSessionDiagnostics {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticsSnapshot {
+    pub reconnect: Option<Box<crate::ReconnectDiagnostics>>,
     pub ordered_shutdown: Option<Box<crate::OrderedShutdownDiagnostics>>,
     pub connack: Option<ConnAckSessionDiagnostics>,
     pub connected: bool,

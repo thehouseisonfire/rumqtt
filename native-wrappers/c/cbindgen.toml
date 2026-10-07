@@ -9,6 +9,8 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_reconnect_options_t",
+    "rumqttc_reconnect_diagnostics_t",
     "rumqttc_execution_context",
     "rumqttc_execution_options_t",
     "rumqttc_tls_async_verifier_vtable_t",

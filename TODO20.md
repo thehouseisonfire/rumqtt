@@ -53,7 +53,10 @@ and versioned session checkpoints.
   for callers that own policy. Authentication refusal, malformed protocol data,
   DNS/connect failures, peer closure, and transient I/O should not all receive
   the same default retry treatment. Reconnect policy must not bypass session
-  reconciliation or discard pending tracked outcomes.
+  reconciliation or discard pending tracked outcomes. The shared native-wrapper
+  policy in [TODO34.md](TODO34.md) now provides this layer for wrapper-owned
+  drivers; direct Rust polling and a general Rust application-facing adapter
+  remain separate work.
 
 - [ ] **Pause application traffic without pausing MQTT (V4 and V5).** Define a
   control operation that stops admission or scheduling of application PUBLISH

@@ -184,6 +184,29 @@ pub fn map_connection_error(error: &rumqttc_v5::ConnectionError) -> Error {
     {
         return Error::websocket(*failure);
     }
+    if let rumqttc_v5::ConnectionError::SessionStore(source) = error {
+        return Error::store(
+            source
+                .downcast_ref::<crate::StoreFailure>()
+                .copied()
+                .unwrap_or(crate::StoreFailure::Corrupt),
+        )
+        .with_delivery(DeliveryStatus::Ambiguous);
+    }
+    if let rumqttc_v5::ConnectionError::SessionRestore(source) = error {
+        let failure = match source {
+            rumqttc_v5::SessionRestoreError::PublishBudgetExceeded => {
+                return Error::store(crate::StoreFailure::PublishBudgetExceeded)
+                    .with_code(crate::ErrorCode::PublishRestoreBudgetExceeded)
+                    .with_publish_failure(crate::PublishFailure::RestoreBudgetExceeded);
+            }
+            rumqttc_v5::SessionRestoreError::UnsupportedFormatVersion { .. } => {
+                crate::StoreFailure::Version
+            }
+            _ => crate::StoreFailure::Corrupt,
+        };
+        return Error::store(failure).with_delivery(DeliveryStatus::Ambiguous);
+    }
     if let rumqttc_v5::ConnectionError::Redirect(redirect) = error {
         let mut terminal = Error::redirect(super::redirect::failure(&redirect.failure))
             .with_delivery(DeliveryStatus::Ambiguous);
@@ -216,29 +239,6 @@ pub fn map_connection_error(error: &rumqttc_v5::ConnectionError) -> Error {
     }
     if let Some(failure) = super::transport::failure(error) {
         return Error::transport(failure).with_delivery(DeliveryStatus::Ambiguous);
-    }
-    if let rumqttc_v5::ConnectionError::SessionStore(source) = error {
-        return Error::store(
-            source
-                .downcast_ref::<crate::StoreFailure>()
-                .copied()
-                .unwrap_or(crate::StoreFailure::Corrupt),
-        )
-        .with_delivery(DeliveryStatus::Ambiguous);
-    }
-    if let rumqttc_v5::ConnectionError::SessionRestore(source) = error {
-        let failure = match source {
-            rumqttc_v5::SessionRestoreError::PublishBudgetExceeded => {
-                return Error::store(crate::StoreFailure::PublishBudgetExceeded)
-                    .with_code(crate::ErrorCode::PublishRestoreBudgetExceeded)
-                    .with_publish_failure(crate::PublishFailure::RestoreBudgetExceeded);
-            }
-            rumqttc_v5::SessionRestoreError::UnsupportedFormatVersion { .. } => {
-                crate::StoreFailure::Version
-            }
-            _ => crate::StoreFailure::Corrupt,
-        };
-        return Error::store(failure).with_delivery(DeliveryStatus::Ambiguous);
     }
     let kind = match error {
         #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
@@ -637,6 +637,11 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     let mut pending = FuturesUnordered::<PendingFuture>::new();
     let mut senders = HashMap::<OperationId, PendingSender>::new();
     let mut connected = false;
+    #[allow(
+        unused_mut,
+        reason = "Ordered shutdown enables native terminal cleanup"
+    )]
+    let mut native_cleanup = false;
     let mut unresolved_redirect: Option<crate::RedirectEvent> = None;
     let mut pending_auth: Option<(u8, Option<crate::AuthProperties>)> = None;
     let mapping = EventMappingOptions {
@@ -661,6 +666,23 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         // sustained control traffic to the fair arbitration below. Yield after this
         // bounded pass on every iteration so shared execution remains cooperative.
         process_ready_completions(&completion_rx, &mut pending, &mut senders);
+        if !connected && !native_cleanup {
+            match crate::runtime::wait_reconnect(
+                &shutdown,
+                &diagnostics,
+                &mut pending,
+                &mut senders,
+                &immediate_shutdown_rx,
+                &panic_rx,
+            )
+            .await
+            {
+                crate::runtime::RetryReady::Poll => {}
+                #[cfg(feature = "ordered-shutdown")]
+                crate::runtime::RetryReady::Cleanup => native_cleanup = true,
+                crate::runtime::RetryReady::Terminal(status) => return status,
+            }
+        }
         tokio::task::yield_now().await;
         // See the v4 loop: polling is an indivisible ownership boundary even while wrapper
         // registrations, cached diagnostics, and completed notices remain responsive.
@@ -728,6 +750,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         resolve_pending(result, &mut senders);
                         tokio::task::yield_now().await;
                     },
+                    () = shared.reconnect.stability() => { shared.reconnect.refresh(); },
                     result = &mut poll => break Some(result),
                 }
             }
@@ -788,6 +811,12 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         shared.notify_progress();
         synchronize_admission_state(&eventloop, &shared);
         if let Some(packet) = eventloop.take_connection_failure_packet() {
+            if matches!(&packet, rumqttc_v5::Packet::Disconnect(_)) {
+                // The connection has ended even if earlier events remain queued.
+                // Freeze stability before any delivery can block; the next native
+                // polls still own error classification, cleanup and retry timing.
+                shared.reconnect.connection_ended();
+            }
             // Native poll cleanup can consume these packets without yielding an
             // Incoming event. Preserve their owned properties before recovery.
             // A packet still queued behind the current event must be delivered
@@ -844,6 +873,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         diagnostics = snapshot_v5(&eventloop);
         match polled {
             Ok(event) => {
+                let was_connected = connected;
                 if let Some(event) = map_v5_event(
                     &mut eventloop,
                     event,
@@ -852,6 +882,15 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     mapping,
                     &mut pending_auth,
                 ) {
+                    if matches!(&event, WrapperEvent::Connected { .. }) {
+                        shared.reconnect.connected();
+                    }
+                    if was_connected && !connected {
+                        shared.reconnect.failed(shared.contextualize(Error::new(
+                            ErrorKind::Network,
+                            "connection redirected",
+                        )));
+                    }
                     if let WrapperEvent::Redirect(redirect) = &event {
                         unresolved_redirect = redirect.target.is_none().then(|| redirect.clone());
                     }
@@ -896,6 +935,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     // The native error can precede wrapper admission commitment (e.g. zero deadline).
                     // It remains the authority: further native polls own pending terminal cleanup.
                     connected = false;
+                    native_cleanup = true;
                     continue;
                 }
                 if let rumqttc_v5::ConnectionError::Redirect(redirect) = &error {
@@ -917,17 +957,24 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     }
                     return TerminalStatus::Failed(terminal);
                 }
+                let classified = shared.reconnect.classified();
+                let eligible = super::reconnect::v5(&error);
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v5::ConnectionError::DisconnectTimeout);
-                let error = shared.contextualize(
+                let mut error = shared.contextualize(
                     websocket
                         .failure()
                         .map_or_else(|| map_connection_error(&error), Error::websocket),
                 );
+                if classified {
+                    let retryable = super::reconnect::mapped(&error, eligible);
+                    error = error.with_retryable(retryable);
+                }
                 if error.kind() == ErrorKind::Persistence
                     || (error.transport_failure().is_some() && !error.retryable())
                     || (error.tls_callback_failure().is_some() && !error.retryable())
                     || (error.websocket_failure().is_some() && !error.retryable())
+                    || (classified && !error.retryable() && !graceful_disconnect_timed_out)
                 {
                     shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);
@@ -956,6 +1003,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 };
                 connected = false;
                 shared.invalidate_connection(&error);
+                shared.reconnect.failed(error.clone());
                 if !deliver(&delivery, WrapperEvent::Disconnected { phase, error }).await {
                     let error = overflow_error();
                     shared.fail_acknowledgements(&error);
@@ -1263,6 +1311,7 @@ fn synchronize_admission_state(eventloop: &rumqttc_v5::EventLoop, shared: &Share
 fn snapshot_v5(eventloop: &rumqttc_v5::EventLoop) -> DiagnosticsSnapshot {
     let diagnostics = eventloop.diagnostics();
     DiagnosticsSnapshot {
+        reconnect: None,
         #[cfg(not(feature = "ordered-shutdown"))]
         ordered_shutdown: None,
         #[cfg(feature = "ordered-shutdown")]
