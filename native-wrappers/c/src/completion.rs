@@ -19,6 +19,10 @@ impl CompletionObject {
         }
     }
 
+    pub fn recovery_snapshot(&self) -> Option<rumqttc_wrapper_core::RecoverySnapshot> {
+        self.handle.recovery_snapshot()
+    }
+
     pub fn poll(&self) -> Option<Result<Completion, Error>> {
         match self.handle.try_wait() {
             Ok(None) => None,

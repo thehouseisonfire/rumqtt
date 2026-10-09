@@ -57,6 +57,7 @@ fn success(operation_id: u64, completion: Completion) -> Value {
             json!({"type":"configurationStaged","revision":receipt.revision.to_string()})
         }
         Completion::Authenticated => json!({ "type": "authenticated" }),
+        Completion::SessionRecovered => json!({"type":"sessionRecovered"}),
         Completion::Diagnostics(diagnostics) => json!({
             "type": "diagnostics",
             "connected": diagnostics.connected,

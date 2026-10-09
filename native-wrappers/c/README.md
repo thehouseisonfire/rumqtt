@@ -64,6 +64,69 @@ fixed. Read the [applicability, revision, redirect, failure and erasure
 contract](../wrapper-core/runtime-configuration.md) and the runnable
 [rotation example](examples/configuration_rotation.c) before using this API.
 
+## Explicit session recovery
+
+Use `rumqttc_client_recover_session_tracked` (or the operation-ID-only
+`rumqttc_client_try_recover_session`) for an explicit operator decision to abandon
+**all** unfinished session work. Only a running, disconnected client is eligible;
+a Disconnected event can be stale, so check admission status. Connected, terminal,
+closing and overlapping requests are rejected without changing the session.
+Admission is nonblocking and remains responsive during reconnect backoff. This API
+is always available; it has no optional feature flag.
+
+```c
+rumqttc_completion_t *recovery = NULL;
+rumqttc_session_recovery_snapshot_t progress = RUMQTTC_SESSION_RECOVERY_SNAPSHOT_INIT;
+/* Check admission before observing. Timeout only ends this observation. */
+if (rumqttc_client_recover_session_tracked(client, &recovery, &error) == RUMQTTC_OK) {
+    rumqttc_status_t status = rumqttc_completion_wait_timeout_ms(recovery, 10000, &error);
+    rumqttc_completion_session_recovery_snapshot(recovery, &progress, NULL);
+    /* OK completes as RUMQTTC_COMPLETION_SESSION_RECOVERED.
+       On failure, inspect error and progress before deciding what to do next. */
+    (void)status;
+    rumqttc_completion_destroy(recovery);
+}
+```
+
+The driver finishes its active native poll/attempt under existing deadlines,
+closes any candidate transport before resetting ownership, resolves discarded
+publish/subscribe/unsubscribe and ACK/AUTH operations once, and awaits checkpoint
+clearing before sending a fresh CONNECT. MQTT producers receive `BACKPRESSURE`
+with definitely-not-admitted delivery while recovery owns admission. Diagnostics,
+events and close remain available. Previously transmitted work stays ambiguous:
+abandonment cannot undo broker delivery. Observe each old operation's completion.
+
+MQTT 5 temporarily uses Clean Start and retains configured session expiry. MQTT
+3.1.1 persistent mode first connects cleanly, flushes DISCONNECT, then establishes
+a fresh persistent connection. Only the final connection is reported as Connected
+and accepted for application traffic. Long-term session policy, protocol, identity
+and store scope are preserved. Unexpected Session Present is validated using the
+configured compatibility policy; the final v4 persistent connection must be fresh.
+Redirects during the transition fail safely before applying another profile. Required subscriptions
+and application session state must be recreated after success. Selective discard,
+raw packet-ID/alias mutation and separate reset/drain controls are unsupported.
+
+Initialize the size-versioned progress record with the provided macro. Its phase,
+failure phase, committed abandonment, completed checkpoint clearing, and fresh
+establishment flags remain readable while pending and after failure or client
+destruction. `rumqttc_error_session_recovery_failure` adds recovery failure details
+to existing errors; store, reconnect and delivery details remain available.
+Timeout or observer destruction does not cancel the operation. Shutdown admitted
+during recovery interrupts it and never reopens MQTT admission; committed local
+or durable cleanup is not rolled back. Use the retained snapshot to distinguish
+completed cleanup from incomplete work.
+
+Clearing failure is terminal and is not retried automatically. If abandonment
+committed but clearing is incomplete, repair/clear the pinned checkpoint explicitly
+before constructing a replacement client; an immediate-close cancellation also
+requires checking the store outcome. Unreadable checkpoints and failed clients
+require store administration and a new client, not this operation. Ordinary
+reconnect continues to preserve unfinished exchanges and uses its existing policy;
+explicit recovery preserves its remaining retry budget and delay, with no extra
+free attempt or new operation deadline. See the
+[operator example](examples/session_recovery.c) and
+[file-store administration scope](../../TODO39.md).
+
 ## Shared execution
 
 Dedicated execution remains the default: each started client has its own driver

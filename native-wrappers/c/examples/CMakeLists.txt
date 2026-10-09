@@ -33,6 +33,7 @@ set(RUMQTTC_C_EXAMPLES
     websocket_tokens
     event_polling
     reconnect
+    session_recovery
     multithreaded_publishing
     tracked_completion
     offline_publishing

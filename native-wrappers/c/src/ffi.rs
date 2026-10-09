@@ -42,6 +42,9 @@ pub use reconnect::*;
 #[path = "ordered.rs"]
 mod ordered;
 pub use ordered::*;
+#[path = "recovery.rs"]
+mod recovery;
+pub use recovery::*;
 
 #[path = "execution.rs"]
 mod execution;
@@ -4677,6 +4680,7 @@ const fn completion_kind(completion: &Completion) -> u32 {
         Completion::Unsubscribe(_) => 5,
         Completion::Acknowledged => 6,
         Completion::Authenticated => 10,
+        Completion::SessionRecovered => 13,
         Completion::Diagnostics(_) => 7,
         Completion::OrderedShutdown => 11,
         Completion::ConfigurationStaged(_) => 12,

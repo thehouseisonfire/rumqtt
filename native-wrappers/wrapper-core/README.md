@@ -4,6 +4,30 @@ Private Rust infrastructure shared by native rumqtt wrappers. The crate owns
 the MQTT event loop on dedicated or explicitly shared execution and exposes owned, protocol-neutral
 configuration, commands, completions, events, diagnostics, and errors.
 
+## Explicit session recovery
+
+`ClientHandle::try_admit(Command::RecoverSession)` admits one driver-owned
+abandonment and fresh-session transaction for a running disconnected client. MQTT
+admission stays closed through quiescence, native ownership retirement, durable
+checkpoint clearing and the fresh handshake. `Completion::SessionRecovered` proves
+all required boundaries completed. `CompletionHandle::recovery_snapshot()` retains
+operation-local progress, even after failure or client destruction; errors carry
+`RecoveryFailure` alongside existing delivery/store/reconnect details.
+
+The active poll is retained until it settles under existing deadlines. Clearing
+failure is terminal, shutdown interrupts recovery, and observer timeout/drop cannot
+cancel or undo abandonment. Recovery keeps the configured identity, store scope and
+long-term session policy, plus remaining reconnect delays/budget. MQTT v4 persistent
+mode completes a clean connection/disconnect before its new persistent connection;
+MQTT v5 temporarily uses Clean Start with configured expiry. Recreate subscriptions
+after success, and treat previously transmitted discarded work as ambiguous.
+Terminal clients require store administration and replacement. See the
+[C contract and operator example](../c/README.md#explicit-session-recovery).
+
+The hidden native event-loop recovery methods are coordinated support for this
+managed owner. Calling them without the shared producer/shutdown barrier does not
+provide the wrapper's transaction guarantees.
+
 ## Execution ownership
 
 `NativeClient::start(config)` preserves dedicated-thread startup.

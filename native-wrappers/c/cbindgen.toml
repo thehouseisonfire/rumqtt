@@ -58,6 +58,7 @@ include = [
     "rumqttc_user_property_t",
     "rumqttc_acknowledgement_details_t",
     "rumqttc_ordered_shutdown_diagnostics_t",
+    "rumqttc_session_recovery_snapshot_t",
     "rumqttc_v5_publish_properties_t",
     "rumqttc_publish_options_t",
     "rumqttc_v5_subscription_options_t",

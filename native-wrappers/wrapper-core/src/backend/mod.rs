@@ -456,6 +456,15 @@ impl BackendDriver {
         }
     }
 
+    pub(crate) fn recovery_gate(
+        &self,
+    ) -> std::sync::Arc<rumqttc_core::session_recovery::SessionRecoveryGate> {
+        match self {
+            Self::V4(driver) => driver.eventloop.session_recovery_gate(),
+            Self::V5(driver) => driver.eventloop.session_recovery_gate(),
+        }
+    }
+
     pub(crate) fn tls_callback_monitor(&self) -> std::sync::Arc<TlsCallbackMonitor> {
         match self {
             Self::V4(driver) => std::sync::Arc::clone(&driver.tls_callbacks),

@@ -227,6 +227,10 @@ impl SessionSave {
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
+    #[error("session recovery requires an owner transition")]
+    SessionRecoveryPending,
+    #[error("session recovery identity changed or transition is unavailable")]
+    SessionRecoveryInvalid,
     #[cfg(feature = "ordered-shutdown")]
     #[error("Ordered shutdown failed: {0}")]
     OrderedDisconnect(#[from] crate::DisconnectNoticeError),
@@ -530,6 +534,7 @@ enum PendingServerRedirect {
 
 /// Eventloop with all the state of a connection
 pub struct EventLoop {
+    recovery: Arc<rumqttc_core::session_recovery::SessionRecoveryGate>,
     /// Options of the current mqtt connection
     pub options: MqttOptions,
     connection_observation: Option<crate::ConnectionObservation>,
@@ -670,6 +675,9 @@ impl Drop for EventLoop {
             .for_each(drop);
     }
 }
+
+#[path = "eventloop_recovery.rs"]
+mod session_recovery;
 
 impl EventLoop {
     /// Takes the latest rejected CONNACK or broker DISCONNECT, including all
@@ -948,6 +956,10 @@ impl EventLoop {
         state.set_async_authenticator(options.async_authenticator());
 
         Self {
+            recovery: rumqttc_core::session_recovery::SessionRecoveryGate::new(
+                options.client_id(),
+                options.session_store_scope().to_owned(),
+            ),
             options,
             connection_observation: None,
             configuration_origin: true,
@@ -1110,6 +1122,10 @@ impl EventLoop {
     }
 
     fn clean_with_notice_reason(&mut self, reason: NoticeFailureReason) {
+        self.recovery.disconnected(
+            self.options.client_id(),
+            self.options.session_store_scope().to_owned(),
+        );
         let publish_admission = self.publish_admission.clone();
         let _admission_cleanup = publish_admission
             .as_ref()
@@ -1992,6 +2008,12 @@ impl EventLoop {
         self.redirect_attempts = 0;
         self.redirect_selected_reference = None;
         self.redirect_visited.clear();
+        // Cleanup recorded the target identity before the origin profile was restored.
+        // Refresh disconnected admission; the gate retains an already admitted recovery's pin.
+        self.recovery.disconnected(
+            self.options.client_id(),
+            self.options.session_store_scope().to_owned(),
+        );
         Ok(())
     }
 
@@ -2092,6 +2114,12 @@ impl EventLoop {
         self.state.set_authenticator(self.options.authenticator());
         self.state
             .set_async_authenticator(self.options.async_authenticator());
+        // Recovery admitted after profile acceptance belongs to the target identity.
+        // A recovery already admitted during the transition keeps its original pin.
+        self.recovery.disconnected(
+            self.options.client_id(),
+            self.options.session_store_scope().to_owned(),
+        );
         preserve_session
     }
 
@@ -2485,6 +2513,11 @@ impl EventLoop {
                         &failure.error,
                     );
                     if let ConnectionError::Redirect(redirect) = failure.error {
+                        // Recovery pins identity/store scope; never apply a redirect profile
+                        // while its producer barrier is held, including an active candidate.
+                        if self.recovery.requested() {
+                            return Err(ConnectionError::SessionRecoveryInvalid);
+                        }
                         if let Some(event) = self.state.events.pop_front() {
                             self.observe_redirect_transition();
                             self.pending_server_redirect =
@@ -2540,6 +2573,10 @@ impl EventLoop {
             self.session_store_key = Some(self.options.session_store_key());
         }
         self.network = Some(network);
+        self.recovery.establish(
+            self.options.client_id(),
+            self.options.session_store_scope().to_owned(),
+        );
         let session_diagnostics = reconciliation.diagnostics(connack.session_present);
         self.connack_session = Some(session_diagnostics);
 
@@ -2928,6 +2965,9 @@ impl EventLoop {
             }
         }
 
+        if self.recovery.requested() {
+            return Err(ConnectionError::SessionRecoveryPending);
+        }
         let result = self.select().await;
         if let Some(admission) = &self.publish_admission {
             admission.notify_progress();

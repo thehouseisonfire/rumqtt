@@ -336,7 +336,8 @@ The [applicability audit](runtime-configuration.md) classifies all setter famili
 Wrapper-core and C stage bounded atomic partial updates while retaining native
 polls. Tuning and next-origin-attempt profiles have independent desired/effective
 revisions; receipts and snapshots retain only redacted observations. Controlled
-reconnect, session reset and general live option mutation remain deferred.
+reconnect and general live option mutation remain deferred. Explicit session
+abandonment and fresh recovery are supported as described below.
 
 `configuration_update` verifies v4/v5 idle staging, partial merge/supersession,
 rollback, in-progress attempts, retry/authentication failure revisions, temporary
@@ -367,3 +368,28 @@ on the wire for both protocols. C-ABI behavior tests cover independent builder,
 receipt and snapshot ownership, invalid outputs and unsupported-update rollback.
 Execution on macOS/Windows remains pending; Linux verification is recorded in
 TODO35.md.
+
+## Explicit session abandonment and recovery
+
+Wrapper-core supports `Command::RecoverSession`, retained `Completion::SessionRecovered`,
+operation-local `RecoverySnapshot` and typed `RecoveryFailure`. C exposes both nonblocking
+operation-ID and tracked admissions, completion kind 13, size-versioned progress and a failure
+accessor. JavaScript/Python only recognize the additional core completion variant internally;
+no public host recovery API is added in this slice.
+
+The managed driver uses audited native event-loop coordination and abandonment/establishment
+transitions. These hidden support hooks are not exposed as independent reset/drain operations
+or raw state/packet-ID/alias mutation. Eligibility is running and disconnected; producers and
+shutdown share the barrier. Queued, replayed and protocol-owned work is explicitly retired,
+ACK/alias generations invalidated, and pinned durable clearing awaited before fresh CONNECT.
+Long-term configuration and ordinary reconnect semantics remain intact. Selective discard,
+terminal-client revival, arbitrary live configuration changes and store administration remain
+outside this API. See the [C recovery contract](../c/README.md#explicit-session-recovery).
+
+`session_recovery` tests cover candidate quiescence, queued and inflight ownership,
+manual ACK/alias invalidation, durable restart, partial clear failures, retained observers,
+producer races, retry-budget preservation, redirects and all shutdown modes. Native v4/v5
+ownership tests exercise replay, scheduler and both request channels directly.
+`native_session_recovery` exercises both C admission forms, typed errors, size/wrong-kind
+validation, retained snapshots, clean/persistent wire policy and terminal store clearing
+failure. The operator example and recovery fixture are included in every C package profile.

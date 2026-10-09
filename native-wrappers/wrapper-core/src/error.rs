@@ -141,6 +141,7 @@ pub struct Error {
     websocket_failure: Option<crate::WebSocketHandshakeFailure>,
     tls_callback_failure: Option<crate::TlsCallbackFailure>,
     ordered_failure: Option<crate::OrderedDisconnectFailure>,
+    recovery_failure: Option<crate::RecoveryFailure>,
     exhaustion: Option<Arc<crate::ReconnectExhaustion>>,
     context: ErrorContext,
     #[source]
@@ -186,6 +187,7 @@ impl Error {
             websocket_failure: None,
             tls_callback_failure: None,
             ordered_failure: None,
+            recovery_failure: None,
             exhaustion: None,
             context: ErrorContext::default(),
             source: None,
@@ -219,6 +221,7 @@ impl Error {
             websocket_failure: None,
             tls_callback_failure: None,
             ordered_failure: None,
+            recovery_failure: None,
             exhaustion: None,
             context: ErrorContext::default(),
             source: Some(Arc::new(error)),
@@ -405,6 +408,17 @@ impl Error {
     #[must_use]
     pub const fn with_delivery(mut self, delivery: DeliveryStatus) -> Self {
         self.delivery = delivery;
+        self
+    }
+
+    #[must_use]
+    pub const fn recovery_failure(&self) -> Option<crate::RecoveryFailure> {
+        self.recovery_failure
+    }
+
+    #[must_use]
+    pub(crate) const fn with_recovery_failure(mut self, failure: crate::RecoveryFailure) -> Self {
+        self.recovery_failure = Some(failure);
         self
     }
 

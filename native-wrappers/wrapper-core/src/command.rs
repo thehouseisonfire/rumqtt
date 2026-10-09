@@ -144,6 +144,8 @@ pub enum Command {
     ImmediateDisconnectWithOptions {
         protocol: DisconnectProtocolOptions,
     },
+    /// Abandon a running disconnected session and establish fresh broker state.
+    RecoverSession,
     Diagnostics,
     /// Completion observes atomic staging, not activation or peer authentication.
     UpdateConfiguration(Box<crate::RuntimeConfigUpdate>),

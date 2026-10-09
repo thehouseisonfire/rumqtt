@@ -82,6 +82,24 @@ pub fn disconnect_properties(
     ))
 }
 
+fn recovery_shutdown(shared: &crate::handle::Shared) -> Option<rumqttc_v5::Disconnect> {
+    let options = shared.recovery_shutdown_options()?;
+    let disconnect = match options {
+        crate::DisconnectProtocolOptions::VersionNeutral => {
+            rumqttc_v5::Disconnect::new(rumqttc_v5::DisconnectReasonCode::NormalDisconnection)
+        }
+        crate::DisconnectProtocolOptions::V5(properties) => {
+            let (reason, properties) = disconnect_properties(&properties)
+                .expect("committed shutdown properties were validated at admission");
+            rumqttc_v5::Disconnect {
+                reason_code: reason,
+                properties: Some(properties),
+            }
+        }
+    };
+    Some(disconnect)
+}
+
 pub fn validate_subscribe(command: &SubscribeCommand) -> Result<()> {
     let SubscribeProtocolOptions::V5(properties) = &command.protocol else {
         return Ok(());
@@ -639,6 +657,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     let mut pending = FuturesUnordered::<PendingFuture>::new();
     let mut senders = HashMap::<OperationId, PendingSender>::new();
     let mut connected = false;
+    let mut recovery_retire = false;
     #[allow(
         unused_mut,
         reason = "Ordered shutdown enables native terminal cleanup"
@@ -668,7 +687,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         // sustained control traffic to the fair arbitration below. Yield after this
         // bounded pass on every iteration so shared execution remains cooperative.
         process_ready_completions(&completion_rx, &mut pending, &mut senders);
-        if !connected && !native_cleanup {
+        if !connected && !native_cleanup && !recovery_retire {
             match crate::runtime::wait_reconnect(
                 &shutdown,
                 &mut configuration,
@@ -680,7 +699,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             )
             .await
             {
-                crate::runtime::RetryReady::Poll => {}
+                crate::runtime::RetryReady::Poll | crate::runtime::RetryReady::Recovery => {}
                 #[cfg(feature = "ordered-shutdown")]
                 crate::runtime::RetryReady::Cleanup => native_cleanup = true,
                 crate::runtime::RetryReady::Terminal(status) => return status,
@@ -694,8 +713,31 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             websocket.reset();
         }
         super::configuration::apply_v5(&mut configuration, &mut eventloop);
+        let recovery_phase = shared.recovery_phase();
+        let recovery_cleanup = recovery_phase == Some(crate::RecoveryPhase::Quiescing);
+        let recovery_attempt = recovery_phase.is_some() && !recovery_cleanup;
         let polled = {
-            let poll = eventloop.poll();
+            let poll = async {
+                if recovery_retire {
+                    let disconnect = recovery_shutdown(&shared)
+                        .expect("candidate retirement requires committed shutdown");
+                    eventloop
+                        .retire_session_recovery_transport_with_disconnect(disconnect)
+                        .await?;
+                    Err(rumqttc_v5::ConnectionError::SessionRecoveryInvalid)
+                } else if recovery_cleanup {
+                    eventloop
+                        .abandon_session_for_recovery_with_shutdown(|| recovery_shutdown(&shared))
+                        .await?;
+                    Err(rumqttc_v5::ConnectionError::SessionRecoveryPending)
+                } else if recovery_attempt {
+                    eventloop
+                        .establish_session_for_recovery_with_shutdown(|| recovery_shutdown(&shared))
+                        .await
+                } else {
+                    eventloop.poll().await
+                }
+            };
             tokio::pin!(poll);
             loop {
                 if connected
@@ -832,9 +874,40 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             )
             .await;
         };
+        if recovery_cleanup
+            && matches!(
+                polled,
+                Err(rumqttc_v5::ConnectionError::SessionRecoveryPending)
+            )
+        {
+            let error = Error::new(
+                ErrorKind::Protocol,
+                "incoming acknowledgement ownership was abandoned with the session",
+            )
+            .with_delivery(DeliveryStatus::Ambiguous);
+            connected = false;
+            shared.fail_acknowledgements(&error);
+            shared.reconnect.abandoned();
+            diagnostics = snapshot_v5(&eventloop);
+            shared.notify_progress();
+            continue;
+        }
+        // Hide candidate events overtaken by recovery, while keeping errors on the
+        // ordinary terminal-classification and shutdown path before any abandonment.
+        let recovery_overtook_poll =
+            !recovery_cleanup && !recovery_attempt && shared.recovery_cleanup_pending();
+        if recovery_overtook_poll
+            && matches!(
+                &polled,
+                Ok(_) | Err(rumqttc_v5::ConnectionError::SessionRecoveryPending)
+            )
+        {
+            continue;
+        }
         shared.notify_progress();
         synchronize_admission_state(&eventloop, &shared);
-        if let Some(packet) = eventloop.take_connection_failure_packet() {
+        if !recovery_overtook_poll && let Some(packet) = eventloop.take_connection_failure_packet()
+        {
             if matches!(&packet, rumqttc_v5::Packet::Disconnect(_)) {
                 // The connection has ended even if earlier events remain queued.
                 // Freeze stability before any delivery can block; the next native
@@ -872,7 +945,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             // Poll defers connection cleanup until these events are delivered. Preserve
             // their order, including ordinary packets consumed before the failed AUTH.
             let mut pending_events: Vec<_> = polled.as_ref().ok().cloned().into_iter().collect();
-            pending_events.extend(eventloop.state.events.drain(..));
+            if !recovery_overtook_poll {
+                pending_events.extend(eventloop.state.events.drain(..));
+            }
             for event in pending_events {
                 if let Some(event) = map_v5_event(
                     &mut eventloop,
@@ -950,6 +1025,12 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         return TerminalStatus::Failed(error);
                     }
                 }
+                if recovery_attempt && !connected && shared.recovery_shutdown_committed() {
+                    // Shutdown can commit after the native last-boundary check but before
+                    // begin_connection. Retire that hidden candidate with the same retained
+                    // poll/control loop instead of reopening traffic or dropping graceful I/O.
+                    recovery_retire = true;
+                }
             }
             Err(rumqttc_v5::ConnectionError::RequestsDone) => {
                 let graceful = complete_shutdown(
@@ -963,6 +1044,28 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 return TerminalStatus::Closed { graceful };
             }
             Err(error) => {
+                if shared.recovering()
+                    && shared.recovery_shutdown_committed()
+                    && matches!(&error, rumqttc_v5::ConnectionError::SessionRecoveryInvalid)
+                {
+                    return finish_close(
+                        &shutdown,
+                        &mut configuration,
+                        &diagnostics,
+                        &mut pending,
+                        &mut senders,
+                    )
+                    .await;
+                }
+                if shared.recovering()
+                    && matches!(
+                        &error,
+                        rumqttc_v5::ConnectionError::SessionRecoveryInvalid
+                            | rumqttc_v5::ConnectionError::SessionStateMismatch { .. }
+                    )
+                {
+                    return TerminalStatus::Failed(map_connection_error(&error));
+                }
                 #[cfg(feature = "ordered-shutdown")]
                 if matches!(&error, rumqttc_v5::ConnectionError::OrderedDisconnect(_)) {
                     // The native error can precede wrapper admission commitment (e.g. zero deadline).
@@ -987,7 +1090,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     );
                     shared.fail_acknowledgements(&terminal);
                     fail_pending(&mut senders, &terminal);
-                    if !deliver(&delivery, WrapperEvent::Redirect(event)).await {
+                    if !recovery_overtook_poll
+                        && !deliver(&delivery, WrapperEvent::Redirect(event)).await
+                    {
                         return TerminalStatus::Failed(overflow_error());
                     }
                     return TerminalStatus::Failed(terminal);
@@ -1007,7 +1112,10 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     let retryable = super::reconnect::mapped(&error, eligible);
                     error = error.with_retryable(retryable);
                 }
-                if error.kind() == ErrorKind::Persistence
+                // Failed abandonment is terminal even for retryable I/O: teardown
+                // and checkpoint clearing must commit before establishment can run.
+                if recovery_cleanup
+                    || error.kind() == ErrorKind::Persistence
                     || (error.transport_failure().is_some() && !error.retryable())
                     || (error.tls_callback_failure().is_some() && !error.retryable())
                     || (error.websocket_failure().is_some() && !error.retryable())
@@ -1054,6 +1162,10 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 connected = false;
                 shared.invalidate_connection(&error);
                 shared.reconnect.failed(error.clone());
+                if recovery_overtook_poll {
+                    shared.notify_progress();
+                    continue;
+                }
                 if !deliver(&delivery, WrapperEvent::Disconnected { phase, error }).await {
                     let error = overflow_error();
                     shared.fail_acknowledgements(&error);
@@ -1248,14 +1360,16 @@ fn map_v5_event(
                     }),
                 ));
             }
-            shared.begin_connection(
+            if !shared.begin_connection(
                 mapping.protocol,
                 connack.session_present,
                 connack.properties.as_ref().and_then(|p| p.max_packet_size),
                 || {
                     eventloop.discard_pending_manual_acknowledgements();
                 },
-            );
+            ) {
+                return None;
+            }
             *connected = true;
             Some(WrapperEvent::Connected {
                 protocol: mapping.protocol,

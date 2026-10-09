@@ -151,6 +151,7 @@ impl DriverTerminal {
         let Some(sender) = self.sender.take() else {
             return;
         };
+        let recovery_interrupted = self.shared.recovery_shutdown_committed();
         let terminal = match terminal {
             TerminalStatus::Failed(error) => {
                 TerminalStatus::Failed(self.shared.contextualize(error))
@@ -184,6 +185,10 @@ impl DriverTerminal {
                 ),
                 TerminalStatus::Failed(error) => error.clone(),
             });
+        self.shared.fail_recovery(
+            &unresolved,
+            recovery_interrupted || matches!(terminal, TerminalStatus::Closed { .. }),
+        );
         self.shared.fail_all_operations(&unresolved);
         let _ = sender.send(terminal);
     }
@@ -765,7 +770,7 @@ impl NativeClient {
         let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_shutdown_tx);
         let connection = ConnectionHandle::new();
         let shared = Shared::new(
-            client,
+            (client, driver.recovery_gate()),
             acknowledgements,
             connection,
             operations,
@@ -893,6 +898,7 @@ pub struct ShutdownInputs<'a> {
 
 pub enum RetryReady {
     Poll,
+    Recovery,
     /// Expired ordered shutdown must be polled for native terminal cleanup only.
     #[cfg(feature = "ordered-shutdown")]
     Cleanup,
@@ -916,6 +922,9 @@ pub async fn wait_reconnect(
     let configuration_rx = configuration.receiver.clone();
     // An in-progress cycle can yield buffered AUTH/redirect events. It remains
     // open across subsequent polls, without another budget debit or backoff.
+    if shared.recovery_cleanup_pending() {
+        return RetryReady::Recovery;
+    }
     if shared.reconnect.snapshot().phase == crate::ReconnectPhase::Attempting {
         return RetryReady::Poll;
     }
@@ -924,6 +933,9 @@ pub async fn wait_reconnect(
         .captured_at
         .checked_add(snapshot.remaining_delay.unwrap_or_default());
     loop {
+        let progress = shared.shutdown_progress();
+        tokio::pin!(progress);
+        progress.as_mut().enable();
         match shared.reconnect_action(snapshot.phase == crate::ReconnectPhase::Initial) {
             crate::shutdown::PollErrorAction::CompleteImmediateClose => {
                 return RetryReady::Terminal(
@@ -941,6 +953,9 @@ pub async fn wait_reconnect(
             }
             crate::shutdown::PollErrorAction::Reconnect => {}
         }
+        if shared.recovery_cleanup_pending() {
+            return RetryReady::Recovery;
+        }
         // Observe an expired fence before exhaustion, so native deadline/checkpoint
         // processing stays authoritative. This branch must never establish a socket.
         #[cfg(feature = "ordered-shutdown")]
@@ -957,6 +972,8 @@ pub async fn wait_reconnect(
             };
         }
         tokio::select! {
+            () = shared.recovery_changed() => {},
+            () = &mut progress => {},
             _ = panic.recv_async() => terminate_driver_for_boundary_panic(),
             _ = immediate.recv_async() => {},
             () = shared.wait_retry_shutdown() => {},

@@ -65,6 +65,7 @@ pub struct FailureDetails {
     pub tls_callback: Option<rumqttc_wrapper_core::TlsCallbackFailure>,
     pub ordered: Option<NonZeroU32>,
     pub publish: Option<NonZeroU32>,
+    pub recovery: Option<NonZeroU32>,
 }
 const EMPTY_FAILURES: FailureDetails = FailureDetails {
     configuration_revision: None,
@@ -76,12 +77,16 @@ const EMPTY_FAILURES: FailureDetails = FailureDetails {
     tls_callback: None,
     ordered: None,
     publish: None,
+    recovery: None,
 };
 
 impl FailureDetails {
     fn from_core(error: &Error) -> Self {
         Self {
             configuration_revision: error.configuration_revision(),
+            recovery: error
+                .recovery_failure()
+                .and_then(|failure| NonZeroU32::new(failure as u32)),
             ordered: error
                 .ordered_disconnect_failure()
                 .and_then(|failure| NonZeroU32::new(failure as u32)),

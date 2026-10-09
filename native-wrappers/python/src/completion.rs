@@ -88,6 +88,7 @@ fn success(value: Completion) -> Value {
             json!({"type":"configurationStaged","revision":receipt.revision.to_string()})
         }
         Completion::Authenticated => json!({"type":"authenticated"}),
+        Completion::SessionRecovered => json!({"type":"sessionRecovered"}),
         Completion::Diagnostics(v) => {
             json!({"type":"diagnostics","connected":v.connected,"disconnecting":v.disconnecting,"pendingRequests":v.pending_requests,"queuedRequests":v.queued_requests,"inflightPublishes":v.inflight_publishes,"maxInflightPublishes":v.max_inflight_publishes,"pendingSubscribes":v.pending_subscribes,"pendingUnsubscribes":v.pending_unsubscribes,"outboundDrained":v.outbound_drained,"connack":connack_session(v.connack)})
         }

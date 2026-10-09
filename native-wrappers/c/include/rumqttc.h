@@ -190,6 +190,43 @@ typedef uint32_t rumqttc_completion_kind_t;
 #define RUMQTTC_COMPLETION_AUTHENTICATED 10u
 #define RUMQTTC_COMPLETION_ORDERED_SHUTDOWN 11u
 
+/* Explicit operator recovery; only running disconnected clients are eligible. Admission
+ * closes MQTT producers until fresh-session establishment. Overlapping recovery and recovery
+ * after shutdown commitment are rejected. Failed clearing is terminal: repair the checkpoint
+ * explicitly before starting a replacement client. Observer timeout/drop does not cancel work.
+ * The two functions admit nonblocking; ordinary completion APIs observe their result. */
+#define RUMQTTC_COMPLETION_SESSION_RECOVERED 13u
+#define RUMQTTC_RECOVERY_PHASE_QUIESCING 1u
+#define RUMQTTC_RECOVERY_PHASE_ABANDONING 2u
+#define RUMQTTC_RECOVERY_PHASE_CLEARING_CHECKPOINT 3u
+#define RUMQTTC_RECOVERY_PHASE_ESTABLISHING_FRESH 4u
+#define RUMQTTC_RECOVERY_PHASE_CLEAN_DISCONNECT 5u
+#define RUMQTTC_RECOVERY_PHASE_ESTABLISHING_PERSISTENT 6u
+#define RUMQTTC_RECOVERY_PHASE_COMPLETED 7u
+#define RUMQTTC_RECOVERY_PHASE_FAILED 8u
+#define RUMQTTC_RECOVERY_PHASE_INTERRUPTED 9u
+#define RUMQTTC_RECOVERY_FAILURE_UNAVAILABLE 1u
+#define RUMQTTC_RECOVERY_FAILURE_IN_PROGRESS 2u
+#define RUMQTTC_RECOVERY_FAILURE_INTERRUPTED 3u
+#define RUMQTTC_RECOVERY_FAILURE_TRANSITION 4u
+#define RUMQTTC_RECOVERY_FAILURE_PERSISTENCE 5u
+#define RUMQTTC_RECOVERY_FAILURE_ESTABLISHMENT 6u
+
+typedef struct rumqttc_session_recovery_snapshot_t {
+    uint32_t struct_size;
+    uint32_t phase;
+    uint32_t failure_phase; /* zero when no terminal failure has occurred */
+    uint8_t abandonment_committed;
+    uint8_t checkpoint_cleared;
+    uint8_t fresh_established;
+    uint8_t session_present_known;
+    uint8_t raw_session_present;
+    uint8_t reserved[7];
+} rumqttc_session_recovery_snapshot_t;
+
+
+
+
 /* Native ordered shutdown failure; operation delivery can remain ambiguous. */
 #define RUMQTTC_ORDERED_FAILURE_TIMEOUT 1u
 #define RUMQTTC_ORDERED_FAILURE_TRANSPORT 2u
@@ -1133,6 +1170,8 @@ typedef struct rumqttc_diagnostics_t {
 #define RUMQTTC_UNSUBSCRIBE_OPTIONS_INIT \
     { sizeof(rumqttc_unsubscribe_options_t), \
       RUMQTTC_PROTOCOL_OPTIONS_VERSION_NEUTRAL, NULL }
+#define RUMQTTC_SESSION_RECOVERY_SNAPSHOT_INIT \
+    { sizeof(rumqttc_session_recovery_snapshot_t), 0, 0, 0, 0, 0, 0, 0, {0, 0, 0, 0, 0, 0, 0} }
 #define RUMQTTC_DIAGNOSTICS_INIT \
     { sizeof(rumqttc_diagnostics_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 
@@ -1578,6 +1617,13 @@ RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_tracked(rumqttc_client_t
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_acknowledge_with_options(rumqttc_client_t *client, rumqttc_event_t *event, const rumqttc_acknowledgement_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_with_options_tracked(rumqttc_client_t *client, rumqttc_event_t *event, const rumqttc_acknowledgement_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_diagnostics_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_recover_session(rumqttc_client_t *client, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_recover_session_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+/* Reads operation-local progress, including while pending and after failure/client destruction.
+ * Initialize struct_size; other fields are initialized on error. Wrong completion kind is rejected. */
+RUMQTTC_API rumqttc_status_t rumqttc_completion_session_recovery_snapshot(const rumqttc_completion_t *completion, rumqttc_session_recovery_snapshot_t *out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_error_session_recovery_failure(const rumqttc_error_t *error, uint8_t *present_out, uint32_t *failure_out);
+
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_reauthenticate(rumqttc_client_t *client, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_reauthenticate_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 

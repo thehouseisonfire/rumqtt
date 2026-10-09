@@ -326,6 +326,13 @@ impl Controller {
         self.state.lock().check_budget()
     }
 
+    pub(crate) fn abandoned(&self) {
+        let mut state = self.state.lock();
+        state.phase = ReconnectPhase::Waiting;
+        state.stable_at = None;
+        // Recovery uses the remaining budget and existing delay; it grants no free cycle.
+    }
+
     pub(crate) fn connected(&self) {
         self.state.lock().connected(now());
     }

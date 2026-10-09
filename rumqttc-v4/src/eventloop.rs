@@ -194,6 +194,10 @@ impl SessionSave {
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
+    #[error("session recovery requires an owner transition")]
+    SessionRecoveryPending,
+    #[error("session recovery identity changed or transition is unavailable")]
+    SessionRecoveryInvalid,
     #[cfg(feature = "ordered-shutdown")]
     #[error("Ordered shutdown failed: {0}")]
     OrderedDisconnect(#[from] crate::DisconnectNoticeError),
@@ -434,6 +438,8 @@ pub struct RuntimeConfigDiagnostics {
 
 /// Eventloop with all the state of a connection
 pub struct EventLoop {
+    recovery: Arc<rumqttc_core::session_recovery::SessionRecoveryGate>,
+    recovery_clean_finished: bool,
     /// Options of the current mqtt connection
     pub mqtt_options: MqttOptions,
     connection_observation: Option<crate::ConnectionObservation>,
@@ -500,6 +506,9 @@ pub enum Event {
     Incoming(Incoming),
     Outgoing(Outgoing),
 }
+
+#[path = "eventloop_recovery.rs"]
+mod session_recovery;
 
 impl EventLoop {
     fn reconcile_connack_session(
@@ -655,6 +664,11 @@ impl EventLoop {
         let ack_mode = mqtt_options.ack_mode;
 
         Self {
+            recovery: rumqttc_core::session_recovery::SessionRecoveryGate::new(
+                mqtt_options.client_id(),
+                mqtt_options.session_store_scope().to_owned(),
+            ),
+            recovery_clean_finished: false,
             mqtt_options,
             connection_observation: None,
             state: MqttState::new_internal(max_inflight, ack_mode),
@@ -705,6 +719,10 @@ impl EventLoop {
     /// > Use [`pending_len`](Self::pending_len) or [`pending_is_empty`](Self::pending_is_empty)
     /// > for observation-only checks.
     pub fn clean(&mut self) {
+        self.recovery.disconnected(
+            self.mqtt_options.client_id(),
+            self.mqtt_options.session_store_scope().to_owned(),
+        );
         #[cfg(feature = "tracing")]
         self.telemetry.finish_established_connection();
         self.network = None;
@@ -1287,6 +1305,10 @@ impl EventLoop {
         self.session_client_id = Some(self.mqtt_options.client_id());
         self.session_store_key = Some(self.mqtt_options.session_store_key());
         self.network = Some(network);
+        self.recovery.establish(
+            self.mqtt_options.client_id(),
+            self.mqtt_options.session_store_scope().to_owned(),
+        );
         let session_diagnostics = reconciliation.diagnostics(connack.session_present);
         self.connack_session = Some(session_diagnostics);
 
@@ -1449,6 +1471,9 @@ impl EventLoop {
             return self.establish_connection().await;
         }
 
+        if self.recovery.requested() {
+            return Err(ConnectionError::SessionRecoveryPending);
+        }
         let result = self.select().await;
         self.handle_network_result(result).await
     }

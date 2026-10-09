@@ -204,6 +204,8 @@ const fn connection_error_kind(error: &ConnectionError) -> &'static str {
         ConnectionError::SessionRestore(_) => "session_restore",
         ConnectionError::BrokerTransportMismatch => "configuration",
         ConnectionError::RequestsDone => "requests_done",
+        ConnectionError::SessionRecoveryPending => "session_recovery_pending",
+        ConnectionError::SessionRecoveryInvalid => "session_recovery_invalid",
         ConnectionError::AuthProcessingError => "authentication",
         #[cfg(feature = "websocket")]
         ConnectionError::InvalidUrl(_) | ConnectionError::RequestModifier(_) => "configuration",
@@ -235,6 +237,8 @@ const fn connection_error_kind(error: &ConnectionError) -> &'static str {
         ConnectionError::SessionRestore(_) => "session_restore",
         ConnectionError::BrokerTransportMismatch => "configuration",
         ConnectionError::RequestsDone => "requests_done",
+        ConnectionError::SessionRecoveryPending => "session_recovery_pending",
+        ConnectionError::SessionRecoveryInvalid => "session_recovery_invalid",
         ConnectionError::AuthProcessingError => "authentication",
         #[cfg(feature = "websocket")]
         ConnectionError::InvalidUrl(_) | ConnectionError::RequestModifier(_) => "configuration",

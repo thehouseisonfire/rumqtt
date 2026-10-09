@@ -187,6 +187,7 @@ pub enum Completion {
     /// This does not prove broker receipt, application processing, or `QoS` 2 handshake completion.
     Acknowledged,
     Authenticated,
+    SessionRecovered,
     Diagnostics(crate::DiagnosticsSnapshot),
     ConfigurationStaged(crate::ConfigurationUpdateReceipt),
     /// Preceding publishes completed, DISCONNECT flushed, and required persistence finished.
@@ -221,6 +222,7 @@ pub enum CompletionWaitOutcome {
 
 #[derive(Debug)]
 pub struct CompletionCell {
+    recovery: Mutex<Option<Arc<rumqttc_core::session_recovery::RecoveryObservation>>>,
     operation_id: OperationId,
     result: Mutex<Option<Arc<TerminalOutcome>>>,
     completed: Condvar,
@@ -230,6 +232,7 @@ pub struct CompletionCell {
 impl CompletionCell {
     pub(crate) fn new(operation_id: OperationId) -> Arc<Self> {
         Arc::new(Self {
+            recovery: Mutex::new(None),
             operation_id,
             result: Mutex::new(None),
             completed: Condvar::new(),
@@ -270,6 +273,24 @@ pub struct CompletionHandle {
 }
 
 impl CompletionHandle {
+    pub(crate) fn observe_recovery(
+        &self,
+        observation: Arc<rumqttc_core::session_recovery::RecoveryObservation>,
+    ) {
+        *self.cell.recovery.lock().unwrap() = Some(observation);
+    }
+
+    /// Live operation-local progress, retained even after client destruction or failure.
+    #[must_use]
+    pub fn recovery_snapshot(&self) -> Option<crate::RecoverySnapshot> {
+        self.cell
+            .recovery
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|observation| observation.snapshot())
+    }
+
     pub(crate) const fn new(cell: Arc<CompletionCell>) -> Self {
         Self { cell }
     }

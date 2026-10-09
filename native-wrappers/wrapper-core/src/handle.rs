@@ -61,6 +61,8 @@ pub struct Shared {
     error_context: Mutex<crate::ErrorContext>,
     configuration: Mutex<Option<Arc<crate::configuration_update::ConfigurationControl>>>,
     backend: BackendClient,
+    recovery: Arc<rumqttc_core::session_recovery::SessionRecoveryGate>,
+    recovery_operation: Mutex<Option<crate::OperationId>>,
     handle_count: AtomicUsize,
     admission_gate: AdmissionGate,
     acknowledgements: Arc<AcknowledgementCoordinator>,
@@ -91,7 +93,10 @@ impl Shared {
     }
 
     pub(crate) fn new(
-        backend: BackendClient,
+        backend: (
+            BackendClient,
+            Arc<rumqttc_core::session_recovery::SessionRecoveryGate>,
+        ),
         acknowledgements: Arc<AcknowledgementCoordinator>,
         connection: ConnectionHandle,
         operations: OperationRegistry,
@@ -99,6 +104,7 @@ impl Shared {
         panic_tx: Sender<()>,
         reconnect: Arc<crate::reconnect::Controller>,
     ) -> Arc<Self> {
+        let (backend, recovery) = backend;
         let protocol = match backend {
             BackendClient::V4(_) => ProtocolVersion::V4,
             BackendClient::V5(_) => ProtocolVersion::V5,
@@ -112,6 +118,8 @@ impl Shared {
             }),
             configuration: Mutex::new(None),
             backend,
+            recovery,
+            recovery_operation: Mutex::new(None),
             handle_count: AtomicUsize::new(1),
             admission_gate: AdmissionGate::default(),
             acknowledgements,
@@ -216,8 +224,11 @@ impl Shared {
         session_present: bool,
         maximum_packet_size: Option<u32>,
         discard_pending_acknowledgements: impl FnOnce(),
-    ) {
+    ) -> bool {
         let _admission_guard = self.admission_gate.lock();
+        if self.recovering() && self.require_running().is_err() {
+            return false;
+        }
         discard_pending_acknowledgements();
         {
             let mut context = self
@@ -232,7 +243,13 @@ impl Shared {
             protocol,
             session_present,
         });
+        if let Some(operation) = self.recovery_operation.lock().unwrap().take() {
+            self.recovery.complete();
+            self.operations
+                .complete(operation, Ok(crate::Completion::SessionRecovered));
+        }
         self.shutdown.notify_progress();
+        true
     }
 
     pub(crate) fn terminate_connection_observation(&self, error: Error) {
@@ -282,7 +299,19 @@ impl Shared {
     }
 
     pub(crate) fn poll_error_action(&self) -> PollErrorAction {
-        self.reconnect_action(false)
+        let _admission_guard = self.admission_gate.lock();
+        let action = self.shutdown.poll_error_action();
+        // Recovery shutdown may interrupt an idle reconnect successfully, but an
+        // actual poll failure must reach graceful/ordered shutdown reconciliation.
+        // Immediate shutdown retains its explicit cancellation semantics.
+        if action == PollErrorAction::Reconnect
+            && self.recovering()
+            && self.require_running().is_err()
+        {
+            PollErrorAction::Fail
+        } else {
+            action
+        }
     }
 
     pub(crate) fn reconnect_action(&self, initial_cycle: bool) -> PollErrorAction {
@@ -290,6 +319,9 @@ impl Shared {
         // completion registration. Waiting here prevents the driver from observing a transient
         // `Closing` state whose admission may still restore `Running`.
         let _admission_guard = self.admission_gate.lock();
+        if self.recovering() && self.require_running().is_err() {
+            return PollErrorAction::CompleteImmediateClose;
+        }
         self.shutdown.reconnect_action(initial_cycle)
     }
 
@@ -315,6 +347,82 @@ impl Shared {
             // receiver's now-ready result before failing the remaining wrapper operations.
             self.shutdown.finish_ordered(Err(error));
         }
+    }
+
+    pub(crate) fn recovery_shutdown_committed(&self) -> bool {
+        matches!(
+            self.state(),
+            LifecycleState::Closing | LifecycleState::Closed
+        )
+    }
+    pub(crate) fn recovering(&self) -> bool {
+        self.recovery_operation.lock().unwrap().is_some()
+    }
+    pub(crate) fn recovery_phase(&self) -> Option<crate::RecoveryPhase> {
+        // Admission publishes the native latch, observer and operation ID as one transaction.
+        // The driver must not interpret the latch until that publication finishes.
+        let _guard = self.admission_gate.lock();
+        self.recovery
+            .observation()
+            .map(|observation| observation.snapshot().phase)
+    }
+    pub(crate) fn recovery_cleanup_pending(&self) -> bool {
+        self.recovery_phase() == Some(crate::RecoveryPhase::Quiescing)
+    }
+    pub(crate) fn recovery_running(&self) -> bool {
+        // Ignore tentative Closing while shutdown admission can still roll back.
+        let _guard = self.admission_gate.lock();
+        self.require_running().is_ok()
+    }
+    pub(crate) fn recovery_shutdown_options(&self) -> Option<crate::DisconnectProtocolOptions> {
+        // Observe lifecycle and its payload together after tentative admission has
+        // either committed or rolled back.
+        let _guard = self.admission_gate.lock();
+        if self.require_running().is_ok() {
+            None
+        } else {
+            Some(self.shutdown.payload())
+        }
+    }
+    pub(crate) fn shutdown_progress(&self) -> tokio::sync::futures::Notified<'_> {
+        self.shutdown.notified()
+    }
+    pub(crate) async fn recovery_changed(&self) {
+        self.recovery.changed().await;
+    }
+    pub(crate) fn fail_recovery(&self, error: &Error, interrupted: bool) {
+        let _guard = self.admission_gate.lock();
+        if let Some(operation) = self.recovery_operation.lock().unwrap().take() {
+            let observation = self
+                .recovery
+                .observation()
+                .expect("admitted recovery owns observation");
+            let failure = if interrupted {
+                crate::RecoveryFailure::Interrupted
+            } else if error.kind() == ErrorKind::Persistence {
+                crate::RecoveryFailure::Persistence
+            } else if observation.snapshot().abandonment_committed {
+                crate::RecoveryFailure::Establishment
+            } else {
+                crate::RecoveryFailure::Transition
+            };
+            observation.fail(interrupted);
+            self.operations
+                .complete(operation, Err(error.clone().with_recovery_failure(failure)));
+        }
+    }
+    fn require_mqtt_admission(&self) -> Result<()> {
+        self.require_running()?;
+        if self.recovering() {
+            return Err(Error::new(
+                ErrorKind::Backpressure,
+                "session recovery has closed MQTT admission",
+            )
+            .with_delivery(DeliveryStatus::NotAdmitted)
+            .with_retryable(true)
+            .with_recovery_failure(crate::RecoveryFailure::InProgress));
+        }
+        Ok(())
     }
 
     fn state(&self) -> LifecycleState {
@@ -486,6 +594,7 @@ impl ClientHandle {
                 self.try_close(timeout, protocol)
             }
             Command::ImmediateDisconnectWithOptions { protocol } => self.try_close_now(protocol),
+            Command::RecoverSession => self.try_recover_session(),
             Command::Diagnostics => self.try_diagnostics(),
             Command::UpdateConfiguration(update) => self.try_configuration_update(*update),
         }
@@ -611,7 +720,7 @@ impl ClientHandle {
 
     fn try_publish(&self, command: PublishCommand) -> Result<Admission> {
         let _admission_guard = self.shared.admission_gate.lock();
-        self.shared.require_running()?;
+        self.shared.require_mqtt_admission()?;
         validate_mqtt_utf8_string(&command.topic, "publish topic")?;
         let completion = self.shared.backend.try_publish(command)?;
         self.shared.admission(completion)
@@ -619,7 +728,7 @@ impl ClientHandle {
 
     fn try_reauthenticate(&self, properties: Option<&crate::AuthProperties>) -> Result<Admission> {
         let _guard = self.shared.admission_gate.lock();
-        self.shared.require_running()?;
+        self.shared.require_mqtt_admission()?;
         if matches!(self.shared.backend, BackendClient::V4(_)) {
             return Err(protocol_option_error("reauthentication requires MQTT 5"));
         }
@@ -684,7 +793,7 @@ impl ClientHandle {
 
     fn try_subscribe(&self, command: SubscribeCommand) -> Result<Admission> {
         let _admission_guard = self.shared.admission_gate.lock();
-        self.shared.require_running()?;
+        self.shared.require_mqtt_admission()?;
         if command.filters.is_empty() {
             return Err(protocol_option_error(
                 "subscribe requires at least one filter",
@@ -701,7 +810,7 @@ impl ClientHandle {
 
     fn try_unsubscribe(&self, command: UnsubscribeCommand) -> Result<Admission> {
         let _admission_guard = self.shared.admission_gate.lock();
-        self.shared.require_running()?;
+        self.shared.require_mqtt_admission()?;
         if command.filters.is_empty() {
             return Err(protocol_option_error(
                 "unsubscribe requires at least one filter",
@@ -721,7 +830,7 @@ impl ClientHandle {
         token: AckToken,
         options: &crate::AcknowledgementProtocolOptions,
     ) -> Result<AckReservation> {
-        self.shared.require_running()?;
+        self.shared.require_mqtt_admission()?;
         self.shared.acknowledgements.reserve(token, options)
     }
 
@@ -895,6 +1004,43 @@ impl ClientHandle {
         Ok(admission)
     }
 
+    fn try_recover_session(&self) -> Result<Admission> {
+        let _guard = self.shared.admission_gate.lock();
+        self.shared
+            .require_running()
+            .map_err(|error| error.with_recovery_failure(crate::RecoveryFailure::Unavailable))?;
+        let rejected = || {
+            Error::new(
+                ErrorKind::Shutdown,
+                "session recovery requires a disconnected client without active recovery",
+            )
+            .with_code(crate::ErrorCode::InvalidState)
+            .with_delivery(DeliveryStatus::NotAdmitted)
+            .with_recovery_failure(if self.shared.recovering() {
+                crate::RecoveryFailure::InProgress
+            } else {
+                crate::RecoveryFailure::Unavailable
+            })
+        };
+        // Eligibility must win over registry capacity for overlapping/connected requests.
+        // Native establishment can race allocation, so request rechecks atomically below.
+        if !self.shared.recovery.can_request() {
+            return Err(rejected());
+        }
+        let admission =
+            self.shared.operations.allocate().map_err(|error| {
+                error.with_recovery_failure(crate::RecoveryFailure::Unavailable)
+            })?;
+        let Some(observation) = self.shared.recovery.request() else {
+            self.shared.operations.cancel(admission.operation_id);
+            return Err(rejected());
+        };
+        admission.completion.observe_recovery(observation);
+        *self.shared.recovery_operation.lock().unwrap() = Some(admission.operation_id);
+        self.shared.notify_progress();
+        Ok(admission)
+    }
+
     fn try_diagnostics(&self) -> Result<Admission> {
         let _admission_guard = self.shared.admission_gate.lock();
         if !self.shared.has_ordered() {
@@ -922,7 +1068,13 @@ mod acknowledgement_tests {
         let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_tx);
         let (panic_tx, _) = flume::bounded(1);
         let shared = Shared::new(
-            BackendClient::V5(rumqttc_v5::AsyncClient::from_senders(tx)),
+            (
+                BackendClient::V5(rumqttc_v5::AsyncClient::from_senders(tx)),
+                rumqttc_core::session_recovery::SessionRecoveryGate::new(
+                    "test".into(),
+                    "test".into(),
+                ),
+            ),
             acknowledgements,
             ConnectionHandle::new(),
             operations,

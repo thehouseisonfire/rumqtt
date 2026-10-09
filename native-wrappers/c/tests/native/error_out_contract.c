@@ -2,8 +2,145 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #define EXPECT_FAILURE(expression) REQUIRE((expression) != RUMQTTC_OK)
+
+_Static_assert(RUMQTTC_COMPLETION_SESSION_RECOVERED != RUMQTTC_COMPLETION_CONFIGURATION_STAGED,
+               "session recovery and configuration staging require distinct completion kinds");
+
+/* This contract is also run by the standalone recovery fixture. */
+void native_test_session_recovery(void) {
+  for (rumqttc_protocol_t protocol = RUMQTTC_PROTOCOL_V4;
+       protocol <= RUMQTTC_PROTOCOL_V5; ++protocol) {
+    for (unsigned tracked = 0; tracked < 2; ++tracked) {
+      rumqttc_config_t *config = NULL;
+      rumqttc_client_t *client = NULL;
+      rumqttc_completion_t *completion = NULL;
+      rumqttc_completion_t *rejected = NULL;
+      rumqttc_error_t *error = NULL;
+      rumqttc_reconnect_options_t retry = RUMQTTC_RECONNECT_OPTIONS_INIT;
+      rumqttc_session_recovery_snapshot_t snapshot = RUMQTTC_SESSION_RECOVERY_SNAPSHOT_INIT;
+      rumqttc_event_t *event;
+      uint64_t id = 123;
+      uint8_t present = 0;
+      uint32_t failure = 0;
+      char client_id[80];
+      REQUIRE(snprintf(client_id, sizeof(client_id), "native-session-recovery-%u-%u",
+                       (unsigned)protocol, tracked) > 0);
+      retry.initial_delay_ms = retry.maximum_delay_ms = 300;
+      retry.jitter = RUMQTTC_RECONNECT_JITTER_NONE;
+      CHECK(rumqttc_config_new(protocol, &config, NULL));
+      CHECK(rumqttc_config_set_broker(config, native_string("127.0.0.1"), native_test_port(), NULL));
+      CHECK(rumqttc_config_set_client_id(config, native_string(client_id), NULL));
+      if (protocol == RUMQTTC_PROTOCOL_V4)
+        CHECK(rumqttc_config_set_v4_clean_session(config, 0, NULL));
+      else
+        CHECK(rumqttc_config_set_v5_session(config, 0, 1, 60, NULL));
+      /* ERROR_OUT_FAILURE: rumqttc_config_set_reconnect_policy */
+      EXPECT_FAILURE(rumqttc_config_set_reconnect_policy(NULL, &retry, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_config_set_reconnect_policy */
+      CHECK(rumqttc_config_set_reconnect_policy(config, &retry, NULL));
+      /* ERROR_OUT_FAILURE: rumqttc_config_clear_reconnect_policy */
+      EXPECT_FAILURE(rumqttc_config_clear_reconnect_policy(NULL, NULL));
+      /* ERROR_OUT_SUCCESS: rumqttc_config_clear_reconnect_policy */
+      CHECK(rumqttc_config_clear_reconnect_policy(config, NULL));
+      CHECK(rumqttc_config_set_reconnect_policy(config, &retry, NULL));
+      CHECK(rumqttc_client_start(config, &client, NULL));
+      rumqttc_config_destroy(config);
+      event = native_wait_event(client, RUMQTTC_EVENT_DISCONNECTED);
+      rumqttc_event_destroy(event);
+      {
+        rumqttc_reconnect_diagnostics_t retries = RUMQTTC_RECONNECT_DIAGNOSTICS_INIT;
+        rumqttc_completion_t *diagnostics = NULL;
+        rumqttc_error_t *last = NULL;
+        rumqttc_error_t *nested = NULL;
+        /* ERROR_OUT_FAILURE: rumqttc_client_reconnect_diagnostics */
+        EXPECT_FAILURE(rumqttc_client_reconnect_diagnostics(NULL, &retries, NULL));
+        /* ERROR_OUT_SUCCESS: rumqttc_client_reconnect_diagnostics */
+        CHECK(rumqttc_client_reconnect_diagnostics(client, &retries, NULL));
+        REQUIRE(retries.cycles_started == 1);
+        /* ERROR_OUT_FAILURE: rumqttc_client_reconnect_last_error */
+        EXPECT_FAILURE(rumqttc_client_reconnect_last_error(NULL, &last, NULL));
+        /* ERROR_OUT_SUCCESS: rumqttc_client_reconnect_last_error */
+        CHECK(rumqttc_client_reconnect_last_error(client, &last, NULL));
+        REQUIRE(last != NULL);
+        /* ERROR_OUT_FAILURE: rumqttc_error_reconnect_last_error */
+        EXPECT_FAILURE(rumqttc_error_reconnect_last_error(NULL, &nested, NULL));
+        /* ERROR_OUT_SUCCESS: rumqttc_error_reconnect_last_error */
+        CHECK(rumqttc_error_reconnect_last_error(last, &nested, NULL));
+        rumqttc_error_destroy(nested);
+        rumqttc_error_destroy(last); last = NULL;
+        CHECK(rumqttc_client_diagnostics_tracked(client, &diagnostics, NULL));
+        native_wait_completion(diagnostics, RUMQTTC_COMPLETION_DIAGNOSTICS);
+        /* ERROR_OUT_FAILURE: rumqttc_completion_reconnect_diagnostics */
+        EXPECT_FAILURE(rumqttc_completion_reconnect_diagnostics(NULL, &retries, NULL));
+        /* ERROR_OUT_SUCCESS: rumqttc_completion_reconnect_diagnostics */
+        CHECK(rumqttc_completion_reconnect_diagnostics(diagnostics, &retries, NULL));
+        /* ERROR_OUT_FAILURE: rumqttc_completion_reconnect_last_error */
+        EXPECT_FAILURE(rumqttc_completion_reconnect_last_error(NULL, &last, NULL));
+        /* ERROR_OUT_SUCCESS: rumqttc_completion_reconnect_last_error */
+        CHECK(rumqttc_completion_reconnect_last_error(diagnostics, &last, NULL));
+        rumqttc_error_destroy(last);
+        rumqttc_completion_destroy(diagnostics);
+      }
+      if (tracked) {
+        /* ERROR_OUT_SUCCESS: rumqttc_client_recover_session_tracked */
+        CHECK(rumqttc_client_recover_session_tracked(client, &completion, NULL));
+        /* ERROR_OUT_SUCCESS: rumqttc_completion_session_recovery_snapshot */
+        CHECK(rumqttc_completion_session_recovery_snapshot(completion, &snapshot, NULL));
+        REQUIRE(snapshot.phase >= RUMQTTC_RECOVERY_PHASE_QUIESCING);
+        REQUIRE(rumqttc_completion_wait_timeout_ms(completion, 1, NULL) == RUMQTTC_TIMEOUT);
+      } else {
+        /* ERROR_OUT_SUCCESS: rumqttc_client_try_recover_session */
+        CHECK(rumqttc_client_try_recover_session(client, &id, NULL));
+        REQUIRE(id != 0);
+      }
+      /* ERROR_OUT_FAILURE: rumqttc_client_recover_session_tracked */
+      EXPECT_FAILURE(rumqttc_client_recover_session_tracked(client, &rejected, NULL));
+      REQUIRE(rumqttc_client_recover_session_tracked(client, &rejected, &error) != RUMQTTC_OK);
+      REQUIRE(rejected == NULL && error != NULL);
+      CHECK(rumqttc_error_session_recovery_failure(error, &present, &failure));
+      REQUIRE(present && failure == RUMQTTC_RECOVERY_FAILURE_IN_PROGRESS);
+      rumqttc_error_destroy(error); error = NULL;
+      /* ERROR_OUT_FAILURE: rumqttc_client_try_recover_session */
+      EXPECT_FAILURE(rumqttc_client_try_recover_session(client, &id, NULL));
+      REQUIRE(id == 0);
+      event = native_wait_event(client, RUMQTTC_EVENT_CONNECTED);
+      rumqttc_event_destroy(event);
+      if (tracked) {
+        native_wait_completion(completion, RUMQTTC_COMPLETION_SESSION_RECOVERED);
+        CHECK(rumqttc_completion_session_recovery_snapshot(completion, &snapshot, NULL));
+        REQUIRE(snapshot.phase == RUMQTTC_RECOVERY_PHASE_COMPLETED);
+        REQUIRE(snapshot.abandonment_committed && snapshot.checkpoint_cleared && snapshot.fresh_established);
+        REQUIRE(snapshot.session_present_known && !snapshot.raw_session_present && !snapshot.failure_phase);
+        memset(snapshot.reserved, 255, sizeof(snapshot.reserved));
+        /* ERROR_OUT_FAILURE: rumqttc_completion_session_recovery_snapshot */
+        EXPECT_FAILURE(rumqttc_completion_session_recovery_snapshot(NULL, &snapshot, NULL));
+        REQUIRE(!snapshot.phase && !snapshot.fresh_established && !snapshot.reserved[0]);
+        snapshot.struct_size = sizeof(uint32_t);
+        EXPECT_FAILURE(rumqttc_completion_session_recovery_snapshot(completion, &snapshot, NULL));
+        snapshot.struct_size = sizeof(snapshot);
+        rumqttc_completion_t *diagnostics = NULL;
+        CHECK(rumqttc_client_diagnostics_tracked(client, &diagnostics, NULL));
+        native_wait_completion(diagnostics, RUMQTTC_COMPLETION_DIAGNOSTICS);
+        EXPECT_FAILURE(rumqttc_completion_session_recovery_snapshot(diagnostics, &snapshot, NULL));
+        REQUIRE(!snapshot.phase && !snapshot.checkpoint_cleared);
+        rumqttc_completion_destroy(diagnostics);
+      }
+      REQUIRE(rumqttc_client_recover_session_tracked(client, &rejected, &error) != RUMQTTC_OK);
+      CHECK(rumqttc_error_session_recovery_failure(error, &present, &failure));
+      REQUIRE(present && failure == RUMQTTC_RECOVERY_FAILURE_UNAVAILABLE);
+      rumqttc_error_destroy(error);
+      native_close_destroy(client);
+      if (tracked) {
+        CHECK(rumqttc_completion_session_recovery_snapshot(completion, &snapshot, NULL));
+        REQUIRE(snapshot.phase == RUMQTTC_RECOVERY_PHASE_COMPLETED && snapshot.checkpoint_cleared);
+        rumqttc_completion_destroy(completion);
+      }
+    }
+  }
+}
 
 static void coverage_execution(void) {
   rumqttc_execution_context_t *context = NULL;
@@ -402,6 +539,7 @@ static void coverage_runtime_configuration(void) {
 
 void native_test_error_out_contract(void) {
   coverage_runtime_configuration();
+  native_test_session_recovery();
   coverage_execution();
   coverage_redirect_authority();
   coverage_tls_profiles();

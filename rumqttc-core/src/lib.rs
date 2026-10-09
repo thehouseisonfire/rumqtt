@@ -23,6 +23,8 @@ mod scheduler;
 pub use connection_observation::{
     AttemptOutcome, ConnectionObservation, ConnectionObservationSnapshot, ConnectionRoute,
 };
+#[doc(hidden)]
+pub mod session_recovery;
 mod transport_error;
 pub use transport_error::TerminalTransportError;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]

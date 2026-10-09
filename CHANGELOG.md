@@ -2,6 +2,17 @@
 
 ### Added
 
+- Native wrappers: Add tracked explicit session abandonment and fresh recovery for running,
+  disconnected MQTT v4/v5 clients. Serialize producers and shutdown, retire unfinished native
+  work and stale ACK/alias ownership, clear durable state before reconnecting, and retain
+  operation-local progress across observer timeout and client destruction. MQTT v4 persistent
+  recovery uses clean CONNECT/DISCONNECT followed by persistent CONNECT; MQTT v5 uses transient
+  Clean Start with configured expiry. Clear failures are terminal; recovery uses the remaining
+  reconnect budget. Add C admissions, completion kind, size-versioned progress and typed failure
+  accessors, an operator example and wire/concurrency tests. Existing C records and statuses are
+  preserved. Wrapper Rust `Command`/`Completion` and native nonexhaustive `ConnectionError` enums
+  gain variants. Ordinary reconnect and JavaScript/Python public APIs are unchanged.
+
 - Native wrappers: Add opt-in classified reconnect policy shared by MQTT v4/v5,
   with exponential backoff, capped full jitter, finite or explicit unlimited
   retry budgets, and reset after stable connectivity. Preserve legacy defaults,
@@ -192,6 +203,24 @@
 - Native wrappers: Attribute connection failures to their connection phase rather
   than the latest attempt snapshot. MQTT 5 redirected SRV lookup failures no longer
   inherit a preceding origin configuration revision after origin restoration.
+- Native wrappers: Terminate failed MQTT v4/v5 session abandonment with the
+  original error, retaining incomplete progress instead of retrying establishment
+  before transport teardown and checkpoint clearing have committed.
+- Native wrappers: Preserve terminal transport and classified failures from MQTT
+  v4/v5 polls overtaken by session recovery, before abandonment or checkpoint
+  clearing. Propagate failed recovery-candidate DISCONNECT writes and flushes to
+  graceful shutdown instead of reporting successful closure.
+- Native wrappers: Preserve disconnect and retry bookkeeping when recovery is
+  admitted during connection-loss checkpointing, including remaining budgets,
+  backoff and immediate shutdown cancellation for MQTT v4/v5. Retire MQTT 5
+  recovery candidates with committed shutdown reasons and properties; honor
+  session expiry in durable cleanup and report persistence failures.
+- Native wrappers: Refresh MQTT 5 disconnected recovery identity after accepting
+  a redirect profile, so recovery before the target handshake uses its client ID
+  and store scope. Keep already admitted recovery identities pinned.
+- Native wrappers: Resolve accepted MQTT 5 SRV redirects before fresh recovery
+  handshakes, and refresh disconnected recovery identity when a temporary redirect
+  restores its origin. Preserve admitted recovery pins and shutdown checks.
 - Native wrappers: Bound MQTT 5 completion-registration and ready-result batches
   before polling MQTT, so sustained overlapping reauthentication traffic cannot
   indefinitely postpone network progress, authentication deadlines or shutdown.

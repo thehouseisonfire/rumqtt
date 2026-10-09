@@ -41,6 +41,8 @@ pub use publish::{
 };
 mod proxy;
 mod reconnect;
+mod recovery;
+pub use recovery::{RecoveryFailure, RecoveryPhase, RecoverySnapshot};
 mod redirect;
 pub use reconnect::{
     ReconnectConfig, ReconnectDiagnostics, ReconnectExhaustion, ReconnectJitter, ReconnectPhase,

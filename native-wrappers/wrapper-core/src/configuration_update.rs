@@ -1046,7 +1046,15 @@ mod tests {
         let (shutdown_tx, _shutdown_rx) = flume::unbounded();
         let (panic_tx, _panic_rx) = flume::unbounded();
         let shared = crate::handle::Shared::new(
-            crate::backend::BackendClient::V5(rumqttc_v5::AsyncClient::from_senders(backend_tx)),
+            (
+                crate::backend::BackendClient::V5(rumqttc_v5::AsyncClient::from_senders(
+                    backend_tx,
+                )),
+                rumqttc_core::session_recovery::SessionRecoveryGate::new(
+                    "origin".into(),
+                    "origin".into(),
+                ),
+            ),
             crate::acknowledgement::AcknowledgementCoordinator::new(1, operations.clone()),
             crate::connection::ConnectionHandle::new(),
             operations.clone(),

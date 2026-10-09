@@ -878,6 +878,15 @@ class Broker:
             if client_id == b"c-reconnect-example" and attempt <= 2:
                 stream.sendall(frame(2, 0, b"\x00\x89\x00"))
                 return
+            if client_id.startswith(b"native-session-recovery-") or client_id == b"c-session-recovery-example":
+                if attempt == 1:
+                    stream.sendall(frame(2, 0, b"\x00\x89\x00" if protocol == 5 else b"\x00\x03"))
+                    return
+                expected_clean = attempt == 2
+                if bool(connect_flags & 2) != expected_clean:
+                    raise AssertionError("recovery changed its fresh/persistent CONNECT policy")
+                if protocol == 5 and b"\x11\x00\x00\x00\x3c" not in connect_properties:
+                    raise AssertionError("recovery changed configured MQTT 5 session expiry")
             if client_id.startswith(b"native-reconnect-"):
                 if client_id.startswith(b"native-reconnect-auth-"):
                     stream.sendall(frame(2, 0, b"\x00\x87\x00" if protocol == 5 else b"\x00\x05"))
