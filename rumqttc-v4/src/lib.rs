@@ -98,6 +98,7 @@ pub use rumqttc_core::NetworkOptions;
 #[cfg(feature = "websocket")]
 pub use rumqttc_core::WebSocketRequestContext;
 pub use rumqttc_core::default_socket_connect;
+pub use rumqttc_core::{ConnectionObservation, ConnectionObservationSnapshot, ConnectionRoute};
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use rumqttc_core::{TlsConfiguration, TlsHandshakeConnector};
 pub use session::{

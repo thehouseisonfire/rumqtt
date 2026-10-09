@@ -1843,6 +1843,219 @@ RUMQTTC_API rumqttc_status_t rumqttc_error_reconnect_last_error(const rumqttc_er
                                                              rumqttc_error_t **out,
                                                              rumqttc_error_t **error_out);
 
+/* Runtime configuration updates: additive records and independently owned handles. */
+RUMQTTC_API uint32_t rumqttc_error_configuration_revision(const struct rumqttc_error_t *error,
+                                                        uint8_t *present_out, uint64_t *revision_out);
+#define RUMQTTC_COMPLETION_CONFIGURATION_STAGED 12u
+#define RUMQTTC_CAP_RUNTIME_CONFIGURATION (UINT64_C(1) << 17)
+#define RUMQTTC_CONFIG_FIELD_MAX_REQUEST_BATCH 1u
+#define RUMQTTC_CONFIG_FIELD_READ_BATCH_SIZE 2u
+#define RUMQTTC_CONFIG_FIELD_PENDING_THROTTLE 3u
+#define RUMQTTC_CONFIG_FIELD_CREDENTIALS 4u
+#define RUMQTTC_CONFIG_FIELD_BROKER_TLS 5u
+#define RUMQTTC_CONFIG_FIELD_NETWORK 6u
+#define RUMQTTC_CONFIG_FIELD_CONNECTION_TIMEOUT 7u
+#define RUMQTTC_CONFIG_UNCHANGED 0u
+#define RUMQTTC_CONFIG_CLEAR 2u
+#define RUMQTTC_CONFIG_DESIRED 0u
+#define RUMQTTC_CONFIG_EFFECTIVE 1u
+#define RUMQTTC_CONFIG_ACTIVATION_UNCHANGED 0u
+#define RUMQTTC_CONFIG_ACTIVATION_STAGED 1u
+#define RUMQTTC_CONFIG_ACTIVATION_ACTIVATED 2u
+#define RUMQTTC_CONFIG_ACTIVATION_SUPERSEDED 3u
+#define RUMQTTC_CONFIG_ACTIVATION_CLOSED 4u
+#define RUMQTTC_CONFIG_ACTIVATION_UNAVAILABLE_AFTER_REDIRECT 5u
+#define RUMQTTC_CONFIG_ROUTE_ORIGIN 0u
+#define RUMQTTC_CONFIG_ROUTE_REDIRECT_TRANSITION 1u
+#define RUMQTTC_CONFIG_ROUTE_TEMPORARY_TARGET 2u
+#define RUMQTTC_CONFIG_ROUTE_PERMANENT_TARGET 3u
+#define RUMQTTC_CONFIG_ATTEMPT_NONE 0u
+#define RUMQTTC_CONFIG_ATTEMPT_PENDING 1u
+#define RUMQTTC_CONFIG_ATTEMPT_SUCCEEDED 2u
+#define RUMQTTC_CONFIG_ATTEMPT_FAILED 3u
+#define RUMQTTC_CONFIG_ATTEMPT_CANCELLED 4u
+#define RUMQTTC_CONFIG_STATUS_CLOSED 1u
+#define RUMQTTC_CONFIG_STATUS_ATTEMPT_REVISION_PRESENT 2u
+#define RUMQTTC_CONFIG_STATUS_SUCCESSFUL_REVISION_PRESENT 4u
+#define RUMQTTC_CONFIG_PROFILE_USERNAME_PRESENT 1u
+#define RUMQTTC_CONFIG_PROFILE_PASSWORD_PRESENT 2u
+#define RUMQTTC_CONFIG_PROFILE_TLS_PRESENT 4u
+#define RUMQTTC_CONFIG_PROFILE_TLS_IDENTITY_PRESENT 8u
+#define RUMQTTC_RUNTIME_NETWORK_SEND_BUFFER 1u
+#define RUMQTTC_RUNTIME_NETWORK_RECEIVE_BUFFER 2u
+#define RUMQTTC_RUNTIME_NETWORK_LOCAL_ADDRESS 4u
+#define RUMQTTC_RUNTIME_NETWORK_BIND_DEVICE 8u
+#define RUMQTTC_MAX_CONFIGURATION_UPDATE_BYTES (1024u * 1024u)
+#define RUMQTTC_MAX_PENDING_CONFIGURATION_BYTES (4u * 1024u * 1024u)
+#define RUMQTTC_MAX_PENDING_CONFIGURATION_UPDATES 16u
+
+typedef struct rumqttc_runtime_update_t rumqttc_runtime_update_t;
+
+typedef struct rumqttc_configuration_receipt_t rumqttc_configuration_receipt_t;
+
+typedef struct rumqttc_configuration_snapshot_t rumqttc_configuration_snapshot_t;
+
+typedef struct rumqttc_runtime_network_options_t {
+  uint32_t struct_size;
+  uint32_t present_fields;
+  uint32_t send_buffer_size;
+  uint32_t receive_buffer_size;
+  uint8_t tcp_nodelay;
+  uint8_t mptcp;
+  uint8_t reserved[6];
+  struct rumqttc_string_view_t local_address;
+  struct rumqttc_string_view_t bind_device;
+  uint64_t reserved_tail[2];
+} rumqttc_runtime_network_options_t;
+
+typedef struct rumqttc_configuration_receipt_status_t {
+  uint32_t struct_size;
+  uint32_t tuning_state;
+  uint32_t connection_state;
+  uint32_t reserved;
+  uint64_t revision;
+} rumqttc_configuration_receipt_status_t;
+
+typedef struct rumqttc_configuration_status_t {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint64_t revision;
+  uint64_t desired_tuning_revision;
+  uint64_t effective_tuning_revision;
+  uint64_t desired_connection_revision;
+  uint64_t effective_connection_revision;
+  uint64_t attempt;
+  uint64_t attempt_revision;
+  uint64_t successful_connection_revision;
+  uint32_t route;
+  uint32_t attempt_route;
+  uint32_t attempt_outcome;
+  uint32_t reserved;
+  uint64_t effective_read_batch_size;
+  uint64_t effective_age_ns;
+  uint64_t observation_age_ns;
+  uint64_t snapshot_age_ns;
+} rumqttc_configuration_status_t;
+
+typedef struct rumqttc_runtime_tuning_t {
+  uint32_t struct_size;
+  uint32_t reserved;
+  uint64_t max_request_batch;
+  uint64_t read_batch_size;
+  uint64_t pending_throttle_ns;
+} rumqttc_runtime_tuning_t;
+
+typedef struct rumqttc_connection_profile_summary_t {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint32_t tls_backend;
+  uint32_t tls_pin_count;
+  uint64_t connection_timeout_ms;
+} rumqttc_connection_profile_summary_t;
+
+#define RUMQTTC_RUNTIME_NETWORK_OPTIONS_INIT \
+    { sizeof(rumqttc_runtime_network_options_t), 0, 0, 0, 0, 0, {0}, {NULL, 0}, {NULL, 0}, {0} }
+#define RUMQTTC_CONFIGURATION_RECEIPT_STATUS_INIT \
+    { sizeof(rumqttc_configuration_receipt_status_t), 0, 0, 0, 0 }
+#define RUMQTTC_CONFIGURATION_STATUS_INIT \
+    { sizeof(rumqttc_configuration_status_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+#define RUMQTTC_RUNTIME_TUNING_INIT \
+    { sizeof(rumqttc_runtime_tuning_t), 0, 0, 0, 0 }
+#define RUMQTTC_CONNECTION_PROFILE_SUMMARY_INIT \
+    { sizeof(rumqttc_connection_profile_summary_t), 0, 0, 0, 0 }
+
+/* Setters copy inputs; updates are reusable and snapshot independently at admission.
+ * field_action selects UNCHANGED or CLEAR; use typed setters for replacement.
+ * Network replacement supplies the whole network group, including omitted defaults.
+ * Completion proves staging only. Receipts/snapshots survive client destruction.
+ * Network accessor views are borrowed until snapshot destruction. No secrets are returned.
+ * Effective tuning/read batches are cached at a poll boundary; ages use monotonic time.
+ * Admission uses separate finite update capacity; activation may wait indefinitely
+ * for an idle native poll. Update and handle destruction must not race one another.
+ * Broker TLS clearing/transport changes and redirected-target profile updates fail.
+ */
+
+RUMQTTC_API uint32_t rumqttc_runtime_update_new(struct rumqttc_runtime_update_t **out,
+                                    struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_runtime_update_destroy(struct rumqttc_runtime_update_t *update);
+
+RUMQTTC_API uint32_t rumqttc_runtime_update_set_max_request_batch(struct rumqttc_runtime_update_t *update,
+                                                      uint32_t count,
+                                                      struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_runtime_update_set_read_batch_size(struct rumqttc_runtime_update_t *update,
+                                                    uint32_t count,
+                                                    struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_runtime_update_set_pending_throttle_ns(struct rumqttc_runtime_update_t *update,
+                                                        uint64_t nanoseconds,
+                                                        struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_runtime_update_set_connection_timeout_ms(struct rumqttc_runtime_update_t *update,
+                                                          uint64_t milliseconds,
+                                                          struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_runtime_update_set_credentials(struct rumqttc_runtime_update_t *update,
+                                                uint8_t username_present,
+                                                struct rumqttc_string_view_t username,
+                                                uint8_t password_present,
+                                                struct rumqttc_bytes_view_t password,
+                                                struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_runtime_update_set_broker_tls_profile(struct rumqttc_runtime_update_t *update,
+                                                       const struct rumqttc_tls_profile_t *profile,
+                                                       struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_runtime_update_set_network(struct rumqttc_runtime_update_t *update,
+                                            const struct rumqttc_runtime_network_options_t *options,
+                                            struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_runtime_update_field_action(struct rumqttc_runtime_update_t *update,
+                                             uint32_t field,
+                                             uint32_t action,
+                                             struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_client_update_configuration_tracked(struct rumqttc_client_t *client,
+                                                     const struct rumqttc_runtime_update_t *update,
+                                                     struct rumqttc_completion_t **completion_out,
+                                                     struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_completion_configuration_receipt(const struct rumqttc_completion_t *completion,
+                                                  struct rumqttc_configuration_receipt_t **out,
+                                                  struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_configuration_receipt_destroy(struct rumqttc_configuration_receipt_t *receipt);
+
+RUMQTTC_API uint32_t rumqttc_configuration_receipt_status(const struct rumqttc_configuration_receipt_t *receipt,
+                                              struct rumqttc_configuration_receipt_status_t *out,
+                                              struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_client_configuration_snapshot(struct rumqttc_client_t *client,
+                                               struct rumqttc_configuration_snapshot_t **out,
+                                               struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_configuration_snapshot_destroy(struct rumqttc_configuration_snapshot_t *snapshot);
+
+RUMQTTC_API uint32_t rumqttc_configuration_snapshot_status(const struct rumqttc_configuration_snapshot_t *snapshot,
+                                               struct rumqttc_configuration_status_t *out,
+                                               struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_configuration_snapshot_tuning(const struct rumqttc_configuration_snapshot_t *snapshot,
+                                               uint32_t selected,
+                                               struct rumqttc_runtime_tuning_t *out,
+                                               struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_configuration_snapshot_profile(const struct rumqttc_configuration_snapshot_t *snapshot,
+                                                uint32_t selected,
+                                                struct rumqttc_connection_profile_summary_t *out,
+                                                struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_configuration_snapshot_network(const struct rumqttc_configuration_snapshot_t *snapshot,
+                                                uint32_t selected,
+                                                struct rumqttc_runtime_network_options_t *out,
+                                                struct rumqttc_error_t **error_out);
+
 #ifdef __cplusplus
 }
 #endif

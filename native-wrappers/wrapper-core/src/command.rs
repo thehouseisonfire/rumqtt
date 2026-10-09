@@ -145,6 +145,8 @@ pub enum Command {
         protocol: DisconnectProtocolOptions,
     },
     Diagnostics,
+    /// Completion observes atomic staging, not activation or peer authentication.
+    UpdateConfiguration(Box<crate::RuntimeConfigUpdate>),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

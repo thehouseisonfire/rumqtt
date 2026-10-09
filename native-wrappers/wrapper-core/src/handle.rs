@@ -24,6 +24,11 @@ struct AdmissionGate(parking_lot::Mutex<()>);
 #[derive(Default)]
 struct AdmissionGate(Mutex<()>);
 
+#[cfg(feature = "ordered-shutdown")]
+type AdmissionGuard<'a> = parking_lot::MutexGuard<'a, ()>;
+#[cfg(not(feature = "ordered-shutdown"))]
+type AdmissionGuard<'a> = std::sync::MutexGuard<'a, ()>;
+
 /// Keeps at most one admitted reauthentication outstanding, including before its
 /// first AUTH reaches the driver. Dropping an unpolled/cancelled completion also
 /// releases admission without retaining the client or its operation registry.
@@ -54,6 +59,7 @@ pub static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 pub struct Shared {
     pub(crate) reconnect: Arc<crate::reconnect::Controller>,
     error_context: Mutex<crate::ErrorContext>,
+    configuration: Mutex<Option<Arc<crate::configuration_update::ConfigurationControl>>>,
     backend: BackendClient,
     handle_count: AtomicUsize,
     admission_gate: AdmissionGate,
@@ -68,6 +74,22 @@ pub struct Shared {
 }
 
 impl Shared {
+    pub(crate) fn set_configuration(
+        &self,
+        control: Arc<crate::configuration_update::ConfigurationControl>,
+    ) {
+        *self
+            .configuration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
+    }
+
+    pub(crate) fn configuration_commit_guard(&self) -> Result<AdmissionGuard<'_>> {
+        let guard = self.admission_gate.lock();
+        self.require_running()?;
+        Ok(guard)
+    }
+
     pub(crate) fn new(
         backend: BackendClient,
         acknowledgements: Arc<AcknowledgementCoordinator>,
@@ -88,6 +110,7 @@ impl Shared {
                 phase: Some(crate::ConnectionPhase::Attempt),
                 ..Default::default()
             }),
+            configuration: Mutex::new(None),
             backend,
             handle_count: AtomicUsize::new(1),
             admission_gate: AdmissionGate::default(),
@@ -464,8 +487,48 @@ impl ClientHandle {
             }
             Command::ImmediateDisconnectWithOptions { protocol } => self.try_close_now(protocol),
             Command::Diagnostics => self.try_diagnostics(),
+            Command::UpdateConfiguration(update) => self.try_configuration_update(*update),
         }
         .map_err(|error| self.shared.contextualize(error))
+    }
+
+    /// Atomically admits an owned partial update. Completion means staging, not activation.
+    /// # Errors
+    /// Returns an error for invalid inputs, full update capacity, or a closing client.
+    pub fn try_configuration_update(
+        &self,
+        update: crate::RuntimeConfigUpdate,
+    ) -> Result<Admission> {
+        let guard = self.shared.admission_gate.lock();
+        self.shared.require_running()?;
+        let control = self
+            .shared
+            .configuration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| {
+                Error::new(ErrorKind::Internal, "configuration control is unavailable")
+            })?;
+        // Keep the caller's owners alive while a rejected copied proposal drops.
+        // Final host-owner destruction may reenter client admission.
+        let result = control.admit(&update, &self.shared.operations);
+        drop(guard);
+        drop(update);
+        result.map_err(|error| self.shared.contextualize(error))
+    }
+
+    /// Returns owned redacted values; effective tuning is cached at a native poll boundary.
+    /// # Errors
+    /// Returns an internal error if configuration control was not installed.
+    pub fn configuration_snapshot(&self) -> Result<crate::ConfigurationSnapshot> {
+        self.shared
+            .configuration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|control| control.snapshot())
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "configuration control is unavailable"))
     }
 
     /// Waits asynchronously for request-channel capacity and, for MQTT 5, negotiated

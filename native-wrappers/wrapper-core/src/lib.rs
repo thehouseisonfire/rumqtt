@@ -17,6 +17,14 @@ mod backend;
 mod command;
 mod completion;
 mod config;
+mod configuration_update;
+pub use configuration_update::{
+    ActivationState, BrokerCredentials, ConfigurationSnapshot, ConfigurationUpdateReceipt,
+    ConnectionProfileSummary, FieldUpdate, MAX_CONFIGURATION_UPDATE_BYTES,
+    MAX_PENDING_CONFIGURATION_BYTES, MAX_PENDING_CONFIGURATION_UPDATES, RuntimeConfigUpdate,
+    RuntimeTuning,
+};
+pub use rumqttc_core::{AttemptOutcome, ConnectionObservationSnapshot, ConnectionRoute};
 mod connection;
 mod error;
 mod event;

@@ -56,6 +56,7 @@ pub struct ErrorHandle {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FailureDetails {
+    pub configuration_revision: Option<u64>,
     pub store: Option<NonZeroU32>,
     pub auth: Option<NonZeroU32>,
     pub redirect: Option<NonZeroU32>,
@@ -66,6 +67,7 @@ pub struct FailureDetails {
     pub publish: Option<NonZeroU32>,
 }
 const EMPTY_FAILURES: FailureDetails = FailureDetails {
+    configuration_revision: None,
     store: None,
     auth: None,
     redirect: None,
@@ -79,6 +81,7 @@ const EMPTY_FAILURES: FailureDetails = FailureDetails {
 impl FailureDetails {
     fn from_core(error: &Error) -> Self {
         Self {
+            configuration_revision: error.configuration_revision(),
             ordered: error
                 .ordered_disconnect_failure()
                 .and_then(|failure| NonZeroU32::new(failure as u32)),

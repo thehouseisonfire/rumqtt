@@ -41,7 +41,7 @@ set(RUMQTTC_C_EXAMPLES
     authenticator
     shutdown
     ordered_shutdown)
-list(APPEND RUMQTTC_C_EXAMPLES shared_execution resource_limits custom_transport tls_profile redirect_authority)
+list(APPEND RUMQTTC_C_EXAMPLES shared_execution resource_limits custom_transport tls_profile redirect_authority configuration_rotation)
 add_library(rumqttc_transport_socket STATIC transport_socket.c)
 target_compile_features(rumqttc_transport_socket PUBLIC c_std_11)
 target_link_libraries(rumqttc_transport_socket PUBLIC rumqttc_example_common)
@@ -59,7 +59,7 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
     target_link_libraries(${target} PRIVATE rumqttc_example_common)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX)
-        if(example STREQUAL "tls_profile")
+        if(example STREQUAL "tls_profile" OR example STREQUAL "configuration_rotation")
             target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
         endif()
         if(example STREQUAL "multithreaded_publishing" OR example STREQUAL "authenticator"
@@ -75,7 +75,10 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${RUMQTTC_SHARED_LIBRARY}" "$<TARGET_FILE_DIR:${target}>")
     endif()
-    if(example STREQUAL "tls_profile")
+    if(example STREQUAL "configuration_rotation")
+        add_test(NAME ${target} COMMAND "${Python3_EXECUTABLE}"
+            "${RUMQTTC_ROOT}/tests/native/configuration_rotation_fixture.py" --binary $<TARGET_FILE:${target}>)
+    elseif(example STREQUAL "tls_profile")
         add_test(NAME ${target} COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}"
             --redact --tls-profile-example --binary $<TARGET_FILE:${target}>)
         set_tests_properties(${target} PROPERTIES SKIP_RETURN_CODE 77)

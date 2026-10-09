@@ -4,6 +4,7 @@ pub mod tls;
 pub use tls::build_tls;
 
 mod auth;
+pub mod configuration;
 mod reconnect;
 mod redirect;
 pub mod session;
@@ -445,6 +446,16 @@ impl BackendClient {
 }
 
 impl BackendDriver {
+    pub(crate) fn set_connection_observation(
+        &mut self,
+        observation: rumqttc_core::ConnectionObservation,
+    ) {
+        match self {
+            Self::V4(driver) => driver.eventloop.set_connection_observation(observation),
+            Self::V5(driver) => driver.eventloop.set_connection_observation(observation),
+        }
+    }
+
     pub(crate) fn tls_callback_monitor(&self) -> std::sync::Arc<TlsCallbackMonitor> {
         match self {
             Self::V4(driver) => std::sync::Arc::clone(&driver.tls_callbacks),

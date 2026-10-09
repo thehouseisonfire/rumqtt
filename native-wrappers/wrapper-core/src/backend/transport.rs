@@ -7,7 +7,7 @@ use futures_util::FutureExt;
 use crate::transport::{HostFuture, OwnedStream};
 use crate::{
     CommonConfig, NetworkConfig, NetworkHandling, ProtocolVersion, TransportConnectorConfig,
-    TransportFailure, TransportRequest,
+    TransportFailure, TransportMode, TransportRequest,
 };
 
 pub fn io_error(kind: std::io::ErrorKind, failure: TransportFailure) -> std::io::Error {
@@ -92,7 +92,8 @@ async fn connect(
     reason = "Atomic fetch_update is available at the Rust 1.88 MSRV"
 )]
 fn request(
-    common: &CommonConfig,
+    client_id: &str,
+    mode: TransportMode,
     protocol: ProtocolVersion,
     target: String,
     options: &rumqttc_v4::NetworkOptions,
@@ -104,18 +105,14 @@ fn request(
         + 1;
     Ok(TransportRequest {
         protocol,
-        client_id: common.client_id.clone(),
+        client_id: client_id.to_owned(),
         target,
         generation,
         deadline: options
             .connection_deadline()
             .ok_or_else(|| TransportFailure::InvalidResult.into_io())?,
         network: network(options),
-        mode: common
-            .connector
-            .as_ref()
-            .expect("configured connector")
-            .mode,
+        mode,
     })
 }
 
@@ -123,11 +120,18 @@ pub(super) fn configure_v4(options: &mut rumqttc_v4::MqttOptions, common: &Commo
     let Some(config) = common.connector.clone() else {
         return;
     };
-    let common = common.clone();
+    let client_id = common.client_id.clone();
     let generation = Arc::new(AtomicU64::new(0));
     options.set_socket_connector(move |target, options| {
         let config = config.clone();
-        let request = request(&common, ProtocolVersion::V4, target, &options, &generation);
+        let request = request(
+            &client_id,
+            config.mode,
+            ProtocolVersion::V4,
+            target,
+            &options,
+            &generation,
+        );
         async move { connect(config, request?).await }
     });
 }
@@ -136,11 +140,18 @@ pub(super) fn configure_v5(options: &mut rumqttc_v5::MqttOptions, common: &Commo
     let Some(config) = common.connector.clone() else {
         return;
     };
-    let common = common.clone();
+    let client_id = common.client_id.clone();
     let generation = Arc::new(AtomicU64::new(0));
     options.set_socket_connector(move |target, options| {
         let config = config.clone();
-        let request = request(&common, ProtocolVersion::V5, target, &options, &generation);
+        let request = request(
+            &client_id,
+            config.mode,
+            ProtocolVersion::V5,
+            target,
+            &options,
+            &generation,
+        );
         async move { connect(config, request?).await }
     });
 }
@@ -203,6 +214,47 @@ mod tests {
             })
         }
     }
+    #[test]
+    fn socket_connectors_do_not_retain_startup_password_owners() {
+        struct PasswordOwner {
+            bytes: Vec<u8>,
+            _lifetime: Arc<()>,
+        }
+        impl AsRef<[u8]> for PasswordOwner {
+            fn as_ref(&self) -> &[u8] {
+                &self.bytes
+            }
+        }
+
+        for mqtt5 in [false, true] {
+            let lifetime = Arc::new(());
+            let retired = Arc::downgrade(&lifetime);
+            let mut common = CommonConfig::new("ownership", "localhost", 1883);
+            common.password = Some(Bytes::from_owner(PasswordOwner {
+                bytes: b"startup-password".to_vec(),
+                _lifetime: lifetime,
+            }));
+            common.connector = Some(TransportConnectorConfig {
+                connector: Arc::new(Host {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    blocking: false,
+                }),
+                mode: TransportMode::Base,
+            });
+            let mut v4 = rumqttc_v4::MqttOptions::new("ownership", ("localhost", 1883));
+            let mut v5 = rumqttc_v5::MqttOptions::new("ownership", ("localhost", 1883));
+            if mqtt5 {
+                configure_v5(&mut v5, &common);
+            } else {
+                configure_v4(&mut v4, &common);
+            }
+            drop(common);
+            assert!(retired.upgrade().is_none());
+            // Native options and their connector closures remain alive until here.
+            drop((v4, v5));
+        }
+    }
+
     #[tokio::test]
     async fn expired_attempts_do_not_invoke_hosts_or_accept_immediately_ready_late_results() {
         for blocking in [false, true] {

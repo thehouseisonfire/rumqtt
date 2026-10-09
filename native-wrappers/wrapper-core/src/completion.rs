@@ -188,6 +188,7 @@ pub enum Completion {
     Acknowledged,
     Authenticated,
     Diagnostics(crate::DiagnosticsSnapshot),
+    ConfigurationStaged(crate::ConfigurationUpdateReceipt),
     /// Preceding publishes completed, DISCONNECT flushed, and required persistence finished.
     OrderedShutdown,
     GracefulShutdown,

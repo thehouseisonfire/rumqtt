@@ -436,6 +436,7 @@ pub struct RuntimeConfigDiagnostics {
 pub struct EventLoop {
     /// Options of the current mqtt connection
     pub mqtt_options: MqttOptions,
+    connection_observation: Option<crate::ConnectionObservation>,
     /// Current state of the connection
     pub state: MqttState,
     /// Flow-controlled publish request stream.
@@ -655,6 +656,7 @@ impl EventLoop {
 
         Self {
             mqtt_options,
+            connection_observation: None,
             state: MqttState::new_internal(max_inflight, ack_mode),
             requests_rx,
             control_requests_rx,
@@ -1198,7 +1200,24 @@ impl EventLoop {
         ConnectionError::MqttState(source)
     }
 
+    /// Attach optional owned attempt observations. Does not change options or polling.
+    pub fn set_connection_observation(&mut self, observation: crate::ConnectionObservation) {
+        self.connection_observation = Some(observation);
+    }
+
     async fn establish_connection(&mut self) -> Result<Event, ConnectionError> {
+        let observation = self
+            .connection_observation
+            .as_ref()
+            .map(crate::ConnectionObservation::begin_attempt);
+        let result = self.establish_connection_observed().await;
+        if let Some(observation) = observation {
+            observation.finish(result.is_ok());
+        }
+        result
+    }
+
+    async fn establish_connection_observed(&mut self) -> Result<Event, ConnectionError> {
         self.reset_session_state_if_client_id_changed();
         self.load_persisted_session_if_needed().await?;
 

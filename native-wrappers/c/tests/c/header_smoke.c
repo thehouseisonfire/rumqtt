@@ -59,6 +59,16 @@ int main(void) {
   assert(reconnect.struct_size == sizeof(reconnect) && reconnect.mode == RUMQTTC_RECONNECT_CLASSIFIED);
   assert(retry_diagnostics.struct_size == sizeof(retry_diagnostics));
   rumqttc_diagnostics_t diagnostics = RUMQTTC_DIAGNOSTICS_INIT;
+  rumqttc_runtime_network_options_t network_update = RUMQTTC_RUNTIME_NETWORK_OPTIONS_INIT;
+  rumqttc_configuration_status_t configuration = RUMQTTC_CONFIGURATION_STATUS_INIT;
+  rumqttc_configuration_receipt_status_t activation = RUMQTTC_CONFIGURATION_RECEIPT_STATUS_INIT;
+  rumqttc_runtime_tuning_t tuning = RUMQTTC_RUNTIME_TUNING_INIT;
+  rumqttc_connection_profile_summary_t profile_summary = RUMQTTC_CONNECTION_PROFILE_SUMMARY_INIT;
+  assert(network_update.struct_size == sizeof(network_update) && network_update.present_fields == 0);
+  assert(configuration.struct_size == sizeof(configuration) && configuration.revision == 0);
+  assert(activation.struct_size == sizeof(activation) && activation.revision == 0);
+  assert(tuning.struct_size == sizeof(tuning) && tuning.read_batch_size == 0);
+  assert(profile_summary.struct_size == sizeof(profile_summary) && profile_summary.flags == 0);
   rumqttc_tls_options_t tls_options = RUMQTTC_TLS_OPTIONS_INIT;
   rumqttc_tls_pin_t tls_pin = RUMQTTC_TLS_PIN_INIT;
   rumqttc_tls_profile_options_t tls_profile = RUMQTTC_TLS_PROFILE_OPTIONS_INIT;

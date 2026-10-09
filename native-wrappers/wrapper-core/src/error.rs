@@ -31,6 +31,8 @@ pub enum ErrorCode {
     PublishRestoreBudgetExceeded,
 
     ConfigurationInvalid,
+    ConfigurationUpdateUnsupported,
+    ConfigurationUpdateTooLarge,
     CommandInvalid,
     RequestBackpressure,
     Network,
@@ -62,6 +64,8 @@ impl ErrorCode {
             Self::PublishAliasReplayUnavailable => "PUBLISH_ALIAS_REPLAY_UNAVAILABLE",
             Self::PublishRestoreBudgetExceeded => "PUBLISH_RESTORE_BUDGET_EXCEEDED",
             Self::ConfigurationInvalid => "CONFIGURATION_INVALID",
+            Self::ConfigurationUpdateUnsupported => "CONFIGURATION_UPDATE_UNSUPPORTED",
+            Self::ConfigurationUpdateTooLarge => "CONFIGURATION_UPDATE_TOO_LARGE",
             Self::CommandInvalid => "COMMAND_INVALID",
             Self::RequestBackpressure => "REQUEST_BACKPRESSURE",
             Self::Network => "NETWORK",
@@ -125,6 +129,10 @@ pub struct Error {
     delivery: DeliveryStatus,
     message: Arc<str>,
     broker_reason: Option<u8>,
+    // Keep the presence flag separate so it packs with the other small fields.
+    // An inline Option<u64> pushes the combined error over the large-Err threshold.
+    configuration_revision: u64,
+    has_configuration_revision: bool,
     publish_failure: Option<crate::PublishFailure>,
     store_failure: Option<crate::StoreFailure>,
     auth_failure: Option<crate::AuthFailure>,
@@ -168,6 +176,8 @@ impl Error {
             delivery: DeliveryStatus::NotApplicable,
             message: Arc::from(message.into()),
             broker_reason: None,
+            configuration_revision: 0,
+            has_configuration_revision: false,
             publish_failure: None,
             store_failure: None,
             auth_failure: None,
@@ -199,6 +209,8 @@ impl Error {
             delivery,
             message,
             broker_reason: None,
+            configuration_revision: 0,
+            has_configuration_revision: false,
             publish_failure: None,
             store_failure: None,
             auth_failure: None,
@@ -363,6 +375,25 @@ impl Error {
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Origin configuration selected by the connection associated with this failure.
+    #[must_use]
+    pub const fn configuration_revision(&self) -> Option<u64> {
+        if self.has_configuration_revision {
+            Some(self.configuration_revision)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn with_configuration_revision(mut self, revision: Option<u64>) -> Self {
+        self.has_configuration_revision = revision.is_some();
+        self.configuration_revision = match revision {
+            Some(revision) => revision,
+            None => 0,
+        };
+        self
     }
 
     /// Numeric MQTT reason code when the broker explicitly rejected an operation.

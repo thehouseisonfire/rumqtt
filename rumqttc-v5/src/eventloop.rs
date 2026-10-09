@@ -492,6 +492,7 @@ struct ActiveRedirect {
     outcome: RedirectOutcome,
     profile: RedirectTargetProfile,
     previous_options: MqttOptions,
+    previous_origin: bool,
     origin_session: Option<RedirectOriginSession>,
     session_preserved: bool,
     established: bool,
@@ -531,6 +532,8 @@ enum PendingServerRedirect {
 pub struct EventLoop {
     /// Options of the current mqtt connection
     pub options: MqttOptions,
+    connection_observation: Option<crate::ConnectionObservation>,
+    configuration_origin: bool,
     /// Current state of the connection
     pub state: MqttState,
     /// Flow-controlled publish request stream.
@@ -684,6 +687,35 @@ impl EventLoop {
     /// a failed redirect restores the origin, including the selected SRV candidate.
     pub const fn take_last_redirect_diagnostics(&mut self) -> Option<RedirectDiagnostics> {
         self.last_redirect_diagnostics.take()
+    }
+
+    /// Attach optional owned attempt/routing observations. Does not change options or polling.
+    pub fn set_connection_observation(&mut self, observation: crate::ConnectionObservation) {
+        self.connection_observation = Some(observation);
+        self.observe_configuration_route();
+    }
+
+    fn observe_configuration_route(&self) {
+        let route = if let Some(active) = &self.active_redirect {
+            if active.outcome.reason == RedirectReason::UseAnotherServer {
+                crate::ConnectionRoute::TemporaryTarget
+            } else {
+                crate::ConnectionRoute::PermanentTarget
+            }
+        } else if self.configuration_origin {
+            crate::ConnectionRoute::Origin
+        } else {
+            crate::ConnectionRoute::PermanentTarget
+        };
+        if let Some(observation) = &self.connection_observation {
+            observation.set_route(route);
+        }
+    }
+
+    fn observe_redirect_transition(&self) {
+        if let Some(observation) = &self.connection_observation {
+            observation.set_route(crate::ConnectionRoute::RedirectTransition);
+        }
     }
 
     fn has_local_session_state(&self) -> bool {
@@ -917,6 +949,8 @@ impl EventLoop {
 
         Self {
             options,
+            connection_observation: None,
+            configuration_origin: true,
             state,
             requests_rx,
             control_requests_rx,
@@ -1827,6 +1861,7 @@ impl EventLoop {
             }
         };
 
+        self.observe_redirect_transition();
         self.pending_redirect_shutdown |= self.redirect_shutdown_requested();
         let events = std::mem::take(&mut self.state.events);
         self.clean_with_notice_reason(NoticeFailureReason::Redirected);
@@ -1933,6 +1968,8 @@ impl EventLoop {
             .as_ref()
             .map(|admission| admission.begin_connection_cleanup());
         self.options = active.previous_options;
+        self.configuration_origin = active.previous_origin;
+        self.observe_configuration_route();
         self.state.set_authenticator(self.options.authenticator());
         self.state
             .set_async_authenticator(self.options.async_authenticator());
@@ -2069,6 +2106,7 @@ impl EventLoop {
         {
             return error.into();
         }
+        self.observe_configuration_route();
         RedirectError { outcome, failure }.into()
     }
 
@@ -2107,6 +2145,7 @@ impl EventLoop {
         &mut self,
         outcome: RedirectOutcome,
     ) -> Result<Event, ConnectionError> {
+        self.observe_redirect_transition();
         self.last_redirect_diagnostics = None;
         self.redirect_selected_reference = None;
         #[cfg(feature = "ordered-shutdown")]
@@ -2159,6 +2198,10 @@ impl EventLoop {
         };
         let endpoint = self.prepare_redirect_target(&outcome, &references, &profile)?;
         let current_origin_session = self.redirect_origin_session();
+        let previous_origin = self
+            .active_redirect
+            .as_ref()
+            .map_or(self.configuration_origin, |active| active.previous_origin);
         // Snapshotting pending session state is part of the synchronous decision budget.
         if let Err(error) = profile.validate(&self.options) {
             return Err(self.redirect_failure(outcome, RedirectFailure::Target(error)));
@@ -2190,6 +2233,7 @@ impl EventLoop {
             outcome: outcome.clone(),
             profile: (*profile).clone(),
             previous_options,
+            previous_origin,
             origin_session: if session_preserved {
                 None
             } else {
@@ -2199,6 +2243,8 @@ impl EventLoop {
             established: false,
             srv,
         });
+        self.configuration_origin = false;
+        self.observe_configuration_route();
         Ok(Event::Redirect(outcome))
     }
 
@@ -2400,6 +2446,20 @@ impl EventLoop {
     }
 
     async fn establish_connection_attempt(&mut self) -> Result<Option<Event>, ConnectionError> {
+        let observation = self
+            .connection_observation
+            .as_ref()
+            .map(crate::ConnectionObservation::begin_attempt);
+        let result = self.establish_connection_attempt_observed().await;
+        if let Some(observation) = observation {
+            observation.finish(result.is_ok() && self.network.is_some());
+        }
+        result
+    }
+
+    async fn establish_connection_attempt_observed(
+        &mut self,
+    ) -> Result<Option<Event>, ConnectionError> {
         self.last_connect_failure_phase = None;
         self.reset_session_state_if_client_id_changed();
         self.load_persisted_session_if_needed().await?;
@@ -2426,6 +2486,7 @@ impl EventLoop {
                     );
                     if let ConnectionError::Redirect(redirect) = failure.error {
                         if let Some(event) = self.state.events.pop_front() {
+                            self.observe_redirect_transition();
                             self.pending_server_redirect =
                                 Some(PendingServerRedirect::HandshakeEvents(redirect.outcome));
                             return Ok(Some(event));
@@ -2563,6 +2624,12 @@ impl EventLoop {
         &mut self,
         result: Result<Event, ConnectionError>,
     ) -> Result<Event, ConnectionError> {
+        if matches!(
+            &result,
+            Err(ConnectionError::MqttState(StateError::ServerRedirect(_)))
+        ) {
+            self.observe_redirect_transition();
+        }
         // A transport failure can arrive while waiting for the next AUTH packet.
         // Fail that exchange before reconnect cleanup clears its lifecycle event.
         // Redirect transitions retain their own failure reason and cleanup path.

@@ -8,6 +8,10 @@
 // unsafe blocks inside the panic boundary.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+#[path = "configuration.rs"]
+mod configuration;
+pub use configuration::*;
+
 #[path = "tls.rs"]
 mod tls;
 pub use tls::*;
@@ -99,6 +103,7 @@ const CAP_TRANSPORT_CALLBACKS: u64 = 1 << 13;
 const CAP_WEBSOCKET_CALLBACKS: u64 = 1 << 14;
 const CAP_ORDERED_SHUTDOWN: u64 = 1 << 15;
 const CAP_SHARED_EXECUTION: u64 = 1 << 16;
+const CAP_RUNTIME_CONFIGURATION: u64 = 1 << 17;
 const MAX_CHECKPOINT_SIZE: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
@@ -1246,6 +1251,7 @@ pub extern "C" fn rumqttc_library_version() -> *const c_char {
 pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
     CAP_V4
         | CAP_SHARED_EXECUTION
+        | CAP_RUNTIME_CONFIGURATION
         | if cfg!(feature = "ordered-shutdown") {
             CAP_ORDERED_SHUTDOWN
         } else {
@@ -1488,7 +1494,7 @@ pub unsafe extern "C" fn rumqttc_config_set_password(
         let password = password?;
         unsafe { config_ref(config) }?
             .update(|config| {
-                config.common.password = Some(Bytes::from(password));
+                config.common.password = Some(SecretBytes::new(password).into_bytes());
                 Ok(())
             })
             .map_err(ErrorHandle::internal)
@@ -4673,6 +4679,7 @@ const fn completion_kind(completion: &Completion) -> u32 {
         Completion::Authenticated => 10,
         Completion::Diagnostics(_) => 7,
         Completion::OrderedShutdown => 11,
+        Completion::ConfigurationStaged(_) => 12,
         Completion::GracefulShutdown => 8,
         Completion::ImmediateShutdown => 9,
     }
@@ -6247,6 +6254,38 @@ pub unsafe extern "C" fn rumqttc_error_broker_reason(
         unsafe {
             write_optional(present_out, u8::from(error.broker_reason.is_some()));
             write_optional(reason_out, error.broker_reason.unwrap_or(0));
+        }
+        Ok(())
+    })
+}
+
+/// Origin profile revision retained with a connection failure, independent of later attempts.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_error_configuration_revision(
+    error: *const rumqttc_error,
+    present_out: *mut u8,
+    revision_out: *mut u64,
+) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(revision_out, 0);
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if present_out.is_null() && revision_out.is_null() {
+            return Err(ErrorHandle::argument(
+                "at least one configuration-revision output is required",
+            ));
+        }
+        let error = unsafe { error_ref(error) }?;
+        unsafe {
+            write_optional(
+                present_out,
+                u8::from(error.failure_details().configuration_revision.is_some()),
+            );
+            write_optional(
+                revision_out,
+                error.failure_details().configuration_revision.unwrap_or(0),
+            );
         }
         Ok(())
     })

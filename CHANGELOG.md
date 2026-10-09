@@ -16,6 +16,20 @@
   scheduling controls remain follow-up work.
   Persistence failures remain terminal even when their nested cause resembles
   a retryable transport failure.
+- Native wrappers: Add typed, bounded runtime configuration updates in wrapper-core
+  and additive C builders, tracked staging completions, receipts and redacted owned
+  snapshots. Apply batching/throttle at safe poll boundaries and coherent broker
+  credentials/TLS/network/timeout profiles before the next origin attempt; preserve
+  pending polls, retry state and temporary redirect restoration. Stage updates during
+  reconnect backoff and finalize their receipts on close. Reject unsupported
+  or invalid mixed proposals atomically and redirected-target profile changes.
+  Report desired/effective group revisions, supersession, attempt outcomes and
+  connection-error revisions. Native v4/v5 event loops expose optional owned
+  connection observations. Use zeroizing broker password owners and fresh TLS
+  session caches for rotations. Add a C rotation example and broker/TLS/concurrency
+  regressions. Idle activation may be indefinitely deferred; controlled reconnect
+  remains outside this stage. Existing C record layouts are preserved. Wrapper Rust
+  `Command`, `Completion` and `ErrorCode` gain variants; exhaustive matches need updating.
 - Native wrappers: Add opt-in, explicitly owned shared execution contexts to
   wrapper-core and the standard C API. Configure client capacity, scheduler
   workers and the blocking pool; retain contexts through configurations and
@@ -153,6 +167,31 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+
+- Native wrappers: Resolve queued and preparing configuration requests before
+  graceful or ordered shutdown drains completions, preventing MQTT v4/v5 shutdown
+  from waiting on its own configuration senders. Detached preparation remains
+  tracked through owner cleanup before client teardown completes.
+- Native wrappers: Retire origin profiles immediately after permanent-target
+  connection success, before event delivery. A full event queue no longer delays
+  secret-owner release or changes `UnavailableAfterRedirect` receipts to
+  `ClosedBeforeActivation` when delivery fails.
+- Native wrappers: Keep runtime profile preparation tracked through destruction
+  of captured inputs and discarded results, so shared-client teardown waits for
+  TLS-owner release callbacks to finish.
+- Native wrappers: Release obsolete origin declarations after successful permanent
+  redirects, including staged credentials, TLS secrets and callback registrations.
+  Preserve redacted snapshot history and tuning updates on the permanent target.
+- Native wrappers: Release retired startup credentials and TLS callback owners
+  after runtime profile rotation with custom connectors. Connector closures retain
+  only connector/request metadata, allowing obsolete security owners to be released
+  once their connection work ends.
+- Native wrappers: Retire staged origin connection profiles only after a successful
+  MQTT 5 permanent-target attempt. A preceding origin success no longer retires
+  rotations while the target handshake is pending or when the move fails or is cancelled.
+- Native wrappers: Attribute connection failures to their connection phase rather
+  than the latest attempt snapshot. MQTT 5 redirected SRV lookup failures no longer
+  inherit a preceding origin configuration revision after origin restoration.
 - Native wrappers: Bound MQTT 5 completion-registration and ready-result batches
   before polling MQTT, so sustained overlapping reauthentication traffic cannot
   indefinitely postpone network progress, authentication deadlines or shutdown.

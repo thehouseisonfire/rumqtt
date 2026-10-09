@@ -302,7 +302,106 @@ static void coverage_redirect_authority(void) {
   CHECK(rumqttc_client_destroy_timeout_ms(client, NATIVE_DEADLINE_MS, NULL));
 }
 
+static void coverage_runtime_configuration(void) {
+  rumqttc_runtime_update_t *update = NULL;
+  rumqttc_completion_t *completion = NULL;
+  rumqttc_configuration_receipt_t *receipt = NULL;
+  rumqttc_configuration_snapshot_t *snapshot = NULL;
+  rumqttc_runtime_network_options_t network = RUMQTTC_RUNTIME_NETWORK_OPTIONS_INIT;
+  rumqttc_configuration_receipt_status_t activation = RUMQTTC_CONFIGURATION_RECEIPT_STATUS_INIT;
+  rumqttc_configuration_status_t status = RUMQTTC_CONFIGURATION_STATUS_INIT;
+  rumqttc_runtime_tuning_t tuning = RUMQTTC_RUNTIME_TUNING_INIT;
+  rumqttc_connection_profile_summary_t profile_summary = RUMQTTC_CONNECTION_PROFILE_SUMMARY_INIT;
+  rumqttc_client_t *client = native_start_client(RUMQTTC_PROTOCOL_V4, "native-config-error-out",
+                                               RUMQTTC_ACK_AUTOMATIC, 16, 64, 5000);
+  /* ERROR_OUT_FAILURE: rumqttc_runtime_update_new */
+  EXPECT_FAILURE(rumqttc_runtime_update_new(NULL, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_runtime_update_new */
+  CHECK(rumqttc_runtime_update_new(&update, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_runtime_update_set_max_request_batch */
+  EXPECT_FAILURE(rumqttc_runtime_update_set_max_request_batch(NULL, 2, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_runtime_update_set_max_request_batch */
+  CHECK(rumqttc_runtime_update_set_max_request_batch(update, 2, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_runtime_update_set_read_batch_size */
+  EXPECT_FAILURE(rumqttc_runtime_update_set_read_batch_size(NULL, 4, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_runtime_update_set_read_batch_size */
+  CHECK(rumqttc_runtime_update_set_read_batch_size(update, 4, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_runtime_update_set_pending_throttle_ns */
+  EXPECT_FAILURE(rumqttc_runtime_update_set_pending_throttle_ns(NULL, 10, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_runtime_update_set_pending_throttle_ns */
+  CHECK(rumqttc_runtime_update_set_pending_throttle_ns(update, 10, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_runtime_update_set_connection_timeout_ms */
+  EXPECT_FAILURE(rumqttc_runtime_update_set_connection_timeout_ms(NULL, 1000, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_runtime_update_set_connection_timeout_ms */
+  CHECK(rumqttc_runtime_update_set_connection_timeout_ms(update, 1000, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_runtime_update_set_credentials */
+  EXPECT_FAILURE(rumqttc_runtime_update_set_credentials(update, 2, native_string(""), 0, native_bytes(NULL, 0), NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_runtime_update_set_credentials */
+  CHECK(rumqttc_runtime_update_set_credentials(update, 1, native_string("user"), 1, native_bytes((const uint8_t *)"secret", 6), NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_runtime_update_set_network */
+  EXPECT_FAILURE(rumqttc_runtime_update_set_network(update, NULL, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_runtime_update_set_network */
+  CHECK(rumqttc_runtime_update_set_network(update, &network, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_runtime_update_field_action */
+  EXPECT_FAILURE(rumqttc_runtime_update_field_action(update, 99, RUMQTTC_CONFIG_CLEAR, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_runtime_update_field_action */
+  CHECK(rumqttc_runtime_update_field_action(update, RUMQTTC_CONFIG_FIELD_READ_BATCH_SIZE, RUMQTTC_CONFIG_CLEAR, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_client_update_configuration_tracked */
+  EXPECT_FAILURE(rumqttc_client_update_configuration_tracked(NULL, update, &completion, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_client_update_configuration_tracked */
+  CHECK(rumqttc_client_update_configuration_tracked(client, update, &completion, NULL));
+  native_wait_completion(completion, RUMQTTC_COMPLETION_CONFIGURATION_STAGED);
+  /* ERROR_OUT_FAILURE: rumqttc_completion_configuration_receipt */
+  EXPECT_FAILURE(rumqttc_completion_configuration_receipt(NULL, &receipt, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_completion_configuration_receipt */
+  CHECK(rumqttc_completion_configuration_receipt(completion, &receipt, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_configuration_receipt_status */
+  EXPECT_FAILURE(rumqttc_configuration_receipt_status(NULL, &activation, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_configuration_receipt_status */
+  CHECK(rumqttc_configuration_receipt_status(receipt, &activation, NULL));
+  REQUIRE(activation.revision == 1);
+  /* ERROR_OUT_FAILURE: rumqttc_client_configuration_snapshot */
+  EXPECT_FAILURE(rumqttc_client_configuration_snapshot(NULL, &snapshot, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_client_configuration_snapshot */
+  CHECK(rumqttc_client_configuration_snapshot(client, &snapshot, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_configuration_snapshot_status */
+  EXPECT_FAILURE(rumqttc_configuration_snapshot_status(NULL, &status, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_configuration_snapshot_status */
+  CHECK(rumqttc_configuration_snapshot_status(snapshot, &status, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_configuration_snapshot_tuning */
+  EXPECT_FAILURE(rumqttc_configuration_snapshot_tuning(snapshot, 99, &tuning, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_configuration_snapshot_tuning */
+  CHECK(rumqttc_configuration_snapshot_tuning(snapshot, RUMQTTC_CONFIG_DESIRED, &tuning, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_configuration_snapshot_profile */
+  EXPECT_FAILURE(rumqttc_configuration_snapshot_profile(snapshot, 99, &profile_summary, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_configuration_snapshot_profile */
+  CHECK(rumqttc_configuration_snapshot_profile(snapshot, RUMQTTC_CONFIG_EFFECTIVE, &profile_summary, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_configuration_snapshot_network */
+  EXPECT_FAILURE(rumqttc_configuration_snapshot_network(snapshot, 99, &network, NULL));
+  /* ERROR_OUT_SUCCESS: rumqttc_configuration_snapshot_network */
+  CHECK(rumqttc_configuration_snapshot_network(snapshot, RUMQTTC_CONFIG_DESIRED, &network, NULL));
+  /* ERROR_OUT_FAILURE: rumqttc_runtime_update_set_broker_tls_profile */
+  EXPECT_FAILURE(rumqttc_runtime_update_set_broker_tls_profile(update, NULL, NULL));
+  if (rumqttc_library_capabilities() & (RUMQTTC_CAP_RUSTLS | RUMQTTC_CAP_NATIVE_TLS)) {
+    rumqttc_tls_options_t tls = RUMQTTC_TLS_OPTIONS_INIT;
+    rumqttc_tls_profile_options_t options = RUMQTTC_TLS_PROFILE_OPTIONS_INIT;
+    rumqttc_tls_profile_t *profile = NULL;
+    tls.backend = (rumqttc_library_capabilities() & RUMQTTC_CAP_RUSTLS) ? RUMQTTC_TLS_BACKEND_RUSTLS : RUMQTTC_TLS_BACKEND_NATIVE;
+    options.tls = &tls;
+    CHECK(rumqttc_tls_profile_new(&options, &profile, NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_runtime_update_set_broker_tls_profile */
+    CHECK(rumqttc_runtime_update_set_broker_tls_profile(update, profile, NULL));
+    rumqttc_tls_profile_destroy(profile);
+  }
+  rumqttc_runtime_update_destroy(update);
+  rumqttc_configuration_snapshot_destroy(snapshot);
+  rumqttc_configuration_receipt_destroy(receipt);
+  rumqttc_completion_destroy(completion);
+  native_close_destroy(client);
+}
+
 void native_test_error_out_contract(void) {
+  coverage_runtime_configuration();
   coverage_execution();
   coverage_redirect_authority();
   coverage_tls_profiles();

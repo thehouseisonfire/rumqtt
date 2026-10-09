@@ -3,7 +3,9 @@
 This matrix records public mutable MqttOptions/NetworkOptions setters, all
 public synchronous/asynchronous client methods (merged by method name), and
 every native Event, Outgoing, and AuthEvent variant. Equivalent builder methods
-delegate to these setters; getters observe the immutable input configuration.
+delegate to these setters. Startup mappings are independent of running clients;
+the [runtime applicability audit](runtime-configuration.md) defines the narrow
+set of post-start changes and their activation boundaries.
 Codec internals are not a native-client API. The source audit parses all feature
 branches, including disabled ones, so API additions require an explicit review.
 
@@ -13,11 +15,11 @@ branches, including disabled ones, so API additions require an explicit review.
 | v4, v5 | option | set_client_id, set_transport, set_keep_alive | supported | CommonConfig owns immutable connection inputs; WC-13 independent TLS backends and ownership | config, tls::tls_input_ownership_is_released_on_every_driver_exit, tls::malformed_tls_credentials_and_alpn_fail_without_network_or_secret_disclosure, tls::valid_pkcs12_with_wrong_password_fails_without_disclosing_identity, tls::platform_roots_validate_an_isolated_process_trust_store, tls::tls_failure_panic_output_is_redacted, transport_composition::disabled_transports_fail_before_opening_a_socket |
 | v4, v5 | option | protocol_compatibility_mut, set_protocol_compatibility | supported | Protocol-specific flat V4Config.session_present_mismatch_policy and V5Config.broker_session_resume_policy map into native ProtocolCompatibility without duplicated policy storage; raw/effective state is mapped through existing diagnostics | backend config_tests, protocol_compatibility, session_store, parity_inventory |
 | v4 | option | try_set_client_id | supported | Fallible validation before start | config |
-| v4, v5 | option | set_auth, clear_auth, set_username, set_credentials | supported | Optional owned username/password | config |
+| v4, v5 | option | set_auth, clear_auth, set_username, set_credentials | supported | Optional owned username/password; coherent zeroizing next-origin-attempt rotations | config, configuration_update |
 | v5 | option | set_password | supported | Password-only CONNECT is legal only in v5 | config |
 | v4 | option | set_clean_session, try_set_clean_session, set_session_mode, try_set_session_mode | supported | V4Config.clean_session and client-id validation | config, session_store |
 | v5 | option | set_clean_start, set_session_mode, set_session_expiry_interval | supported | V5Config.clean_start and CONNECT session expiry | config_wire, session_store |
-| v4, v5 | option | set_request_channel_capacity, set_max_request_batch, set_read_batch_size, set_pending_throttle | supported | WC-03 distinct channel, request/read batching and throttle controls | backend config_tests, lifecycle |
+| v4, v5 | option | set_request_channel_capacity, set_max_request_batch, set_read_batch_size, set_pending_throttle | supported | WC-03 distinct controls; capacity construction-only, tuning updates at safe poll boundaries | backend config_tests, lifecycle, configuration_update |
 | v4 | option | set_max_packet_size, set_inflight, try_set_inflight | supported | WC-03 local input limit and v4 output/inflight limits | runtime_limits::outgoing_inflight_obeys_local_and_broker_limits, runtime_limits::oversized_outgoing_publish_reports_protocol_failure_and_resolves_on_close, runtime_limits::incoming_decoder_limit_is_independent_of_advertised_maximum |
 | v5 | option | set_max_packet_size, set_incoming_packet_size_limit, set_local_incoming_packet_size_limit, set_unlimited_incoming_packet_size, set_outgoing_inflight_upper_limit | supported | WC-03 independent local and advertised limits | runtime_limits::outgoing_inflight_obeys_local_and_broker_limits, runtime_limits::oversized_outgoing_publish_reports_protocol_failure_and_resolves_on_close, runtime_limits::incoming_decoder_limit_is_independent_of_advertised_maximum |
 | v5 | option | set_connect_properties, set_receive_maximum, set_topic_alias_max, set_request_response_info, set_request_problem_info, set_user_properties, set_authentication_method, set_authentication_data | supported | WC-04 nested V5ConnectProperties preserves presence/order | config_wire, value_config, topic_alias::rejected_connect_properties_preserve_reason_before_first_generation |
@@ -27,7 +29,7 @@ branches, including disabled ones, so API additions require an explicit review.
 | v5 | option | set_broker_session_resume_policy | supported | Strict default; explicit AllowBrokerOnly | backend config_tests, session_store |
 | v5 | option | set_authenticator, set_async_authenticator, set_auth_manager | supported | WC-05 owned nonblocking callback or per-client SCRAM | authentication::broker_authentication_method_change_retains_typed_failure, authentication::explicit_callback_rejection_is_terminal_and_releases_owner, authentication::authentication_reconnect_and_pending_challenge_shutdown_release_exchange, authentication::scram_verifies_server_proof_for_initial_authentication_and_reauthentication |
 | v5 | option | set_redirect_policy, clear_redirect_policy | supported | WC-06 reject/fixed isolated follow or synchronous application authority with explicit scoped reuse | redirect_policy::redirect_reference_forms_select_isolated_endpoints_for_both_sources, redirect_policy::rejected_redirects_preserve_context_and_resolve_pending_operations, redirect_policy::redirect_loops_and_attempt_exhaustion_are_terminal, redirect_policy::isolated_redirect_never_reads_or_writes_the_origin_store_scope, transport_composition::disabled_redirect_transports_fail_before_driver_start |
-| v5 | option | set_srv_resolver, clear_srv_resolver | supported | WC-06 owned async resolver; native seeded weighted-selection tests supplement broker priority coverage | redirect_policy::srv_lookup_failure_empty_answers_and_cancellation_release_owner, redirect_policy::srv_priority_precedes_weight_and_selected_endpoint_is_reported; rumqttc-v5 srv::tests::inclusive_zero_draw_can_select_a_zero_weight_record, srv::tests::higher_weight_is_selected_first_materially_more_often |
+| v5 | option | set_srv_resolver, clear_srv_resolver | supported | WC-06 owned async resolver; native seeded weighted-selection tests supplement broker priority coverage | redirect_policy::srv_lookup_failures_have_no_origin_revision_and_release_owner, redirect_policy::srv_priority_precedes_weight_and_selected_endpoint_is_reported; rumqttc-v5 srv::tests::inclusive_zero_draw_can_select_a_zero_weight_record, srv::tests::higher_weight_is_selected_first_materially_more_often |
 | v4, v5 | option | set_proxy | supported | WC-07 HTTP CONNECT, HTTPS proxy, SOCKS5; native has no SOCKS4 | transport_composition::proxy_tls_and_websocket_compositions_reconnect_for_both_protocols, transport_composition::proxy_negotiation_failures_and_shutdown_resolve_pending_work, transport_composition::proxy_and_broker_tls_trust_policies_are_independent, transport_composition::proxy_failure_process_output_is_redacted |
 | v4, v5 | option | set_request_modifier | supported | WC-09 static edits then bounded dynamic path/query/authority/header edits; isolated redirects clear origin authority | transport_composition::proxy_tls_and_websocket_compositions_reconnect_for_both_protocols, redirect_policy::websocket_redirect_uses_target_uri_and_clears_origin_header_edits, transport_composition::disabled_transports_fail_before_opening_a_socket |
 | v4, v5 | option | set_fallible_request_modifier | supported | Owned async callback with explicit URI/Host authority overrides; GET/HTTP1.1, scheme and upgrade fields fixed; native deadline and typed failure | websocket_handshake::dynamic_tokens_and_request_targets_refresh_across_ws_and_wss_reconnects, websocket_handshake::pending_handshakes_use_native_deadline_and_close_cancels_them, websocket_redaction::wrapper_diagnostics_redact_handshake_credentials |
@@ -51,7 +53,7 @@ branches, including disabled ones, so API additions require an explicit review.
 | v4, v5 | event | Event.Outgoing, Outgoing.Publish, Outgoing.Subscribe, Outgoing.Unsubscribe, Outgoing.PubAck, Outgoing.PubRec, Outgoing.PubRel, Outgoing.PubComp, Outgoing.AwaitAck, Outgoing.PingReq, Outgoing.PingResp, Outgoing.Disconnect | supported | Optional OutgoingEvent has coarse activity and packet id where present | backend map_outgoing, lifecycle |
 | v5 | event | Outgoing.Auth | supported | Optional outgoing Other activity; auth lifecycle separately observable | authentication |
 | v5 | event | Event.Auth, AuthEvent.Started, AuthEvent.Continue, AuthEvent.Succeeded, AuthEvent.Failed | supported | Owned Authentication event; callback owns challenge data | authentication |
-| v5 | event | Event.Redirect | supported | Accepted/rejected source/reason/reference; resolved SRV endpoint precedes Connected | redirect_policy::redirect_reference_forms_select_isolated_endpoints_for_both_sources, redirect_policy::srv_priority_precedes_weight_and_selected_endpoint_is_reported, redirect_policy::srv_lookup_failure_empty_answers_and_cancellation_release_owner |
+| v5 | event | Event.Redirect | supported | Accepted/rejected source/reason/reference; resolved SRV endpoint precedes Connected | redirect_policy::redirect_reference_forms_select_isolated_endpoints_for_both_sources, redirect_policy::srv_priority_precedes_weight_and_selected_endpoint_is_reported, redirect_policy::srv_lookup_failures_have_no_origin_revision_and_release_owner |
 | v4, v5 | event | Packet.ConnAck, Packet.Publish | supported | Connected details / IncomingPublish with owned properties | config_wire, protocol_parity, authentication |
 | v5 | event | Packet.Disconnect | supported | BrokerDisconnect retains properties across poll cleanup | authentication |
 | v4 | event | Packet.Disconnect | not applicable | MQTT 3.1.1 servers cannot send DISCONNECT | docs/spec/mqtt-v3.1.1.md |
@@ -325,5 +327,43 @@ queued packets, synchronous observations and deferred native error cleanup.
 validation rollback, recovery, exhaustion, retained owned errors/snapshots and
 terminal authentication refusal. Native redirect limits and replay remain
 client-owned. Optional decision callbacks and pause/resume/request-attempt are
-not implemented; runtime updates and full structured diagnostics remain in
+not implemented; controlled reconnect and full structured diagnostics remain in
 TODO35/TODO37.
+
+## Runtime configuration (TODO35 first stage)
+
+The [applicability audit](runtime-configuration.md) classifies all setter families.
+Wrapper-core and C stage bounded atomic partial updates while retaining native
+polls. Tuning and next-origin-attempt profiles have independent desired/effective
+revisions; receipts and snapshots retain only redacted observations. Controlled
+reconnect, session reset and general live option mutation remain deferred.
+
+`configuration_update` verifies v4/v5 idle staging, partial merge/supersession,
+rollback, in-progress attempts, retry/authentication failure revisions, temporary
+origin restoration and isolated/permanent targets, fresh trust and mutual-TLS
+identity/cache rotation, retired startup verifier release with custom connectors,
+origin verifier release after permanent retirement while preserving snapshots and
+tuning updates, and concurrent updates alongside shared-execution peer
+progress. Held target CONNACK tests cover permanent-move success, failure and
+cancellation; unit tests verify that prepared origin profiles survive until target
+success, alongside input count/byte accounting, receipt termination and startup
+password-owner release while connector closures remain alive.
+Blocked-destructor tests cover abandoned successful and failed preparations for
+both protocols, ensuring auxiliary work remains reserved through owner destruction.
+A tuning preparation captured before a permanent move cannot restore retired origin
+password owners after it completes.
+A capacity-one event queue holds the Redirect event until Connected delivery times
+out; origin owners are released before teardown and the receipt remains
+`UnavailableAfterRedirect` after the overflow.
+A saturated blocking-pool regression holds one preparation and fifteen queued
+updates while MQTT v4/v5 transmit graceful or ordered DISCONNECT without a watchdog
+deadline. Shutdown resolves configuration completions and finalizes staged receipts
+before draining; detached preparation remains tracked until cleanup finishes.
+`redirect_policy` also covers SRV error/timeout/unusable-answer attribution without
+rewriting origin attempt history; native C `srv-failure` verifies absent origin
+revision through the owned error accessor.
+The native C `configuration_rotation` example fixture checks old/new credentials
+on the wire for both protocols. C-ABI behavior tests cover independent builder,
+receipt and snapshot ownership, invalid outputs and unsupported-update rollback.
+Execution on macOS/Windows remains pending; Linux verification is recorded in
+TODO35.md.

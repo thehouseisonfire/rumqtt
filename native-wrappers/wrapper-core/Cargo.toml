@@ -41,7 +41,7 @@ transport-proof = ["dep:cc"]
 [dependencies]
 fastrand = "2.5"
 async-tungstenite = { version = "0.35", default-features = false, features = ["handshake"], optional = true }
-bytes = "1.5"
+bytes = "1.12.1"
 flume = { version = "0.12", default-features = false, features = ["async", "select"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-executor = "0.3"

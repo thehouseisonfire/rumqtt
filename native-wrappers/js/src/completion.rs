@@ -53,6 +53,9 @@ fn success(operation_id: u64, completion: Completion) -> Value {
             result
         }
         Completion::Acknowledged => json!({ "type": "acknowledged" }),
+        Completion::ConfigurationStaged(receipt) => {
+            json!({"type":"configurationStaged","revision":receipt.revision.to_string()})
+        }
         Completion::Authenticated => json!({ "type": "authenticated" }),
         Completion::Diagnostics(diagnostics) => json!({
             "type": "diagnostics",

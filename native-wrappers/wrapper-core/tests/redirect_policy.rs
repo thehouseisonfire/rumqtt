@@ -435,10 +435,13 @@ fn failed_followed_srv_connection_retains_terminal_redirect_diagnostics() {
 }
 
 #[test]
-fn srv_lookup_failure_empty_answers_and_cancellation_release_owner() {
-    for mode in ["failure", "empty", "cancel"] {
+fn srv_lookup_failures_have_no_origin_revision_and_release_owner() {
+    for mode in ["failure", "empty", "unusable", "timeout", "cancel"] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut config = config(true, listener.local_addr().unwrap().port());
+        if mode == "timeout" {
+            config.common.connection_timeout = std::time::Duration::from_secs(1);
+        }
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let resolver = Arc::new(Resolver {
@@ -472,21 +475,32 @@ fn srv_lookup_failure_empty_answers_and_cancellation_release_owner() {
             unreachable!()
         };
         assert_connack_redirect(&event, "_mqtt._tcp.service.invalid", None);
+        let previous_attempt = client.handle().configuration_snapshot().unwrap().connection;
+        assert_eq!(previous_attempt.attempt_revision, Some(0));
+        assert_eq!(previous_attempt.attempt_route, ConnectionRoute::Origin);
         if mode == "cancel" {
             client.closer().close_now(DEADLINE).unwrap();
             assert!(result_tx.send(Ok(vec![])).is_err());
         } else {
-            result_tx
-                .send(if mode == "failure" {
+            if mode != "timeout" {
+                let result = if mode == "failure" {
                     Err(SrvFailure::Query)
+                } else if mode == "unusable" {
+                    Ok(vec![SrvRecord {
+                        priority: 0,
+                        weight: 0,
+                        port: 0,
+                        target: "broker.invalid".into(),
+                    }])
                 } else {
                     Ok(vec![])
-                })
-                .unwrap();
-            let failure = if mode == "failure" {
-                RedirectFailure::Callback(SrvFailure::Query)
-            } else {
-                RedirectFailure::Dns
+                };
+                result_tx.send(result).unwrap();
+            }
+            let failure = match mode {
+                "failure" => RedirectFailure::Callback(SrvFailure::Query),
+                "timeout" => RedirectFailure::Timeout,
+                _ => RedirectFailure::Dns,
             };
             let WrapperEvent::Redirect(event) = until(&mut events, |event| {
                 matches!(event, WrapperEvent::Redirect(_))
@@ -502,6 +516,12 @@ fn srv_lookup_failure_empty_answers_and_cancellation_release_owner() {
             };
             assert_eq!(error.redirect_failure(), Some(failure));
             assert_eq!(error.context().generation, None);
+            assert_eq!(error.configuration_revision(), None, "SRV mode: {mode}");
+            // Restoration changes routing, not the history of the origin attempt.
+            let restored = client.handle().configuration_snapshot().unwrap().connection;
+            assert_eq!(restored.route, ConnectionRoute::Origin);
+            assert_eq!(restored.attempt, previous_attempt.attempt);
+            assert_eq!(restored.attempt_revision, Some(0));
             client.join(DEADLINE).unwrap();
         }
         let error = terminal(&operation).unwrap_err();

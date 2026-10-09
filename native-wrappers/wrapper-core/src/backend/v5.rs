@@ -311,7 +311,7 @@ use crate::{
     WrapperEvent,
 };
 
-fn build_transport_options(
+pub(super) fn build_transport_options(
     common: &crate::CommonConfig,
     tls_callbacks: &std::sync::Arc<super::TlsCallbackMonitor>,
 ) -> crate::Result<rumqttc_v5::MqttOptions> {
@@ -518,7 +518,7 @@ fn last_will(will: &crate::LastWillConfig) -> rumqttc_v5::LastWill {
 }
 
 pub struct Driver {
-    eventloop: rumqttc_v5::EventLoop,
+    pub(super) eventloop: rumqttc_v5::EventLoop,
     pub(super) tls_callbacks: std::sync::Arc<super::TlsCallbackMonitor>,
     auth: std::sync::Arc<super::auth::Monitor>,
     websocket: std::sync::Arc<crate::websocket::HandshakeMonitor>,
@@ -626,6 +626,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         shared,
         completion_rx,
         diagnostics_rx,
+        mut configuration,
         events,
         delivery_timeout,
         emit_outgoing,
@@ -634,6 +635,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         immediate_shutdown_rx,
         panic_rx,
     } = context;
+    let configuration_rx = configuration.receiver.clone();
     let mut pending = FuturesUnordered::<PendingFuture>::new();
     let mut senders = HashMap::<OperationId, PendingSender>::new();
     let mut connected = false;
@@ -669,6 +671,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         if !connected && !native_cleanup {
             match crate::runtime::wait_reconnect(
                 &shutdown,
+                &mut configuration,
                 &diagnostics,
                 &mut pending,
                 &mut senders,
@@ -690,6 +693,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         if !connected {
             websocket.reset();
         }
+        super::configuration::apply_v5(&mut configuration, &mut eventloop);
         let polled = {
             let poll = eventloop.poll();
             tokio::pin!(poll);
@@ -719,7 +723,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         .filter(|deadline| *deadline <= tokio::time::Instant::now())
                         .map(|_| crate::AuthFailure::Timeout)
                 }) {
-                    let error = Error::auth(failure).with_delivery(DeliveryStatus::Ambiguous);
+                    let error = shared.contextualize(configuration.connection_error(
+                        Error::auth(failure).with_delivery(DeliveryStatus::Ambiguous),
+                    ));
                     shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);
                     return TerminalStatus::Failed(error);
@@ -735,6 +741,14 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         if !connected || shared.has_ordered() {
                             break None;
                         }
+                    },
+                    update = configuration_rx.recv_async(), if !configuration.is_preparing() => if let Ok(update) = update {
+                        configuration.start(update);
+                        tokio::task::yield_now().await;
+                    },
+                    () = configuration.complete_preparation(&shared), if configuration.is_preparing() => {
+                        // Preparation completes without cancelling the native poll.
+                        tokio::task::yield_now().await;
                     },
                     registration = completion_rx.recv_async() => if let Ok(registration) = registration {
                         accept_registration(registration, &pending, &mut senders);
@@ -755,6 +769,8 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 }
             }
         };
+        // Native attempt success retires origin owners before event delivery can block or terminate the driver.
+        configuration.permanent_redirect();
         let polled = if authentication_timed_out {
             let message = "authentication exchange timed out".to_owned();
             eventloop
@@ -790,9 +806,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         // Preserve TLS destructor failures before completing shutdown, even
         // though the cancelled connecting future cannot return its error.
         if let Some(failure) = tls_callbacks.failure() {
-            let error = shared.contextualize(
+            let error = shared.contextualize(configuration.connection_error(
                 Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous),
-            );
+            ));
             shared.fail_acknowledgements(&error);
             fail_pending(&mut senders, &error);
             return TerminalStatus::Failed(error);
@@ -801,12 +817,20 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             // Dropping the poll also destroys pending host handshake work. Its
             // terminal failure must take precedence over a successful cancellation.
             if let Some(failure) = websocket.failure().filter(|failure| !failure.retryable()) {
-                let error = shared.contextualize(Error::websocket(failure));
+                let error =
+                    shared.contextualize(configuration.connection_error(Error::websocket(failure)));
                 shared.fail_acknowledgements(&error);
                 fail_pending(&mut senders, &error);
                 return TerminalStatus::Failed(error);
             }
-            return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
+            return finish_close(
+                &shutdown,
+                &mut configuration,
+                &diagnostics,
+                &mut pending,
+                &mut senders,
+            )
+            .await;
         };
         shared.notify_progress();
         synchronize_admission_state(&eventloop, &shared);
@@ -865,7 +889,10 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     return TerminalStatus::Failed(overflow_error());
                 }
             }
-            let error = Error::auth(failure).with_delivery(DeliveryStatus::Ambiguous);
+            let error =
+                shared.contextualize(configuration.connection_error(
+                    Error::auth(failure).with_delivery(DeliveryStatus::Ambiguous),
+                ));
             shared.fail_acknowledgements(&error);
             fail_pending(&mut senders, &error);
             return TerminalStatus::Failed(error);
@@ -925,8 +952,14 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 }
             }
             Err(rumqttc_v5::ConnectionError::RequestsDone) => {
-                let graceful =
-                    complete_shutdown(&shutdown, &diagnostics, &mut pending, &mut senders).await;
+                let graceful = complete_shutdown(
+                    &shutdown,
+                    &mut configuration,
+                    &diagnostics,
+                    &mut pending,
+                    &mut senders,
+                )
+                .await;
                 return TerminalStatus::Closed { graceful };
             }
             Err(error) => {
@@ -949,7 +982,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         Some(failure),
                         &redirect_diagnostics,
                     );
-                    let terminal = shared.contextualize(map_connection_error(&error));
+                    let terminal = shared.contextualize(
+                        configuration.connection_error(map_connection_error(&error)),
+                    );
                     shared.fail_acknowledgements(&terminal);
                     fail_pending(&mut senders, &terminal);
                     if !deliver(&delivery, WrapperEvent::Redirect(event)).await {
@@ -962,9 +997,11 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v5::ConnectionError::DisconnectTimeout);
                 let mut error = shared.contextualize(
-                    websocket
-                        .failure()
-                        .map_or_else(|| map_connection_error(&error), Error::websocket),
+                    configuration.connection_error(
+                        websocket
+                            .failure()
+                            .map_or_else(|| map_connection_error(&error), Error::websocket),
+                    ),
                 );
                 if classified {
                     let retryable = super::reconnect::mapped(&error, eligible);
@@ -982,12 +1019,25 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 }
                 if graceful_disconnect_timed_out && shared.timeout_graceful_shutdown(error.clone())
                 {
-                    return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders).await;
+                    return finish_close(
+                        &shutdown,
+                        &mut configuration,
+                        &diagnostics,
+                        &mut pending,
+                        &mut senders,
+                    )
+                    .await;
                 }
                 match shared.poll_error_action() {
                     PollErrorAction::CompleteImmediateClose => {
-                        return finish_close(&shutdown, &diagnostics, &mut pending, &mut senders)
-                            .await;
+                        return finish_close(
+                            &shutdown,
+                            &mut configuration,
+                            &diagnostics,
+                            &mut pending,
+                            &mut senders,
+                        )
+                        .await;
                     }
                     PollErrorAction::Fail => {
                         shared.fail_acknowledgements(&error);

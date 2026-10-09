@@ -720,10 +720,16 @@ impl NativeClient {
         clippy::too_many_lines,
         reason = "Build client resources as one startup transaction"
     )]
-    fn prepare(config: ClientConfig) -> Result<PreparedClient> {
+    fn prepare(mut config: ClientConfig) -> Result<PreparedClient> {
         install_boundary_panic_hook();
         config.validate()?;
         let reconnect = crate::reconnect::Controller::new(config.common.reconnect.clone());
+        config.common.password = config
+            .common
+            .password
+            .as_ref()
+            .map(|password| crate::SecretBytes::new(password.to_vec()).into_bytes());
+
         let protocol = config.protocol_version();
         let reauthentication_enabled = matches!(&config.protocol, crate::ProtocolConfig::V5(v5)
             if v5.authenticator.is_some() || v5.async_authenticator.is_some() || v5.scram.is_some());
@@ -747,7 +753,14 @@ impl NativeClient {
         let (panic_tx, panic_rx) = flume::unbounded();
 
         let client_identity = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
-        let (client, driver) = backend::build(config)?;
+        let (client, mut driver) = backend::build(config.clone())?;
+        let observation = rumqttc_core::ConnectionObservation::default();
+        driver.set_connection_observation(observation.clone());
+        let configuration = crate::configuration_update::ConfigurationDriver::new(
+            config,
+            &observation,
+            driver.tls_callback_monitor(),
+        );
         let acknowledgements = AcknowledgementCoordinator::new(client_identity, operations.clone());
         let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_shutdown_tx);
         let connection = ConnectionHandle::new();
@@ -760,11 +773,13 @@ impl NativeClient {
             panic_tx,
             reconnect,
         );
+        shared.set_configuration(configuration.control.clone());
         shared.set_protocol_admission_state(session_expiry_zero, reauthentication_enabled);
         let context = DriverContext {
             shared: Arc::clone(&shared),
             completion_rx,
             diagnostics_rx,
+            configuration: Box::new(configuration),
             events: event_tx,
             delivery_timeout,
             emit_outgoing,
@@ -860,6 +875,7 @@ pub struct DriverContext {
     pub(crate) shared: Arc<Shared>,
     pub(crate) completion_rx: Receiver<CompletionRegistration>,
     pub(crate) diagnostics_rx: Receiver<DiagnosticsRequest>,
+    pub(crate) configuration: Box<crate::configuration_update::ConfigurationDriver>,
     pub(crate) events: Sender<WrapperEvent>,
     pub(crate) delivery_timeout: Duration,
     pub(crate) emit_outgoing: bool,
@@ -889,6 +905,7 @@ pub enum RetryReady {
 )]
 pub async fn wait_reconnect(
     shutdown: &ShutdownInputs<'_>,
+    configuration: &mut crate::configuration_update::ConfigurationDriver,
     diagnostics: &DiagnosticsSnapshot,
     pending: &mut FuturesUnordered<PendingFuture>,
     senders: &mut HashMap<OperationId, PendingSender>,
@@ -896,6 +913,7 @@ pub async fn wait_reconnect(
     panic: &Receiver<()>,
 ) -> RetryReady {
     let shared = shutdown.shared;
+    let configuration_rx = configuration.receiver.clone();
     // An in-progress cycle can yield buffered AUTH/redirect events. It remains
     // open across subsequent polls, without another budget debit or backoff.
     if shared.reconnect.snapshot().phase == crate::ReconnectPhase::Attempting {
@@ -909,7 +927,7 @@ pub async fn wait_reconnect(
         match shared.reconnect_action(snapshot.phase == crate::ReconnectPhase::Initial) {
             crate::shutdown::PollErrorAction::CompleteImmediateClose => {
                 return RetryReady::Terminal(
-                    finish_close(shutdown, diagnostics, pending, senders).await,
+                    finish_close(shutdown, configuration, diagnostics, pending, senders).await,
                 );
             }
             crate::shutdown::PollErrorAction::Fail => {
@@ -948,6 +966,10 @@ pub async fn wait_reconnect(
                 #[cfg(not(feature = "ordered-shutdown"))]
                 std::future::pending::<()>().await;
             } => {},
+            update = configuration_rx.recv_async(), if !configuration.is_preparing() => if let Ok(update) = update {
+                configuration.start(update);
+            },
+            () = configuration.complete_preparation(shared), if configuration.is_preparing() => {},
             registration = shutdown.completion_rx.recv_async() => if let Ok(registration) = registration {
                 accept_registration(registration, pending, senders);
             },
@@ -1095,10 +1117,14 @@ pub async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool 
 
 pub async fn complete_shutdown(
     shutdown: &ShutdownInputs<'_>,
+    configuration: &mut crate::configuration_update::ConfigurationDriver,
     diagnostics: &DiagnosticsSnapshot,
     pending: &mut FuturesUnordered<PendingFuture>,
     senders: &mut HashMap<OperationId, PendingSender>,
 ) -> bool {
+    // Synchronize with shutdown admission before collecting its final registrations and configuration requests.
+    let drain = shutdown.shared.should_drain_admitted_work();
+    configuration.close();
     while let Ok(registration) = shutdown.completion_rx.try_recv() {
         accept_registration(registration, pending, senders);
     }
@@ -1107,7 +1133,7 @@ pub async fn complete_shutdown(
         ErrorKind::Shutdown,
         "driver closed before acknowledgement transmission was observed",
     ));
-    if shutdown.shared.should_drain_admitted_work() {
+    if drain {
         let mut diagnostics = diagnostics.clone();
         shutdown.shared.ordered_diagnostics(&mut diagnostics);
         complete_queued_diagnostics(shutdown.diagnostics_rx, &diagnostics);
@@ -1119,11 +1145,12 @@ pub async fn complete_shutdown(
 
 pub async fn finish_close(
     shutdown: &ShutdownInputs<'_>,
+    configuration: &mut crate::configuration_update::ConfigurationDriver,
     diagnostics: &DiagnosticsSnapshot,
     pending: &mut FuturesUnordered<PendingFuture>,
     senders: &mut HashMap<OperationId, PendingSender>,
 ) -> TerminalStatus {
-    let graceful = complete_shutdown(shutdown, diagnostics, pending, senders).await;
+    let graceful = complete_shutdown(shutdown, configuration, diagnostics, pending, senders).await;
     TerminalStatus::Closed { graceful }
 }
 
@@ -1139,6 +1166,289 @@ pub fn overflow_error() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep native shutdown, queued preparation and completion-drain barriers in one regression"
+    )]
+    fn shutdown_resolves_configuration_requests_before_draining_completions() {
+        use crate::{
+            ActivationState, BrokerCredentials, FieldUpdate, RuntimeConfigUpdate, SecretBytes,
+        };
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        for mqtt5 in [false, true] {
+            for ordered in [false, true] {
+                if ordered && !cfg!(feature = "ordered-shutdown") {
+                    continue;
+                }
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .max_blocking_threads(1)
+                    .build()
+                    .unwrap();
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = listener.local_addr().unwrap().port();
+                let (disconnected, disconnected_rx) = std::sync::mpsc::channel();
+                let broker = thread::spawn(move || {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut header = [0; 2];
+                    socket.read_exact(&mut header).unwrap();
+                    assert_eq!(header[0], 0x10);
+                    assert!(header[1] < 128);
+                    socket
+                        .read_exact(&mut vec![0; usize::from(header[1])])
+                        .unwrap();
+                    socket
+                        .write_all(if mqtt5 {
+                            &[0x20, 3, 0, 0, 0]
+                        } else {
+                            &[0x20, 2, 0, 0]
+                        })
+                        .unwrap();
+                    socket.read_exact(&mut header).unwrap();
+                    assert_eq!(header[0] >> 4, 14);
+                    disconnected.send(()).unwrap();
+                });
+                let mut config = if mqtt5 {
+                    ClientConfig::v5("shutdown", "127.0.0.1", port)
+                } else {
+                    ClientConfig::v4("shutdown", "127.0.0.1", port)
+                };
+                config.common.keep_alive = Duration::ZERO;
+                let PreparedClient {
+                    handle,
+                    mut events,
+                    driver,
+                    work,
+                    ..
+                } = NativeClient::prepare(config).unwrap();
+                let mut driver = runtime.spawn(driver);
+                runtime.block_on(async {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        while !matches!(
+                            events.recv_async().await.unwrap(),
+                            Some(WrapperEvent::Connected { .. })
+                        ) {}
+                    })
+                    .await
+                    .unwrap();
+                });
+                let proposal = RuntimeConfigUpdate {
+                    credentials: FieldUpdate::Replace(BrokerCredentials {
+                        username: Some("user".into()),
+                        password: Some(SecretBytes::new(b"next-attempt".to_vec())),
+                    }),
+                    ..Default::default()
+                };
+                let first = handle.try_configuration_update(proposal.clone()).unwrap();
+                let Completion::ConfigurationStaged(receipt) =
+                    runtime.block_on(first.completion.wait_async()).unwrap()
+                else {
+                    panic!("expected baseline staging");
+                };
+                assert_eq!(receipt.activation().1, ActivationState::Staged);
+                let (busy, busy_rx) = std::sync::mpsc::channel();
+                let (release, release_rx) = std::sync::mpsc::channel();
+                let blocker = runtime.spawn_blocking(move || {
+                    busy.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                });
+                busy_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                let mut updates = vec![handle.try_configuration_update(proposal.clone()).unwrap()];
+                runtime.block_on(async {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        // The pool blocker is untracked; only configuration preparation can reserve work here.
+                        while work.wait().now_or_never().is_some() {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                });
+                for _ in 1..crate::MAX_PENDING_CONFIGURATION_UPDATES {
+                    updates.push(handle.try_configuration_update(proposal.clone()).unwrap());
+                }
+                let close = handle
+                    .try_admit(if ordered {
+                        Command::OrderedDisconnect { timeout: None }
+                    } else {
+                        Command::GracefulDisconnect { timeout: None }
+                    })
+                    .unwrap();
+                let finished = runtime.block_on(async {
+                    tokio::time::timeout(Duration::from_millis(200), &mut driver).await
+                });
+                let completed = matches!(finished, Ok(Ok(())));
+                if !completed {
+                    // Cancellation allows a failing regression to release its outstanding owners safely.
+                    driver.abort();
+                    let _ = runtime.block_on(driver);
+                }
+                let tracked = runtime.block_on(async {
+                    tokio::time::timeout(Duration::from_millis(20), work.wait())
+                        .await
+                        .is_err()
+                });
+                release.send(()).unwrap();
+                runtime.block_on(async {
+                    blocker.await.unwrap();
+                    tokio::time::timeout(Duration::from_secs(5), work.wait())
+                        .await
+                        .unwrap();
+                });
+                disconnected_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+                broker.join().unwrap();
+                assert!(
+                    completed,
+                    "shutdown waited on its own configuration senders (v5={mqtt5}, ordered={ordered})"
+                );
+                assert!(
+                    tracked,
+                    "cancelled preparation must remain part of client teardown"
+                );
+                assert_eq!(
+                    runtime.block_on(close.completion.wait_async()).unwrap(),
+                    if ordered {
+                        Completion::OrderedShutdown
+                    } else {
+                        Completion::GracefulShutdown
+                    }
+                );
+                assert_eq!(
+                    receipt.activation().1,
+                    ActivationState::ClosedBeforeActivation
+                );
+                for update in updates {
+                    assert_eq!(
+                        runtime
+                            .block_on(update.completion.wait_async())
+                            .unwrap_err()
+                            .kind(),
+                        ErrorKind::Shutdown
+                    );
+                }
+                let snapshot = handle.configuration_snapshot().unwrap();
+                assert!(snapshot.closed);
+                assert_eq!(snapshot.revision, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn tuning_updates_stage_while_the_blocking_pool_is_busy() {
+        use crate::{FieldUpdate, RuntimeConfigUpdate};
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let blocker = runtime.spawn_blocking(move || {
+            started.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let result = runtime.block_on(async {
+            let prepared =
+                NativeClient::prepare(ClientConfig::v4("tuning", "127.0.0.1", 65535)).unwrap();
+            let admission = prepared
+                .handle
+                .try_configuration_update(RuntimeConfigUpdate {
+                    read_batch_size: FieldUpdate::Replace(16),
+                    ..Default::default()
+                })
+                .unwrap();
+            let driver = tokio::spawn(prepared.driver);
+            let result =
+                tokio::time::timeout(Duration::from_secs(2), admission.completion.wait_async())
+                    .await;
+            driver.abort();
+            let _ = driver.await;
+            result
+        });
+        release.send(()).unwrap();
+        runtime.block_on(blocker).unwrap();
+        assert!(matches!(
+            result.unwrap().unwrap(),
+            Completion::ConfigurationStaged(_)
+        ));
+    }
+
+    #[test]
+    fn rejected_update_owners_can_reenter_admission_after_the_gate_is_released() {
+        use crate::{FieldUpdate, RuntimeConfigUpdate};
+        use std::sync::atomic::AtomicBool;
+
+        struct Owner {
+            handle: ClientHandle,
+            dropped: Arc<AtomicBool>,
+        }
+        impl crate::TlsVerifier for Owner {
+            fn verify(
+                &self,
+                _: &crate::TlsVerificationRequest<'_>,
+            ) -> std::result::Result<(), crate::TlsCallbackReason> {
+                unreachable!("a rejected profile must not perform network verification")
+            }
+        }
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                assert_eq!(
+                    self.handle
+                        .try_configuration_update(RuntimeConfigUpdate {
+                            read_batch_size: FieldUpdate::Clear,
+                            ..Default::default()
+                        })
+                        .unwrap_err()
+                        .kind(),
+                    ErrorKind::Backpressure
+                );
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+        // An unpolled driver deterministically keeps all admission reservations queued.
+        let prepared =
+            NativeClient::prepare(ClientConfig::v4("owners", "127.0.0.1", 65535)).unwrap();
+        for _ in 0..crate::MAX_PENDING_CONFIGURATION_UPDATES {
+            let _admission = prepared
+                .handle
+                .try_configuration_update(RuntimeConfigUpdate {
+                    read_batch_size: FieldUpdate::Clear,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let profile = crate::TlsConfig {
+            verifier: Some(crate::TlsVerifierConfig(Arc::new(Owner {
+                handle: prepared.handle.clone(),
+                dropped: dropped.clone(),
+            }))),
+            ..Default::default()
+        };
+        assert_eq!(
+            prepared
+                .handle
+                .try_configuration_update(RuntimeConfigUpdate {
+                    broker_tls: FieldUpdate::Replace(profile),
+                    ..Default::default()
+                })
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Backpressure
+        );
+        assert!(dropped.load(Ordering::Acquire));
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn cancelling_an_unpolled_driver_reconciles_operations_and_terminal_status() {

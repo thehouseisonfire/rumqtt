@@ -1404,3 +1404,235 @@ fn v4_session_present_compatibility_is_additive_and_observed_separately() {
     }
     broker.join().unwrap();
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn runtime_updates_copy_builders_and_retain_redacted_observations_after_client_destruction() {
+    for protocol in [1, 2] {
+        // SAFETY: All handles are owned here; records and borrowed input/output buffers remain live during calls.
+        unsafe {
+            let (port, broker) = spawn_broker(protocol);
+            let mut config = ptr::null_mut();
+            let mut client = ptr::null_mut();
+            let mut event = ptr::null_mut();
+            let mut update = ptr::null_mut();
+            let mut completion = ptr::null_mut();
+            let mut receipt = ptr::null_mut();
+            let mut snapshot = ptr::null_mut();
+            assert_eq!(rumqttc_library_capabilities() & (1 << 17), 1 << 17);
+            assert_eq!(
+                rumqttc_config_new(protocol, &mut config, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_broker(config, string_view("127.0.0.1"), port, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_client_id(config, string_view("c-update"), ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_keep_alive_seconds(config, 0, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_client_start(config, &mut client, ptr::null_mut()),
+                0
+            );
+            rumqttc_config_destroy(config);
+            assert_eq!(
+                rumqttc_client_event_recv_timeout_ms(client, 2_000, &mut event, ptr::null_mut()),
+                0
+            );
+            rumqttc_event_destroy(event);
+            assert_eq!(rumqttc_runtime_update_new(&mut update, ptr::null_mut()), 0);
+            assert_eq!(
+                rumqttc_runtime_update_set_max_request_batch(update, 7, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_runtime_update_set_credentials(
+                    update,
+                    1,
+                    string_view("user"),
+                    1,
+                    bytes_view(&[0, 255, 9]),
+                    ptr::null_mut()
+                ),
+                0
+            );
+            let mut network: rumqttc_runtime_network_options_t = std::mem::zeroed();
+            network.struct_size = u32::try_from(size_of_val(&network)).unwrap();
+            network.present_fields = 4;
+            network.local_address = string_view("127.0.0.1:0");
+            assert_eq!(
+                rumqttc_runtime_update_set_network(update, &network, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_client_update_configuration_tracked(
+                    client,
+                    update,
+                    &mut completion,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            // A source-builder edit cannot change the admitted proposal.
+            assert_eq!(
+                rumqttc_runtime_update_set_max_request_batch(update, 99, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_completion_wait_timeout_ms(completion, 2_000, ptr::null_mut()),
+                0
+            );
+            let mut kind = 0;
+            assert_eq!(
+                rumqttc_completion_kind(completion, &mut kind, ptr::null_mut()),
+                0
+            );
+            assert_eq!(kind, 12);
+            assert_eq!(
+                rumqttc_completion_configuration_receipt(completion, &mut receipt, ptr::null_mut()),
+                0
+            );
+            rumqttc_completion_destroy(completion);
+            assert_eq!(
+                rumqttc_client_configuration_snapshot(client, &mut snapshot, ptr::null_mut()),
+                0
+            );
+            let mut tuning: rumqttc_runtime_tuning_t = std::mem::zeroed();
+            tuning.struct_size = u32::try_from(size_of_val(&tuning)).unwrap();
+            assert_eq!(
+                rumqttc_configuration_snapshot_tuning(snapshot, 0, &mut tuning, ptr::null_mut()),
+                0
+            );
+            assert_eq!(tuning.max_request_batch, 7);
+            assert_eq!(
+                rumqttc_configuration_snapshot_network(snapshot, 0, &mut network, ptr::null_mut()),
+                0
+            );
+            assert_eq!(network.present_fields, 4);
+            assert_eq!(
+                rumqttc_runtime_update_field_action(update, 5, 2, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_client_update_configuration_tracked(
+                    client,
+                    update,
+                    &mut completion,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            let mut error = ptr::null_mut();
+            assert_eq!(
+                rumqttc_completion_wait_timeout_ms(completion, 2_000, &mut error),
+                3
+            );
+            let mut code = string_view("");
+            assert_eq!(rumqttc_error_code(error, &mut code), 0);
+            assert_eq!(
+                std::slice::from_raw_parts(code.data.cast::<u8>(), code.len),
+                b"CONFIGURATION_UPDATE_UNSUPPORTED"
+            );
+            rumqttc_error_destroy(error);
+            rumqttc_completion_destroy(completion);
+            rumqttc_runtime_update_destroy(update);
+            assert_eq!(
+                rumqttc_client_close_now_timeout_ms(client, 2_000, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_client_destroy_timeout_ms(client, 2_000, ptr::null_mut()),
+                0
+            );
+            let mut activation: rumqttc_configuration_receipt_status_t = std::mem::zeroed();
+            activation.struct_size = u32::try_from(size_of_val(&activation)).unwrap();
+            assert_eq!(
+                rumqttc_configuration_receipt_status(receipt, &mut activation, ptr::null_mut()),
+                0
+            );
+            assert_eq!(activation.revision, 1);
+            assert_eq!(activation.connection_state, 4);
+            // Owned snapshots and their views retain no client/configuration owner.
+            assert_eq!(
+                std::slice::from_raw_parts(
+                    network.local_address.data.cast::<u8>(),
+                    network.local_address.len
+                ),
+                b"127.0.0.1:0"
+            );
+            let mut status: rumqttc_configuration_status_t = std::mem::zeroed();
+            status.struct_size = u32::try_from(size_of_val(&status)).unwrap();
+            assert_eq!(
+                rumqttc_configuration_snapshot_status(snapshot, &mut status, ptr::null_mut()),
+                0
+            );
+            assert_eq!(status.revision, 1);
+            rumqttc_configuration_receipt_destroy(receipt);
+            rumqttc_configuration_snapshot_destroy(snapshot);
+            broker.join().unwrap();
+        }
+    }
+}
+
+#[test]
+fn runtime_configuration_accessors_initialize_failure_outputs_and_validate_record_sizes() {
+    // SAFETY: Records have valid integer/pointer representations and are live for every call.
+    unsafe {
+        let mut status: rumqttc_configuration_status_t = std::mem::zeroed();
+        status.struct_size = u32::try_from(size_of_val(&status)).unwrap();
+        status.revision = 99;
+        assert_eq!(
+            rumqttc_configuration_snapshot_status(ptr::null(), &mut status, ptr::null_mut()),
+            1
+        );
+        assert_eq!(status.revision, 0);
+        status.struct_size = 4;
+        status.revision = 99;
+        assert_eq!(
+            rumqttc_configuration_snapshot_status(ptr::null(), &mut status, ptr::null_mut()),
+            1
+        );
+        assert_eq!(status.revision, 99);
+        let mut tuning: rumqttc_runtime_tuning_t = std::mem::zeroed();
+        tuning.struct_size = u32::try_from(size_of_val(&tuning)).unwrap();
+        tuning.read_batch_size = 99;
+        assert_eq!(
+            rumqttc_configuration_snapshot_tuning(ptr::null(), 44, &mut tuning, ptr::null_mut()),
+            1
+        );
+        assert_eq!(tuning.read_batch_size, 0);
+        let mut present = 99;
+        let mut revision = 99;
+        assert_eq!(
+            rumqttc_error_configuration_revision(ptr::null(), &mut present, &mut revision),
+            1
+        );
+        assert_eq!((present, revision), (0, 0));
+        let mut builder = ptr::null_mut();
+        assert_eq!(rumqttc_runtime_update_new(&mut builder, ptr::null_mut()), 0);
+        assert_eq!(
+            rumqttc_runtime_update_field_action(builder, 44, 2, ptr::null_mut()),
+            1
+        );
+        let mut network: rumqttc_runtime_network_options_t = std::mem::zeroed();
+        network.struct_size = u32::try_from(size_of_val(&network)).unwrap();
+        network.tcp_nodelay = 2;
+        assert_eq!(
+            rumqttc_runtime_update_set_network(builder, &network, ptr::null_mut()),
+            1
+        );
+        network.tcp_nodelay = 1;
+        network.reserved[0] = 1;
+        assert_eq!(
+            rumqttc_runtime_update_set_network(builder, &network, ptr::null_mut()),
+            1
+        );
+        rumqttc_runtime_update_destroy(builder);
+    }
+}

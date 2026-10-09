@@ -38,6 +38,32 @@ durable-session callback API.
 `RUMQTTC_CAP_AUTH_CALLBACKS` reports the raw MQTT 5 asynchronous
 authenticator callback API.
 
+## Runtime configuration updates
+
+`RUMQTTC_CAP_RUNTIME_CONFIGURATION` reports the additive update API. Create a
+`rumqttc_runtime_update_t`, replace supported fields using typed setters, or use
+`rumqttc_runtime_update_field_action()` for unchanged/clear. Submit with
+`rumqttc_client_update_configuration_tracked()`. Builders and TLS profile inputs
+are copied independently at admission and can then be destroyed or reused.
+
+`RUMQTTC_COMPLETION_CONFIGURATION_STAGED` proves driver staging. Extract an owned
+receipt with `rumqttc_completion_configuration_receipt()` to inspect separate
+tuning/connection activation states. `rumqttc_client_configuration_snapshot()`
+captures owned redacted desired/effective values, revisions, routes, attempt
+outcomes and monotonic freshness ages. Initialize accessor records with `_INIT`
+macros. Network accessor string views borrow from the snapshot until destruction.
+Receipts/snapshots remain readable after client destruction. Connection errors
+retain their selected origin revision through `rumqttc_error_configuration_revision()`.
+
+Supported fields are request/read batching and pending-replay throttle (safe poll
+boundary), broker credentials, broker TLS profiles, complete network settings and
+connection timeout (next origin attempt). No update forces a reconnect. An idle
+connection with keepalive disabled can defer activation indefinitely. Protocol,
+broker, transport kind, session identity, live queues and AUTH authorities remain
+fixed. Read the [applicability, revision, redirect, failure and erasure
+contract](../wrapper-core/runtime-configuration.md) and the runnable
+[rotation example](examples/configuration_rotation.c) before using this API.
+
 ## Shared execution
 
 Dedicated execution remains the default: each started client has its own driver

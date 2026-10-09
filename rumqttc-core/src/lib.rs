@@ -16,9 +16,13 @@ use tokio_rustls::rustls::ClientConfig;
 #[doc(hidden)]
 #[cfg(feature = "ordered-shutdown")]
 pub mod admission;
+mod connection_observation;
 #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 mod proxy;
 mod scheduler;
+pub use connection_observation::{
+    AttemptOutcome, ConnectionObservation, ConnectionObservationSnapshot, ConnectionRoute,
+};
 mod transport_error;
 pub use transport_error::TerminalTransportError;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]

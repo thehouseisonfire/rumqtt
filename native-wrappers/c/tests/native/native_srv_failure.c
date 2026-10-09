@@ -89,7 +89,14 @@ static void run_case(const char *client_id, uint32_t response,
     } else if (kind == RUMQTTC_EVENT_CONNECTED) {
       REQUIRE(0);
     } else if (kind == RUMQTTC_EVENT_DRIVER_TERMINATED) {
+      rumqttc_error_t *error = NULL;
+      uint8_t revision_present = 1;
+      uint64_t revision = UINT64_MAX;
       REQUIRE(saw_failure == 1);
+      CHECK(rumqttc_event_disconnected(event, NULL, &error));
+      CHECK(rumqttc_error_configuration_revision(error, &revision_present, &revision));
+      REQUIRE(revision_present == 0 && revision == 0);
+      rumqttc_error_destroy(error);
       saw_terminal = 1;
     }
     rumqttc_event_destroy(event);

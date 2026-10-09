@@ -6,7 +6,7 @@ use crate::{Error, ErrorKind, LastWillConfig, ProtocolVersion, Result};
 
 const DEFAULT_REQUEST_CAPACITY: usize = 10;
 const DEFAULT_EVENT_CAPACITY: usize = 256;
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Local decoder limit, independent of MQTT 5's advertised Maximum Packet Size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IncomingPacketLimit {
@@ -67,6 +67,18 @@ impl SecretBytes {
     #[must_use]
     pub fn expose(&self) -> &[u8] {
         &self.0
+    }
+
+    /// Shares a zeroizing allocation with native CONNECT password copies.
+    #[must_use]
+    pub fn into_bytes(self) -> Bytes {
+        Bytes::from_owner(self)
+    }
+}
+
+impl AsRef<[u8]> for SecretBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.expose()
     }
 }
 

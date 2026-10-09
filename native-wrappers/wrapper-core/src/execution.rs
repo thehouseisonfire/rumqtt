@@ -440,9 +440,7 @@ impl DriverWork {
         }
     }
 }
-#[cfg(any(feature = "use-rustls-no-provider", test))]
 pub struct BlockingWork(Arc<DriverWork>);
-#[cfg(any(feature = "use-rustls-no-provider", test))]
 impl Drop for BlockingWork {
     fn drop(&mut self) {
         if self.0.pending.fetch_sub(1, Ordering::AcqRel) == 1 {
@@ -450,7 +448,6 @@ impl Drop for BlockingWork {
         }
     }
 }
-#[cfg(any(feature = "use-rustls-no-provider", test))]
 pub fn register_blocking_work() -> Option<BlockingWork> {
     DRIVER_WORK
         .try_with(|work| {

@@ -46,6 +46,14 @@ limits (1,024 outstanding / 16 MiB charged data) by default. See the
 [publish admission and recovery contract](publish-admission.md) for policy
 selection, accounting, completion and retry semantics.
 
+## Runtime configuration
+
+`ClientHandle::try_configuration_update()` stages audited tuning and complete
+next-attempt origin profiles with bounded admission, atomic validation and owned
+revision/activation observations. See the [field applicability and lifecycle
+contract](runtime-configuration.md). Activation waits for safe native poll
+boundaries; controlled reconnect remains a separate extension.
+
 ## Protocol support contract
 
 This crate supports both MQTT 3.1.1 and MQTT 5 through one shared API. Each
