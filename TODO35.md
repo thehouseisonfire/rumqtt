@@ -23,17 +23,14 @@ Both wrapper drivers retain a pending native poll across control wakeups because
 polling can dequeue requests and mutate state before awaiting I/O. An update
 must not cancel that poll and resume as though no work occurred. A poll boundary
 can also be indefinitely delayed on an idle connection with keepalive disabled.
-Existing disconnect commands close the client; they are not reusable reconnect
-commands. MQTT 5 temporary redirects retain and later restore previous options.
+MQTT 5 temporary redirects retain and later restore previous options.
 
 ## Delivery scope
 
-- First deliver audited batching/throttle updates and coherent next-attempt
+- Deliver audited batching/throttle updates and coherent next-attempt
   broker credentials, broker TLS profiles, and network settings. Keep broker
   endpoint, transport kind, and session identity fixed. Credential replacement
   is for rotation within the same application identity, not session migration.
-- Add controlled reconnect separately, coordinated with [TODO34.md](TODO34.md),
-  after proving a native transition that preserves managed recovery.
 - Defer replacement handshake/authentication authorities, proxy/redirect
   profiles, and other fields until their applicability and ownership are audited.
   Existing WebSocket callbacks already support per-attempt token refresh.
@@ -66,9 +63,8 @@ commands. MQTT 5 temporary redirects retain and later restore previous options.
   Observer cancellation or wait timeout must not cancel an admitted update.
 - [x] Receive and stage updates while a native poll is pending without cancelling
   it. Apply runtime tuning only at a proven safe boundary. Document potentially
-  unbounded activation delay on an idle connection; if prompt activation is
-  promised, add a safe native wake/control path and verify it first. Keep control
-  admission bounded and fair, and document event-backpressure effects on progress.
+  unbounded activation delay on an idle connection. Keep control admission bounded
+  and fair, and document event-backpressure effects on progress.
 - [x] An attempt already in progress retains its original coherent profile.
   Activate staged connection settings before the next attempt starts, including
   across retries; never combine credentials, TLS, or network inputs from different
@@ -103,25 +99,10 @@ commands. MQTT 5 temporary redirects retain and later restore previous options.
   explicit snapshot freshness; never return secrets or mutable native objects.
   Keep startup configuration handles independent of running clients.
 
-## Controlled reconnect extension
-
-- [ ] Add a separately admitted reconnect command only after auditing native
-  transport teardown, pending replay/notices, persistence, manual ACK generations,
-  topic aliases, AUTH exchanges, and redirect restoration for both protocols.
-  Do not implement it by closing and reconstructing the managed client or by
-  cancelling an arbitrary pending poll and continuing.
-- [ ] Define whether reconnect drains or aborts the active connection and how it
-  selects a staged profile revision. Preserve native cleanup and recovery, honest
-  delivery outcomes, existing absolute deadlines, and ordered-shutdown semantics.
-  Reconnect is not a guarantee that a broker will resume a session or retain work.
-- [ ] Define admission/order against updates, ordinary MQTT commands, retries,
-  and close. Shutdown takes precedence; reconnect cannot reopen a closing client.
-  Keep all admitted update/reconnect completions reconciled exactly once.
-
 ## Verification and completion
 
-- [x] Rotate broker credentials and TLS identities across reconnect and verify
-  the peer sees one coherent profile revision. Cover TLS resumption, trust/pin
+- [x] Rotate broker credentials and TLS identities across natural reconnect and
+  verify the peer sees one coherent profile revision. Cover TLS resumption, trust/pin
   changes, failed authentication, retry, and attempts already in progress.
 - [x] Verify effective batching/throttle changes and network options on newly
   created sockets for both protocols, including adaptive/clamped batching.
@@ -132,25 +113,21 @@ commands. MQTT 5 temporary redirects retain and later restore previous options.
   preparation/activation, shutdown races, and retired owner release.
 - [x] Cover rejected redirected-target updates and rotation surviving temporary
   origin restoration without cross-target credential inheritance.
-- [ ] For the extension, exercise controlled reconnect with queued/inflight work,
-  persistence failures, stale ACK/AUTH callbacks, retries, and ordered deadlines.
 - [x] Update C header/exports, README, rotation example, `PARITY.md`, and root
   `CHANGELOG.md` with field applicability, activation timing, failure behavior,
   ownership/erasure limits, and completion meanings. Run relevant wrapper-core,
-  C behavior, feature-matrix, and ABI checks for each delivered stage.
+  C behavior, feature-matrix, and ABI checks for the supported field set.
 
-The first stage is complete for its documented supported field set when updates
-and their activation are safely observable without controlled reconnect or the
-full TODO37 diagnostics expansion. Track controlled reconnect completion
-separately. Do not advertise arbitrary live `MqttOptions` mutation as a safe C
-capability.
+This plan is complete for its documented supported field set when updates and
+their activation are safely observable. The full TODO37 diagnostics expansion
+has separate completion criteria. Do not advertise arbitrary live `MqttOptions`
+mutation as a safe C capability.
 
-## First-stage delivery record
+## Delivery record
 
-The first stage is implemented in wrapper-core and the additive C API. The field
-applicability, ownership, activation and snapshot contract is documented in
+The supported updates are implemented in wrapper-core and the additive C API.
+The field applicability, ownership, activation and snapshot contract is documented in
 [native-wrappers/wrapper-core/runtime-configuration.md](native-wrappers/wrapper-core/runtime-configuration.md).
-The controlled reconnect extension above remains deferred.
 
 Linux verification:
 
@@ -185,5 +162,5 @@ Linux verification:
   one retry per test, but no retries were needed.
 
 macOS/Windows execution remains pending. Activation on an idle connection with
-keepalive disabled may remain deferred indefinitely; this stage makes that state
-observable and does not promise a forced reconnect.
+keepalive disabled may remain pending indefinitely; snapshots make that state
+observable. Connection profiles activate before the next natural origin attempt.
