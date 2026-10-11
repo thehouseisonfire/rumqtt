@@ -63,6 +63,8 @@ fn accepted_v4_mismatch_preserves_raw_connection_flags_and_reports_effective_fre
         connack.diagnostic,
         Some(ConnAckDiagnostic::SessionPresentMismatchAcceptedAsClean)
     );
+    let structured = client.handle().diagnostics_snapshot();
+    assert_eq!(structured.native.unwrap().session.connack, Some(connack));
     let published = support::publish(&client, b"fresh");
     assert!(matches!(
         terminal(&published).unwrap(),

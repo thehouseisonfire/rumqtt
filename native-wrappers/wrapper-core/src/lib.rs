@@ -26,6 +26,11 @@ pub use configuration_update::{
 };
 pub use rumqttc_core::{AttemptOutcome, ConnectionObservationSnapshot, ConnectionRoute};
 mod connection;
+mod diagnostics;
+pub use diagnostics::{
+    BatchingDiagnostics, ClientDiagnosticsSnapshot, NativeDiagnosticsSnapshot, OutboundDiagnostics,
+    QueueDiagnostics, RedirectDiagnostics, SessionDiagnostics,
+};
 mod error;
 mod event;
 mod execution;

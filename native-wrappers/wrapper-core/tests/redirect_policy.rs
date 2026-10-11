@@ -726,6 +726,37 @@ fn assert_resolved_srv_diagnostics(reason: RedirectReason) {
     until(&mut events, |event| {
         matches!(event, WrapperEvent::Connected { .. })
     });
+    let diagnostics = client.handle().diagnostics_snapshot();
+    let current = diagnostics
+        .native
+        .as_ref()
+        .unwrap()
+        .redirect
+        .as_ref()
+        .unwrap();
+    if reason == RedirectReason::UseAnotherServer {
+        assert!(current.active && current.target_established);
+        assert_eq!(current.srv_candidate_index, Some(1));
+        assert_eq!(current.srv_candidate_count, Some(2));
+        assert_eq!(current.reason, Some(reason));
+        assert_eq!(
+            current.srv_owner.as_deref(),
+            Some("_mqtt._tcp.service.invalid")
+        );
+        assert!(
+            current
+                .srv_current_target
+                .as_ref()
+                .unwrap()
+                .ends_with(&port.to_string())
+        );
+    } else {
+        // The retained event describes the completed move; current native state
+        // has already retired that transition and its SRV candidate plan.
+        assert!(!current.active && !current.target_established);
+        assert!(current.srv_owner.is_none() && current.srv_current_target.is_none());
+        assert!(current.reason.is_none());
+    }
     client.closer().close(DEADLINE).unwrap();
     backup.set_nonblocking(true).unwrap();
     assert_eq!(

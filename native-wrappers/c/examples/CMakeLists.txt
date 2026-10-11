@@ -34,6 +34,7 @@ set(RUMQTTC_C_EXAMPLES
     event_polling
     reconnect
     session_recovery
+    diagnostics
     multithreaded_publishing
     tracked_completion
     offline_publishing

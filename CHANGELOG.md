@@ -13,6 +13,15 @@
   preserved. Wrapper Rust `Command`/`Completion` and native nonexhaustive `ConnectionError` enums
   gain variants. Ordinary reconnect and JavaScript/Python public APIs are unchanged.
 
+- Native wrappers: Add synchronous owned C diagnostic snapshots with separate
+  queue components, full outbound tracking, session/store lifecycle, native
+  batching, MQTT 5 redirect/SRV state, and independently dated retry, configuration,
+  and optional ordered-shutdown observations. Share immutable native captures
+  without queuing driver work; expose capture generation, monotonic ages and
+  explicit protocol/feature absence. Reads remain available during network waits,
+  event backpressure and termination; snapshots survive client destruction.
+  Preserve existing C layouts, tracked diagnostics and language-binding outputs.
+  Include a retained-snapshot C example and freshness/backpressure/concurrency tests.
 - Native wrappers: Add opt-in classified reconnect policy shared by MQTT v4/v5,
   with exponential backoff, capped full jitter, finite or explicit unlimited
   retry budgets, and reset after stable connectivity. Preserve legacy defaults,
@@ -179,6 +188,10 @@
 
 ### Fixed
 
+- C wrapper: Keep structured native and wrapper ordered-shutdown diagnostic
+  records absent when the C crate feature is disabled, including builds that
+  independently enable ordered shutdown in wrapper-core. Match group availability
+  and advertised library capabilities while preserving output initialization.
 - Native wrappers: Resolve queued and preparing configuration requests before
   graceful or ordered shutdown drains completions, preventing MQTT v4/v5 shutdown
   from waiting on its own configuration senders. Detached preparation remains

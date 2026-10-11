@@ -149,6 +149,14 @@ pub struct Error {
 }
 
 impl Error {
+    /// Diagnostic summaries retain typed context, never opaque source owners or text.
+    pub(crate) fn diagnostic_copy(&self) -> Self {
+        let mut value = self.clone();
+        value.message = Arc::from(self.code.as_str());
+        value.source = None;
+        value.exhaustion = None;
+        value
+    }
     pub(crate) fn reconnect_exhausted(details: crate::ReconnectExhaustion) -> Self {
         let context = details
             .last_failure
@@ -493,6 +501,28 @@ mod tests {
     use std::io;
 
     use super::{DeliveryStatus, Error, ErrorKind};
+
+    #[test]
+    fn diagnostic_copy_drops_opaque_source_owners_and_free_form_text() {
+        #[derive(Debug)]
+        struct Owner(std::sync::Arc<()>);
+        impl std::fmt::Display for Owner {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let _ = &self.0;
+                formatter.write_str("secret callback text")
+            }
+        }
+        impl std::error::Error for Owner {}
+        let token = std::sync::Arc::new(());
+        let weak = std::sync::Arc::downgrade(&token);
+        let original = Error::sourced(ErrorKind::Network, DeliveryStatus::Ambiguous, Owner(token));
+        let copied = original.diagnostic_copy();
+        drop(original);
+        assert!(weak.upgrade().is_none());
+        assert!(copied.source().is_none());
+        assert_eq!(copied.code().as_str(), copied.message());
+        assert_eq!(copied.delivery_status(), DeliveryStatus::Ambiguous);
+    }
 
     #[test]
     fn sourced_error_preserves_display_and_source_chain() {

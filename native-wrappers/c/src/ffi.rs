@@ -12,6 +12,10 @@
 mod configuration;
 pub use configuration::*;
 
+#[path = "diagnostics.rs"]
+mod diagnostics;
+pub use diagnostics::*;
+
 #[path = "tls.rs"]
 mod tls;
 pub use tls::*;

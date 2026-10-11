@@ -150,7 +150,7 @@ unsafe fn reset(out: *mut rumqttc_reconnect_diagnostics_t) -> Result<(), ErrorHa
     Ok(())
 }
 
-unsafe fn fill(out: *mut rumqttc_reconnect_diagnostics_t, value: &ReconnectDiagnostics) {
+pub(super) unsafe fn fill(out: *mut rumqttc_reconnect_diagnostics_t, value: &ReconnectDiagnostics) {
     let out = unsafe { &mut *out };
     out.mode = u32::from(value.classified);
     out.phase = value.phase as u32;

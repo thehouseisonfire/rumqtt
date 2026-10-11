@@ -1636,3 +1636,223 @@ fn runtime_configuration_accessors_initialize_failure_outputs_and_validate_recor
         rumqttc_runtime_update_destroy(builder);
     }
 }
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Exercise grouped C observations and retained lifetime for both protocols together"
+)]
+fn structured_diagnostics_are_owned_dated_and_keep_protocol_feature_absence_explicit() {
+    macro_rules! record {
+        ($ty:ty) => {{
+            // Every field in these C records admits zero initialization.
+            let mut record: $ty = std::mem::zeroed();
+            record.struct_size = u32::try_from(size_of::<$ty>()).unwrap();
+            record
+        }};
+    }
+    unsafe {
+        for protocol in [1, 2] {
+            let (port, broker) = spawn_broker(protocol);
+            let mut config = ptr::null_mut();
+            assert_eq!(
+                rumqttc_config_new(protocol, &mut config, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_broker(config, string_view("127.0.0.1"), port, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_keep_alive_seconds(config, 0, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_config_set_client_id(
+                    config,
+                    string_view("structured-diagnostics"),
+                    ptr::null_mut()
+                ),
+                0
+            );
+            let mut client = ptr::null_mut();
+            assert_eq!(
+                rumqttc_client_start(config, &mut client, ptr::null_mut()),
+                0
+            );
+            rumqttc_config_destroy(config);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let mut event = ptr::null_mut();
+                assert_eq!(
+                    rumqttc_client_event_recv_timeout_ms(client, 2000, &mut event, ptr::null_mut()),
+                    0
+                );
+                let mut kind = 0;
+                assert_eq!(rumqttc_event_kind(event, &mut kind), 0);
+                rumqttc_event_destroy(event);
+                if kind == 1 {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "connection never established");
+            }
+            let mut first = ptr::null_mut();
+            assert_eq!(
+                rumqttc_client_diagnostics_snapshot(client, &mut first, ptr::null_mut()),
+                0
+            );
+            let mut status = record!(rumqttc_diagnostics_status_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_status(first, &mut status, ptr::null_mut()),
+                0
+            );
+            assert_eq!(status.protocol, protocol);
+            assert!(status.native_generation > 1);
+            assert_ne!(status.flags & 4, 0);
+            let initial_age = status.native_age_ns;
+            let initial_generation = status.native_generation;
+            let mut metadata = record!(rumqttc_diagnostics_group_info_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_group_info(first, 6, &mut metadata, ptr::null_mut()),
+                0
+            );
+            assert_eq!(metadata.availability, if protocol == 1 { 3 } else { 1 });
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_group_info(first, 7, &mut metadata, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                metadata.availability,
+                if cfg!(feature = "ordered-shutdown") {
+                    1
+                } else {
+                    2
+                }
+            );
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_group_info(first, 8, &mut metadata, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                metadata.availability,
+                if cfg!(feature = "ordered-shutdown") {
+                    4
+                } else {
+                    2
+                }
+            );
+            let mut queues = record!(rumqttc_diagnostics_queues_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_queues(first, &mut queues, ptr::null_mut()),
+                0
+            );
+            assert_eq!(queues.availability, 1);
+            assert_eq!(
+                queues.pending_len,
+                queues.pending_replay_len + queues.queued_len
+            );
+            let mut outbound = record!(rumqttc_diagnostics_outbound_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_outbound(first, &mut outbound, ptr::null_mut()),
+                0
+            );
+            assert_eq!(outbound.inflight, 0);
+            assert_ne!(outbound.flags & 8, 0);
+            let mut session = record!(rumqttc_diagnostics_session_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_session(first, &mut session, ptr::null_mut()),
+                0
+            );
+            assert_ne!(session.flags & 16, 0);
+            assert_eq!(session.flags & 128, if protocol == 1 { 0 } else { 128 });
+            let mut batching = record!(rumqttc_diagnostics_batching_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_batching(first, &mut batching, ptr::null_mut()),
+                0
+            );
+            assert!(batching.effective_read_batch_size > 0);
+            let mut redirect = record!(rumqttc_diagnostics_redirect_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_redirect(first, &mut redirect, ptr::null_mut()),
+                0
+            );
+            assert_eq!(redirect.availability, if protocol == 1 { 3 } else { 1 });
+            let mut ordered = record!(rumqttc_ordered_shutdown_diagnostics_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_ordered_native(first, &mut ordered, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                ordered.present,
+                u8::from(cfg!(feature = "ordered-shutdown"))
+            );
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_ordered_wrapper(first, &mut ordered, ptr::null_mut()),
+                0
+            );
+            assert_eq!(ordered.present, 0);
+            let mut retry = record!(rumqttc_reconnect_diagnostics_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_reconnect(first, &mut retry, ptr::null_mut()),
+                0
+            );
+            assert_eq!(retry.cycles_started, 1);
+            let mut configuration = record!(rumqttc_configuration_status_t);
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_configuration(
+                    first,
+                    &mut configuration,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            assert_eq!(configuration.attempt_outcome, 2);
+            for _ in 0..100 {
+                let mut next = ptr::null_mut();
+                assert_eq!(
+                    rumqttc_client_diagnostics_snapshot(client, &mut next, ptr::null_mut()),
+                    0
+                );
+                assert_eq!(
+                    rumqttc_diagnostics_snapshot_status(next, &mut status, ptr::null_mut()),
+                    0
+                );
+                assert_eq!(status.native_generation, initial_generation);
+                assert!(status.native_age_ns >= initial_age);
+                rumqttc_diagnostics_snapshot_destroy(next);
+            }
+            assert_eq!(
+                rumqttc_client_close_now_timeout_ms(client, 2000, ptr::null_mut()),
+                0
+            );
+            let mut final_snapshot = ptr::null_mut();
+            assert_eq!(
+                rumqttc_client_diagnostics_snapshot(client, &mut final_snapshot, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_status(final_snapshot, &mut status, ptr::null_mut()),
+                0
+            );
+            assert_ne!(status.flags & 1, 0);
+            assert_eq!(
+                rumqttc_client_destroy_timeout_ms(client, 2000, ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_status(first, &mut status, ptr::null_mut()),
+                0
+            );
+            assert_eq!(status.native_generation, initial_generation);
+            assert_eq!(status.flags & 1, 0); // original snapshot freezes lifecycle too
+            assert_eq!(
+                rumqttc_diagnostics_snapshot_group_info(first, 99, &mut metadata, ptr::null_mut()),
+                1
+            );
+            assert_eq!(metadata.availability, 0);
+            rumqttc_diagnostics_snapshot_destroy(first);
+            rumqttc_diagnostics_snapshot_destroy(final_snapshot);
+            broker.join().unwrap();
+        }
+    }
+}

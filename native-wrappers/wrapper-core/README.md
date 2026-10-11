@@ -661,3 +661,27 @@ redirects and SRV candidate fallback do not spend additional cycle retries.
 See the [C contract and classification table](../c/README.md#reconnect-policy)
 for exact budgets, jitter, deadline scopes, legacy metadata differences and
 redirect behavior. Custom decisions and host scheduling are deferred.
+
+## Structured diagnostics
+
+`ClientHandle::diagnostics_snapshot()` returns owned `ClientDiagnosticsSnapshot`
+values with a shared immutable `NativeDiagnosticsSnapshot` and independently
+sampled retry, redacted configuration, and wrapper fence observations. It never
+queues driver work. Native captures are published during preparation and after
+completed polls, before event delivery; capture generation/time remain unchanged
+across reads. Active polls and event backpressure can leave native data stale
+indefinitely. Wrapper termination retains the latest native sample and does not
+assert native disconnect completion. Previously acquired snapshots freeze both
+native and wrapper values and survive client destruction without callback owners.
+
+Native queues, full outbound counts, session/store lifecycle, batching, and v5
+redirect/SRV fields preserve explicit protocol/feature absence. Native ordered
+phase/count observations are separate from wrapper fence admission/result. Ages
+and source identifiers describe independently sampled groups, not an atomic
+cross-group state. The legacy tracked diagnostics projection and language-binding
+outputs retain their existing behavior. See the
+[C snapshot contract](../c/README.md#structured-diagnostic-snapshots) and the
+[field inventory](PARITY.md#structured-diagnostics-todo37) for definitions,
+overlapping counts, provenance, and ownership rules.
+Capture/read cost and retention evidence is recorded in
+[diagnostics measurements](benches/diagnostics.md).

@@ -526,32 +526,34 @@ pub unsafe extern "C" fn rumqttc_configuration_snapshot_status(
         let value = &unsafe { snapshot.as_ref() }
             .ok_or_else(|| ErrorHandle::argument("configuration snapshot is NULL"))?
             .snapshot;
-        unsafe {
-            *out = rumqttc_configuration_status_t {
-                struct_size: size,
-                flags: u32::from(value.closed)
-                    | (u32::from(value.connection.attempt_revision.is_some()) << 1)
-                    | (u32::from(value.connection.successful_revision.is_some()) << 2),
-                revision: value.revision,
-                desired_tuning_revision: value.desired_tuning_revision,
-                effective_tuning_revision: value.effective_tuning_revision,
-                desired_connection_revision: value.desired_connection_revision,
-                effective_connection_revision: value.effective_connection_revision,
-                attempt: value.connection.attempt,
-                attempt_revision: value.connection.attempt_revision.unwrap_or(0),
-                successful_connection_revision: value.connection.successful_revision.unwrap_or(0),
-                route: value.connection.route as u32,
-                attempt_route: value.connection.attempt_route as u32,
-                attempt_outcome: value.connection.outcome as u32,
-                reserved: 0,
-                effective_read_batch_size: value.effective_read_batch_size as u64,
-                effective_age_ns: nanos(value.effective_captured_at.elapsed()),
-                observation_age_ns: nanos(value.connection.captured_at.elapsed()),
-                snapshot_age_ns: nanos(value.captured_at.elapsed()),
-            }
-        };
+        fill_status(unsafe { &mut *out }, value);
         Ok(())
     })
+}
+
+pub(super) fn fill_status(out: &mut rumqttc_configuration_status_t, value: &ConfigurationSnapshot) {
+    *out = rumqttc_configuration_status_t {
+        struct_size: out.struct_size,
+        flags: u32::from(value.closed)
+            | (u32::from(value.connection.attempt_revision.is_some()) << 1)
+            | (u32::from(value.connection.successful_revision.is_some()) << 2),
+        revision: value.revision,
+        desired_tuning_revision: value.desired_tuning_revision,
+        effective_tuning_revision: value.effective_tuning_revision,
+        desired_connection_revision: value.desired_connection_revision,
+        effective_connection_revision: value.effective_connection_revision,
+        attempt: value.connection.attempt,
+        attempt_revision: value.connection.attempt_revision.unwrap_or(0),
+        successful_connection_revision: value.connection.successful_revision.unwrap_or(0),
+        route: value.connection.route as u32,
+        attempt_route: value.connection.attempt_route as u32,
+        attempt_outcome: value.connection.outcome as u32,
+        reserved: 0,
+        effective_read_batch_size: value.effective_read_batch_size as u64,
+        effective_age_ns: nanos(value.effective_captured_at.elapsed()),
+        observation_age_ns: nanos(value.connection.captured_at.elapsed()),
+        snapshot_age_ns: nanos(value.captured_at.elapsed()),
+    }
 }
 
 fn selection(value: u32) -> Result<usize, ErrorHandle> {

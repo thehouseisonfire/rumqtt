@@ -671,7 +671,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         protocol,
         auth_failure: None,
     };
-    let mut diagnostics = snapshot_v5(&eventloop);
+    let mut diagnostics = shared
+        .cached_native_diagnostics()
+        .map_or_else(DiagnosticsSnapshot::default, |native| native.legacy());
     let shutdown = ShutdownInputs::new(&shared, &completion_rx, &diagnostics_rx);
     let delivery = EventDelivery {
         shared: &shared,
@@ -811,6 +813,10 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 }
             }
         };
+        if polled.is_some() {
+            // Publish before callback failure handling or recovered packet delivery can terminate or block.
+            diagnostics = snapshot_v5(&eventloop, &shared);
+        }
         // Native attempt success retires origin owners before event delivery can block or terminate the driver.
         configuration.permanent_redirect();
         let polled = if authentication_timed_out {
@@ -888,7 +894,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             connected = false;
             shared.fail_acknowledgements(&error);
             shared.reconnect.abandoned();
-            diagnostics = snapshot_v5(&eventloop);
+            diagnostics = snapshot_v5(&eventloop, &shared);
             shared.notify_progress();
             continue;
         }
@@ -972,7 +978,6 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             fail_pending(&mut senders, &error);
             return TerminalStatus::Failed(error);
         }
-        diagnostics = snapshot_v5(&eventloop);
         match polled {
             Ok(event) => {
                 let was_connected = connected;
@@ -1472,62 +1477,11 @@ fn synchronize_admission_state(eventloop: &rumqttc_v5::EventLoop, shared: &Share
     );
 }
 
-fn snapshot_v5(eventloop: &rumqttc_v5::EventLoop) -> DiagnosticsSnapshot {
-    let diagnostics = eventloop.diagnostics();
-    DiagnosticsSnapshot {
-        reconnect: None,
-        #[cfg(not(feature = "ordered-shutdown"))]
-        ordered_shutdown: None,
-        #[cfg(feature = "ordered-shutdown")]
-        ordered_shutdown: diagnostics.disconnect_fence_sequence.map(|sequence| {
-            let captured_at = std::time::Instant::now();
-            Box::new(crate::OrderedShutdownDiagnostics {
-                phase: match diagnostics.shutdown_phase {
-                    rumqttc_v5::ShutdownPhase::Open => crate::OrderedShutdownPhase::Open,
-                    rumqttc_v5::ShutdownPhase::AdmittedDrain => {
-                        crate::OrderedShutdownPhase::AdmittedDrain
-                    }
-                    rumqttc_v5::ShutdownPhase::Approaching => {
-                        crate::OrderedShutdownPhase::Approaching
-                    }
-                    rumqttc_v5::ShutdownPhase::Draining => crate::OrderedShutdownPhase::Draining,
-                    rumqttc_v5::ShutdownPhase::Flushing => crate::OrderedShutdownPhase::Flushing,
-                    rumqttc_v5::ShutdownPhase::Completed => crate::OrderedShutdownPhase::Completed,
-                    rumqttc_v5::ShutdownPhase::TimedOut => crate::OrderedShutdownPhase::TimedOut,
-                    rumqttc_v5::ShutdownPhase::Failed => crate::OrderedShutdownPhase::Failed,
-                },
-                fence_sequence: Some(sequence),
-                remaining_at_capture: diagnostics
-                    .disconnect_deadline
-                    .map(|deadline| deadline.saturating_duration_since(captured_at)),
-                local_queued_publishes: diagnostics.ordered_local_queued_publishes,
-                captured_at,
-            })
-        }),
-        connack: diagnostics
-            .session
-            .connack
-            .map(|session| crate::ConnAckSessionDiagnostics {
-                raw_session_present: session.raw_session_present,
-                session_resumed: session.session_resumed,
-                diagnostic: session.diagnostic.and_then(|diagnostic| match diagnostic {
-                    rumqttc_v5::ConnAckDiagnostic::BrokerOnlySessionResume => {
-                        Some(crate::ConnAckDiagnostic::BrokerOnlySessionResume)
-                    }
-                    _ => None,
-                }),
-            }),
-        connected: diagnostics.connected,
-        disconnecting: diagnostics.disconnecting,
-        pending_requests: diagnostics.queues.pending_len,
-        queued_requests: diagnostics.queues.requests_rx_len
-            + diagnostics.queues.control_requests_rx_len,
-        inflight_publishes: diagnostics.outbound.inflight,
-        max_inflight_publishes: diagnostics.outbound.max_inflight,
-        pending_subscribes: diagnostics.outbound.pending_subscribe,
-        pending_unsubscribes: diagnostics.outbound.pending_unsubscribe,
-        outbound_drained: diagnostics.outbound.outbound_drained,
-    }
+fn snapshot_v5(eventloop: &rumqttc_v5::EventLoop, shared: &Shared) -> DiagnosticsSnapshot {
+    let native = crate::NativeDiagnosticsSnapshot::v5(eventloop.diagnostics());
+    let legacy = native.legacy();
+    shared.publish_native_diagnostics(native);
+    legacy
 }
 
 pub fn publish_options(command: &PublishCommand) -> rumqttc_v5::PublishOptions {

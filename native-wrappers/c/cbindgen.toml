@@ -9,6 +9,15 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_diagnostics_snapshot",
+    "rumqttc_diagnostics_status_t",
+    "rumqttc_diagnostics_group_info_t",
+    "rumqttc_diagnostics_queues_t",
+    "rumqttc_diagnostics_outbound_t",
+    "rumqttc_diagnostics_session_t",
+    "rumqttc_diagnostics_batching_t",
+    "rumqttc_diagnostics_redirect_t",
+
     "rumqttc_reconnect_options_t",
     "rumqttc_reconnect_diagnostics_t",
     "rumqttc_runtime_update", "rumqttc_configuration_receipt", "rumqttc_configuration_snapshot",
@@ -117,3 +126,5 @@ include = [
 "rumqttc_runtime_update" = "rumqttc_runtime_update_t"
 "rumqttc_configuration_receipt" = "rumqttc_configuration_receipt_t"
 "rumqttc_configuration_snapshot" = "rumqttc_configuration_snapshot_t"
+
+"rumqttc_diagnostics_snapshot" = "rumqttc_diagnostics_snapshot_t"

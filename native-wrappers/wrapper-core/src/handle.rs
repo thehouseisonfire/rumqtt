@@ -57,6 +57,8 @@ impl AdmissionGate {
 pub static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct Shared {
+    diagnostics: Mutex<Option<Arc<crate::NativeDiagnosticsSnapshot>>>,
+    diagnostics_terminated: AtomicBool,
     pub(crate) reconnect: Arc<crate::reconnect::Controller>,
     error_context: Mutex<crate::ErrorContext>,
     configuration: Mutex<Option<Arc<crate::configuration_update::ConfigurationControl>>>,
@@ -76,6 +78,35 @@ pub struct Shared {
 }
 
 impl Shared {
+    pub(crate) fn publish_native_diagnostics(&self, value: crate::NativeDiagnosticsSnapshot) {
+        let mut next = Arc::new(value);
+        let mut cache = self
+            .diagnostics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::get_mut(&mut next)
+            .expect("unpublished capture is uniquely owned")
+            .generation = cache
+            .as_ref()
+            .map_or(1, |previous| previous.generation.saturating_add(1));
+        let previous = cache.replace(next);
+        drop(cache);
+        drop(previous);
+    }
+
+    pub(crate) fn cached_native_diagnostics(
+        &self,
+    ) -> Option<Arc<crate::NativeDiagnosticsSnapshot>> {
+        self.diagnostics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn terminate_diagnostics(&self) {
+        self.diagnostics_terminated.store(true, Ordering::Release);
+    }
+
     pub(crate) fn set_configuration(
         &self,
         control: Arc<crate::configuration_update::ConfigurationControl>,
@@ -110,6 +141,8 @@ impl Shared {
             BackendClient::V5(_) => ProtocolVersion::V5,
         };
         Arc::new(Self {
+            diagnostics: Mutex::new(None),
+            diagnostics_terminated: AtomicBool::new(false),
             reconnect,
             error_context: Mutex::new(crate::ErrorContext {
                 protocol: Some(protocol),
@@ -510,6 +543,38 @@ impl Drop for ClientHandle {
 }
 
 impl ClientHandle {
+    /// Captures independent wrapper observations and shares the last native sample.
+    /// This never queues driver work or waits for MQTT/event delivery. Values remain
+    /// readable after termination; native data may be indefinitely stale.
+    #[must_use]
+    pub fn diagnostics_snapshot(&self) -> crate::ClientDiagnosticsSnapshot {
+        let native = self.shared.cached_native_diagnostics();
+        let configuration_control = self
+            .shared
+            .configuration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let configuration = configuration_control.map(|control| control.snapshot());
+        let mut ordered = crate::DiagnosticsSnapshot::default();
+        self.shared.shutdown.ordered_diagnostics(&mut ordered);
+        let reconnect = self.shared.reconnect.diagnostic_snapshot();
+        let terminated = self.shared.diagnostics_terminated.load(Ordering::Acquire);
+        let lifecycle = self.shared.state();
+        crate::ClientDiagnosticsSnapshot {
+            protocol: match self.shared.backend {
+                BackendClient::V4(_) => ProtocolVersion::V4,
+                BackendClient::V5(_) => ProtocolVersion::V5,
+            },
+            lifecycle,
+            terminated,
+            native,
+            reconnect,
+            configuration,
+            ordered_wrapper: ordered.ordered_shutdown,
+            captured_at: std::time::Instant::now(),
+        }
+    }
     /// Owned retry observation, available after driver termination.
     #[must_use]
     pub fn reconnect_diagnostics(&self) -> crate::ReconnectDiagnostics {
@@ -1182,3 +1247,7 @@ mod acknowledgement_tests {
         assert!(handle.try_admit(Command::Acknowledge(token)).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "backend/diagnostics_tests.rs"]
+mod diagnostics_tests;

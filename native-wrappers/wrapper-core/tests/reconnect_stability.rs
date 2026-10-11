@@ -9,6 +9,19 @@ use std::time::{Duration, Instant};
 use rumqttc_wrapper_core::*;
 use support::*;
 
+fn assert_capture_published_before_delivery(client: &NativeClient, previous: u64) {
+    let snapshot = client.handle().diagnostics_snapshot();
+    let native = snapshot.native.unwrap();
+    assert!(native.generation > previous);
+    for _ in 0..100 {
+        let current = client.handle().diagnostics_snapshot();
+        assert!(std::sync::Arc::ptr_eq(
+            &native,
+            current.native.as_ref().unwrap()
+        ));
+    }
+}
+
 #[test]
 fn broker_disconnect_ends_stability_before_backpressured_event_delivery() {
     for buffered_publish in [false, true] {
@@ -73,9 +86,11 @@ fn disconnect_with_backpressure(buffered_publish: bool, observe_while_blocked: b
     }
     // Keep Connected in the single event slot, blocking delivery of the next
     // event beyond the stability interval. Test snapshot and failed independently.
+    let before = client.handle().diagnostics_snapshot().native.unwrap();
     disconnect_tx.send(()).unwrap();
     broker.join();
     thread::sleep(stability * 2);
+    assert_capture_published_before_delivery(&client, before.generation);
     if observe_while_blocked {
         let snapshot = client.handle().reconnect_diagnostics();
         assert_eq!(snapshot.retries_since_reset, 1);

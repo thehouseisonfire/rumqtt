@@ -1049,6 +1049,175 @@ typedef struct rumqttc_diagnostics_t {
     uint64_t pending_unsubscribes;
 } rumqttc_diagnostics_t;
 
+/* Immutable diagnostic snapshots. Acquisition never queues driver work. Values
+ * are independently sampled; native data can be indefinitely stale. String views
+ * borrow from the snapshot, which survives client destruction. Concurrent readers
+ * must finish before destroying the snapshot. Initialize records with _INIT.
+ * Failed accessors preserve struct_size and clear only the declared known prefix.
+ * Duration fields saturate at UINT64_MAX; generation saturates rather than wraps. */
+typedef struct rumqttc_diagnostics_snapshot_t rumqttc_diagnostics_snapshot_t;
+
+#define RUMQTTC_DIAGNOSTICS_AVAILABLE 1u
+#define RUMQTTC_DIAGNOSTICS_FEATURE_DISABLED 2u
+#define RUMQTTC_DIAGNOSTICS_INAPPLICABLE 3u
+#define RUMQTTC_DIAGNOSTICS_NOT_OBSERVED 4u
+#define RUMQTTC_DIAGNOSTICS_SOURCE_NATIVE 1u
+#define RUMQTTC_DIAGNOSTICS_SOURCE_WRAPPER 2u
+#define RUMQTTC_DIAGNOSTICS_SOURCE_RETRY 3u
+#define RUMQTTC_DIAGNOSTICS_SOURCE_CONFIGURATION 4u
+#define RUMQTTC_DIAGNOSTICS_SOURCE_CONNECTION 5u
+#define RUMQTTC_DIAGNOSTICS_GROUP_NATIVE 1u
+#define RUMQTTC_DIAGNOSTICS_GROUP_QUEUES 2u
+#define RUMQTTC_DIAGNOSTICS_GROUP_OUTBOUND 3u
+#define RUMQTTC_DIAGNOSTICS_GROUP_SESSION 4u
+#define RUMQTTC_DIAGNOSTICS_GROUP_BATCHING 5u
+#define RUMQTTC_DIAGNOSTICS_GROUP_REDIRECT 6u
+#define RUMQTTC_DIAGNOSTICS_GROUP_ORDERED_NATIVE 7u
+#define RUMQTTC_DIAGNOSTICS_GROUP_ORDERED_WRAPPER 8u
+#define RUMQTTC_DIAGNOSTICS_GROUP_RETRY 9u
+#define RUMQTTC_DIAGNOSTICS_GROUP_CONFIGURATION 10u
+#define RUMQTTC_DIAGNOSTICS_GROUP_CONFIGURATION_EFFECTIVE 11u
+#define RUMQTTC_DIAGNOSTICS_GROUP_CONNECTION_OBSERVATION 12u
+#define RUMQTTC_DIAGNOSTICS_STATUS_TERMINATED (1u << 0)
+#define RUMQTTC_DIAGNOSTICS_STATUS_NATIVE_PRESENT (1u << 1)
+#define RUMQTTC_DIAGNOSTICS_STATUS_CONNECTED (1u << 2)
+#define RUMQTTC_DIAGNOSTICS_STATUS_DISCONNECTING (1u << 3)
+#define RUMQTTC_DIAGNOSTICS_STATUS_DISCONNECT_COMPLETE (1u << 4)
+#define RUMQTTC_DIAGNOSTICS_OUTBOUND_WINDOW_FULL (1u << 0)
+#define RUMQTTC_DIAGNOSTICS_OUTBOUND_COLLISION (1u << 1)
+#define RUMQTTC_DIAGNOSTICS_OUTBOUND_COLLISION_NOTICE (1u << 2)
+#define RUMQTTC_DIAGNOSTICS_OUTBOUND_DRAINED (1u << 3)
+#define RUMQTTC_DIAGNOSTICS_SESSION_STORE_CONFIGURED (1u << 0)
+#define RUMQTTC_DIAGNOSTICS_SESSION_STORE_LOADED (1u << 1)
+#define RUMQTTC_DIAGNOSTICS_SESSION_STORE_CLEAR_PENDING (1u << 2)
+#define RUMQTTC_DIAGNOSTICS_SESSION_IDENTITY_MATCHES (1u << 3)
+#define RUMQTTC_DIAGNOSTICS_SESSION_CONNACK_PRESENT (1u << 4)
+#define RUMQTTC_DIAGNOSTICS_SESSION_RAW_SESSION_PRESENT (1u << 5)
+#define RUMQTTC_DIAGNOSTICS_SESSION_SESSION_RESUMED (1u << 6)
+#define RUMQTTC_DIAGNOSTICS_SESSION_BROKER_ONLY_PRESENT (1u << 7)
+#define RUMQTTC_DIAGNOSTICS_SESSION_BROKER_ONLY_RESUME (1u << 8)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_POLICY_CONFIGURED (1u << 0)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_ACTIVE (1u << 1)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_TARGET_ESTABLISHED (1u << 2)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_LIMIT_PRESENT (1u << 3)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_REASON_PRESENT (1u << 4)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_CANDIDATE_INDEX_PRESENT (1u << 5)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_CANDIDATE_COUNT_PRESENT (1u << 6)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_REFERENCE_PRESENT (1u << 7)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_SRV_OWNER_PRESENT (1u << 8)
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_SRV_TARGET_PRESENT (1u << 9)
+/* Status lifecycle: 0 running, 1 closing, 2 closed, 3 failed. Native connection
+ * flags describe the last native capture, independently of wrapper termination.
+ * Group generation is native capture generation, wrapper fence sequence, retry
+ * cycles_started, configuration revision, effective tuning revision, or attempt,
+ * respectively. These identifiers do not imply a common transactional instant. */
+
+typedef struct rumqttc_diagnostics_status_t {
+    uint32_t struct_size;
+    uint32_t protocol;
+    uint32_t lifecycle;
+    uint32_t flags;
+    uint64_t native_generation;
+    uint64_t native_age_ns;
+    uint64_t snapshot_age_ns;
+} rumqttc_diagnostics_status_t;
+#define RUMQTTC_DIAGNOSTICS_STATUS_INIT \
+    { sizeof(rumqttc_diagnostics_status_t), 0, 0, 0, 0, 0, 0 }
+
+typedef struct rumqttc_diagnostics_group_info_t {
+    uint32_t struct_size;
+    uint32_t availability;
+    uint32_t source;
+    uint32_t reserved;
+    uint64_t generation;
+    uint64_t capture_age_ns;
+} rumqttc_diagnostics_group_info_t;
+#define RUMQTTC_DIAGNOSTICS_GROUP_INFO_INIT \
+    { sizeof(rumqttc_diagnostics_group_info_t), 0, 0, 0, 0, 0 }
+
+typedef struct rumqttc_diagnostics_queues_t {
+    uint32_t struct_size;
+    uint32_t availability;
+    uint64_t pending_replay_len;
+    uint64_t queued_len;
+    uint64_t pending_len;
+    uint64_t requests_rx_len;
+    uint64_t control_requests_rx_len;
+    uint64_t immediate_disconnect_rx_len;
+} rumqttc_diagnostics_queues_t;
+#define RUMQTTC_DIAGNOSTICS_QUEUES_INIT \
+    { sizeof(rumqttc_diagnostics_queues_t), 0, 0, 0, 0, 0, 0, 0 }
+
+typedef struct rumqttc_diagnostics_outbound_t {
+    uint32_t struct_size;
+    uint32_t availability;
+    uint32_t flags;
+    uint32_t inflight;
+    uint32_t max_inflight;
+    uint32_t reserved;
+    uint64_t packet_identifiers_in_use;
+    uint64_t pending_subscribe;
+    uint64_t pending_unsubscribe;
+    uint64_t outgoing_publish;
+    uint64_t outgoing_publish_notices;
+    uint64_t outgoing_pubrel;
+    uint64_t outgoing_pubrel_replay;
+    uint64_t outgoing_pubrel_notices;
+    uint64_t incoming_puback;
+    uint64_t incoming_pub;
+    uint64_t incoming_pubrec;
+} rumqttc_diagnostics_outbound_t;
+#define RUMQTTC_DIAGNOSTICS_OUTBOUND_INIT \
+    { sizeof(rumqttc_diagnostics_outbound_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+
+typedef struct rumqttc_diagnostics_session_t {
+    uint32_t struct_size;
+    uint32_t availability;
+    uint32_t flags;
+    uint32_t connack_diagnostic;
+} rumqttc_diagnostics_session_t;
+#define RUMQTTC_DIAGNOSTICS_SESSION_INIT \
+    { sizeof(rumqttc_diagnostics_session_t), 0, 0, 0 }
+
+typedef struct rumqttc_diagnostics_batching_t {
+    uint32_t struct_size;
+    uint32_t availability;
+    uint64_t configured_read_batch_size;
+    uint64_t effective_read_batch_size;
+    uint64_t max_request_batch;
+} rumqttc_diagnostics_batching_t;
+#define RUMQTTC_DIAGNOSTICS_BATCHING_INIT \
+    { sizeof(rumqttc_diagnostics_batching_t), 0, 0, 0, 0 }
+
+typedef struct rumqttc_diagnostics_redirect_t {
+    uint32_t struct_size;
+    uint32_t availability;
+    uint32_t flags;
+    uint32_t reason;
+    uint64_t attempts;
+    uint64_t attempt_limit;
+    uint64_t visited_endpoints;
+    uint64_t srv_candidate_index;
+    uint64_t srv_candidate_count;
+    rumqttc_string_view_t selected_reference;
+    rumqttc_string_view_t srv_owner;
+    rumqttc_string_view_t srv_current_target;
+} rumqttc_diagnostics_redirect_t;
+#define RUMQTTC_DIAGNOSTICS_REDIRECT_INIT \
+    { sizeof(rumqttc_diagnostics_redirect_t), 0, 0, 0, 0, 0, 0, 0, 0, { NULL, 0 }, { NULL, 0 }, { NULL, 0 } }
+
+/* pending_len = pending_replay_len + queued_len; do not add it to components.
+ * Outbound counts overlap; notices are subsets, incoming ACK state is excluded
+ * from DRAINED. Neither queue depths nor DRAINED proves tracked completion.
+ * Session CONNACK and broker-only values require their presence flags.
+ * Redirect strings preserve the existing approved reference disclosure contract;
+ * reason is 0 absent, 1 Use Another Server, 2 Server Moved; SRV index is one-based.
+ * Ordered durations are remaining at their own capture time. Feature-disabled
+ * or unobserved ordered groups yield present=0; query group_info to distinguish.
+ * Configuration records retain their existing independent effective/attempt ages.
+ * Retry last_failure returns an owned typed summary with a fixed code message,
+ * without arbitrary source text or owners. Null means no observed failure. */
+
 /* C11/C++17-compatible defaults for every extensible public record. */
 #define RUMQTTC_USER_PROPERTY_INIT \
     { sizeof(rumqttc_user_property_t), { NULL, 0 }, { NULL, 0 } }
@@ -2101,6 +2270,48 @@ RUMQTTC_API uint32_t rumqttc_configuration_snapshot_network(const struct rumqttc
                                                 uint32_t selected,
                                                 struct rumqttc_runtime_network_options_t *out,
                                                 struct rumqttc_error_t **error_out);
+
+
+RUMQTTC_API void rumqttc_diagnostics_snapshot_destroy(rumqttc_diagnostics_snapshot_t *snapshot);
+RUMQTTC_API uint32_t rumqttc_client_diagnostics_snapshot(
+    rumqttc_client_t *client, rumqttc_diagnostics_snapshot_t **out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_status(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_diagnostics_status_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_group_info(
+    const rumqttc_diagnostics_snapshot_t *snapshot, uint32_t group, rumqttc_diagnostics_group_info_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_queues(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_diagnostics_queues_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_outbound(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_diagnostics_outbound_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_session(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_diagnostics_session_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_batching(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_diagnostics_batching_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_redirect(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_diagnostics_redirect_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_ordered_native(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_ordered_shutdown_diagnostics_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_ordered_wrapper(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_ordered_shutdown_diagnostics_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_reconnect(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_reconnect_diagnostics_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_configuration(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_configuration_status_t *out,
+    rumqttc_error_t **error_out);
+RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_last_failure(
+    const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_error_t **out,
+    rumqttc_error_t **error_out);
 
 #ifdef __cplusplus
 }

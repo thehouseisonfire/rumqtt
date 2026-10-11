@@ -39,3 +39,5 @@ item_types = ["functions"]
 "rumqttc_runtime_update" = "rumqttc_runtime_update_t"
 "rumqttc_configuration_receipt" = "rumqttc_configuration_receipt_t"
 "rumqttc_configuration_snapshot" = "rumqttc_configuration_snapshot_t"
+
+"rumqttc_diagnostics_snapshot" = "rumqttc_diagnostics_snapshot_t"

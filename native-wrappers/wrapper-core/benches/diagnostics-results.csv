@@ -1,0 +1,13 @@
+protocol,inflight,operation,min_ns,median_ns,max_ns
+4,16,native_baseline,752,783,1196
+4,16,capture_projection_publication,808,829,848
+4,16,owned_acquisition,140,140,142
+5,16,native_baseline,767,779,805
+5,16,capture_projection_publication,831,850,880
+5,16,owned_acquisition,140,140,143
+4,4096,native_baseline,3546,3631,3688
+4,4096,capture_projection_publication,3487,3621,4065
+4,4096,owned_acquisition,140,140,140
+5,4096,native_baseline,3907,3923,3959
+5,4096,capture_projection_publication,3961,3981,3997
+5,4096,owned_acquisition,140,140,141

@@ -327,8 +327,7 @@ queued packets, synchronous observations and deferred native error cleanup.
 validation rollback, recovery, exhaustion, retained owned errors/snapshots and
 terminal authentication refusal. Native redirect limits and replay remain
 client-owned. Optional decision callbacks and pause/resume/request-attempt are
-not implemented; controlled reconnect and full structured diagnostics remain in
-TODO35/TODO37.
+not implemented; controlled reconnect remains deferred under TODO35.
 
 ## Runtime configuration (TODO35 first stage)
 
@@ -393,3 +392,54 @@ ownership tests exercise replay, scheduler and both request channels directly.
 `native_session_recovery` exercises both C admission forms, typed errors, size/wrong-kind
 validation, retained snapshots, clean/persistent wire policy and terminal store clearing
 failure. The operator example and recovery fixture are included in every C package profile.
+
+## Structured diagnostics (TODO37)
+
+Wrapper-core `ClientHandle::diagnostics_snapshot()` and C
+`rumqttc_client_diagnostics_snapshot()` acquire an owned observation without
+operation admission. The single native cache is published during preparation
+and after completed native polls, before event delivery. Legacy tracked
+`DiagnosticsSnapshot` remains its existing scalar projection and independently
+retains its established retry/ordered overlays. Python/JavaScript keep their
+existing diagnostics output; the new public language APIs are wrapper-core/C.
+
+| Native field(s) | Classification | Wrapper/C observation |
+| --- | --- | --- |
+| `connected`, `disconnecting`, `disconnect_complete` | supported | Native status flags; independent of wrapper lifecycle and termination |
+| `queues.pending_replay_len`, `queued_len`, `requests_rx_len`, `control_requests_rx_len`, `immediate_disconnect_rx_len` | supported | Separate queue fields; channel lengths are sequential producer observations |
+| `queues.pending_len` | redundant, supported | Replay + scheduler; legacy `pending_requests` retains this definition |
+| `outbound.inflight`, `max_inflight`, `packet_identifiers_in_use` | supported | Inflight window and reserved identifiers, including non-publish operations |
+| `outbound.publish_window_full`, `collision`, `collision_notice`, `outbound_drained` | derived, supported | Named outbound flags; drained excludes inbound ACK state |
+| `outbound.pending_subscribe`, `pending_unsubscribe`, `outgoing_publish`, `outgoing_publish_notices` | supported | Pending operations and overlapping publish/notice counts |
+| `outbound.outgoing_pubrel`, `outgoing_pubrel_replay`, `outgoing_pubrel_notices` | supported | QoS 2 second-phase and overlapping replay/notice counts |
+| `outbound.incoming_puback`, `incoming_pub`, `incoming_pubrec` | supported | Inbound acknowledgement/duplicate tracking; not outgoing completion |
+| `session.connack.raw_session_present`, `session_resumed`, `diagnostic` | optional, supported | Presence flag, raw/effective semantics, existing compatibility reason values |
+| `session.session_store_configured`, `session_store_loaded`, `session_store_clear_pending`, `local_session_state_matches_client_id` | supported | Store lifecycle and identity agreement; no store owner/checkpoint is exposed |
+| MQTT 5 `session.broker_only_session_resume` | protocol-specific, supported | Explicit presence flag; absent for v4 |
+| `config.configured_read_batch_size`, `effective_read_batch_size`, `max_request_batch` | supported | Batching at native capture; separate from configuration's dated effective sample |
+| MQTT 5 `redirect.selected_reference`, `policy_configured`, `attempts`, `attempt_limit`, `visited_endpoints`, `active`, `target_established`, `reason` | protocol-specific, supported | Current native redirect group, with presence flags and snapshot-owned approved reference |
+| MQTT 5 `redirect.srv_owner`, `srv_candidate_index`, `srv_candidate_count`, `srv_current_target` | optional, protocol-specific, supported | Snapshot-owned owner/authority and one-based candidate position |
+| `shutdown_phase`, `disconnect_fence_sequence`, `ordered_local_queued_publishes` | feature-specific, supported | Native ordered group, including Open before fence admission; wrapper fence/result is separate |
+| `disconnect_deadline` | feature-specific, supported by conversion | Remaining duration at capture; Rust `Instant` representation is intentionally unavailable |
+| Mutable protocol objects, packet payloads, session-store owners/checkpoints, credentials/TLS inputs/callback owners | intentionally unavailable | Outside observation scope; retained data has no mutable state or secret owners |
+
+C group metadata reports available, feature-disabled, protocol-inapplicable,
+or not-yet-observed data. Identifiers are native capture generation, fence
+sequence, retry cycles, configuration revision, effective tuning revision, or
+connection attempt, according to the named source. They are not interchangeable
+versions. Ages continue increasing while retained values remain immutable.
+Native generation/capture time are never refreshed by snapshot assembly or
+wrapper overlays. Retry failure summaries preserve typed classifications/context
+with a fixed code message, without arbitrary source text or opaque source owners.
+
+`diagnostics` integration tests cover native sample immutability while tuning
+stages, activation versus native batching capture, inflight/ACK progress, full
+application queues and unchanged overflow deadlines/events, stalled connection
+attempts, immediate abort, wrapper fence provenance, and concurrent readers
+alongside shared-worker peer MQTT/keepalive/close progress. Mapping tests cover
+every native field; C behavior tests cover group absence, borrowed views,
+retained lifecycle, output initialization and short/extended records. Unpolled
+driver cancellation and error-source owner release have unit regressions.
+`reconnect_stability` verifies capture publication before delivery of a recovered
+MQTT 5 failure packet blocks. Capture/read cost and retention evidence is recorded
+in [diagnostics measurements](benches/diagnostics.md).

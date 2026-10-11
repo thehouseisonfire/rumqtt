@@ -374,7 +374,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         reason = "Ordered shutdown enables native terminal cleanup"
     )]
     let mut native_cleanup = false;
-    let mut diagnostics = snapshot_v4(&eventloop);
+    let mut diagnostics = shared
+        .cached_native_diagnostics()
+        .map_or_else(DiagnosticsSnapshot::default, |native| native.legacy());
     let shutdown = ShutdownInputs::new(&shared, &completion_rx, &diagnostics_rx);
     let delivery = EventDelivery {
         shared: &shared,
@@ -467,6 +469,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 }
             }
         };
+        if polled.is_some() {
+            diagnostics = snapshot_v4(&eventloop, &shared);
+        }
         // The poll has been dropped, including any pending TLS host future.
         // A destructor failure must survive cancellation and take precedence
         // over completing shutdown successfully.
@@ -514,7 +519,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             connected = false;
             shared.fail_acknowledgements(&error);
             shared.reconnect.abandoned();
-            diagnostics = snapshot_v4(&eventloop);
+            diagnostics = snapshot_v4(&eventloop, &shared);
             shared.notify_progress();
             continue;
         }
@@ -531,7 +536,6 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
             continue;
         }
         shared.notify_progress();
-        diagnostics = snapshot_v4(&eventloop);
         match polled {
             Ok(event) => {
                 if matches!(
@@ -764,62 +768,11 @@ fn map_v4_event(
     }
 }
 
-fn snapshot_v4(eventloop: &rumqttc_v4::EventLoop) -> DiagnosticsSnapshot {
-    let diagnostics = eventloop.diagnostics();
-    DiagnosticsSnapshot {
-        reconnect: None,
-        #[cfg(not(feature = "ordered-shutdown"))]
-        ordered_shutdown: None,
-        #[cfg(feature = "ordered-shutdown")]
-        ordered_shutdown: diagnostics.disconnect_fence_sequence.map(|sequence| {
-            let captured_at = std::time::Instant::now();
-            Box::new(crate::OrderedShutdownDiagnostics {
-                phase: match diagnostics.shutdown_phase {
-                    rumqttc_v4::ShutdownPhase::Open => crate::OrderedShutdownPhase::Open,
-                    rumqttc_v4::ShutdownPhase::AdmittedDrain => {
-                        crate::OrderedShutdownPhase::AdmittedDrain
-                    }
-                    rumqttc_v4::ShutdownPhase::Approaching => {
-                        crate::OrderedShutdownPhase::Approaching
-                    }
-                    rumqttc_v4::ShutdownPhase::Draining => crate::OrderedShutdownPhase::Draining,
-                    rumqttc_v4::ShutdownPhase::Flushing => crate::OrderedShutdownPhase::Flushing,
-                    rumqttc_v4::ShutdownPhase::Completed => crate::OrderedShutdownPhase::Completed,
-                    rumqttc_v4::ShutdownPhase::TimedOut => crate::OrderedShutdownPhase::TimedOut,
-                    rumqttc_v4::ShutdownPhase::Failed => crate::OrderedShutdownPhase::Failed,
-                },
-                fence_sequence: Some(sequence),
-                remaining_at_capture: diagnostics
-                    .disconnect_deadline
-                    .map(|deadline| deadline.saturating_duration_since(captured_at)),
-                local_queued_publishes: diagnostics.ordered_local_queued_publishes,
-                captured_at,
-            })
-        }),
-        connack: diagnostics
-            .session
-            .connack
-            .map(|session| crate::ConnAckSessionDiagnostics {
-                raw_session_present: session.raw_session_present,
-                session_resumed: session.session_resumed,
-                diagnostic: session.diagnostic.and_then(|diagnostic| match diagnostic {
-                    rumqttc_v4::ConnAckDiagnostic::SessionPresentMismatchAcceptedAsClean => {
-                        Some(crate::ConnAckDiagnostic::SessionPresentMismatchAcceptedAsClean)
-                    }
-                    _ => None,
-                }),
-            }),
-        connected: diagnostics.connected,
-        disconnecting: diagnostics.disconnecting,
-        pending_requests: diagnostics.queues.pending_len,
-        queued_requests: diagnostics.queues.requests_rx_len
-            + diagnostics.queues.control_requests_rx_len,
-        inflight_publishes: diagnostics.outbound.inflight,
-        max_inflight_publishes: diagnostics.outbound.max_inflight,
-        pending_subscribes: diagnostics.outbound.pending_subscribe,
-        pending_unsubscribes: diagnostics.outbound.pending_unsubscribe,
-        outbound_drained: diagnostics.outbound.outbound_drained,
-    }
+fn snapshot_v4(eventloop: &rumqttc_v4::EventLoop, shared: &Shared) -> DiagnosticsSnapshot {
+    let native = crate::NativeDiagnosticsSnapshot::v4(&eventloop.diagnostics());
+    let legacy = native.legacy();
+    shared.publish_native_diagnostics(native);
+    legacy
 }
 
 pub const fn publish_options(command: &PublishCommand) -> rumqttc_v4::PublishOptions {

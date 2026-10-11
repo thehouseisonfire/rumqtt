@@ -314,6 +314,12 @@ impl Controller {
         self.state.lock().snapshot(now())
     }
 
+    pub(crate) fn diagnostic_snapshot(&self) -> ReconnectDiagnostics {
+        let mut value = self.snapshot();
+        value.last_failure = value.last_failure.as_ref().map(Error::diagnostic_copy);
+        value
+    }
+
     pub(crate) fn classified(&self) -> bool {
         matches!(self.state.lock().policy, ReconnectPolicy::Classified(_))
     }

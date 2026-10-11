@@ -190,6 +190,7 @@ impl DriverTerminal {
             recovery_interrupted || matches!(terminal, TerminalStatus::Closed { .. }),
         );
         self.shared.fail_all_operations(&unresolved);
+        self.shared.terminate_diagnostics();
         let _ = sender.send(terminal);
     }
 }
@@ -780,6 +781,7 @@ impl NativeClient {
         );
         shared.set_configuration(configuration.control.clone());
         shared.set_protocol_admission_state(session_expiry_zero, reauthentication_enabled);
+        shared.publish_native_diagnostics(driver.capture_diagnostics());
         let context = DriverContext {
             shared: Arc::clone(&shared),
             completion_rx,
@@ -1183,6 +1185,27 @@ pub fn overflow_error() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpolled_driver_cancellation_retains_initial_diagnostic_capture() {
+        for config in [
+            ClientConfig::v4("unpolled", "localhost", 1883),
+            ClientConfig::v5("unpolled", "localhost", 1883),
+        ] {
+            let prepared = NativeClient::prepare(config).unwrap();
+            let before = prepared.handle.diagnostics_snapshot();
+            let native = before.native.unwrap();
+            assert_eq!(native.generation, 1);
+            assert!(!before.terminated);
+            let handle = prepared.handle;
+            drop(prepared.driver);
+            let after = handle.diagnostics_snapshot();
+            assert!(after.terminated);
+            assert_eq!(after.lifecycle, crate::LifecycleState::Failed);
+            assert!(Arc::ptr_eq(&native, after.native.as_ref().unwrap()));
+            assert!(!native.disconnect_complete);
+        }
+    }
 
     #[test]
     #[allow(

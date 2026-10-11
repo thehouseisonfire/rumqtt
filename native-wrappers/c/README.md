@@ -127,6 +127,79 @@ free attempt or new operation deadline. See the
 [operator example](examples/session_recovery.c) and
 [file-store administration scope](../../TODO39.md).
 
+## Structured diagnostic snapshots
+
+`rumqttc_client_diagnostics_snapshot()` synchronously acquires an owned
+`rumqttc_diagnostics_snapshot_t`. It does not enqueue driver work, acquire MQTT
+state, drain events, start an attempt, or cancel a pending poll. Acquisition is
+available during network waits, blocked event delivery, closing, and after driver
+termination while the client handle remains alive. Destroy it with
+`rumqttc_diagnostics_snapshot_destroy()`; already acquired snapshots survive
+client destruction and do not retain client/callback owners. Concurrent readers
+must finish before snapshot destruction.
+
+Initialize accessor records with their `_INIT` macros. `_status()` exposes
+protocol, wrapper lifecycle, termination, native connection flags, native capture
+generation/age, and snapshot age. `_group_info()` reports explicit availability,
+source, identifier, and monotonic age. Available zero is distinct from absent.
+Unknown group identifiers are invalid arguments. Feature-disabled or
+protocol-inapplicable groups remain callable and report absence; ordered records
+use `present=0`, with the precise reason available through group metadata.
+Ordered availability follows the C crate's `ordered-shutdown` feature even if
+wrapper-core enables it independently through dependency feature selection.
+Failed accessors clear the declared known output prefix, preserve `struct_size`,
+and leave future extension bytes untouched. Durations saturate at `UINT64_MAX`.
+
+| Accessor/group | Meaning |
+| --- | --- |
+| `_queues()` | Replay, scheduler, normal/control channels, immediate shutdown; `pending_len` is replay + scheduler and must not be added again |
+| `_outbound()` | Inflight/current limit, identifier reservations, collision/window flags, pending subscriptions, outgoing publish/PUBREL/replay/notices, and inbound ACK tracking |
+| `_session()` | Store configured/loaded/clear-pending, identity agreement, optional raw/effective CONNACK semantics and compatibility reason; v5 broker-only resume has its own presence flag |
+| `_batching()` | Configured read size (zero selects adaptive), effective read size, and request batch limit at native capture |
+| `_redirect()` | v5 policy/lifecycle/attempts, optional limit/reason, approved reference and optional SRV owner, target and one-based candidate position |
+| `_ordered_native()` | Optional native phase/fence/deadline/local covered queue observation; phase Open is available before a fence exists |
+| `_ordered_wrapper()` | Independently sampled wrapper fence admission/terminal result; never a fresh native queue count |
+| `_reconnect()` / `_last_failure()` | Existing retry fields and an independently owned typed last-failure summary; its message is the fixed error code, with no arbitrary source text |
+| `_configuration()` | Existing desired/effective revisions and connection-attempt/activation observations, including independently dated effective batching and connection samples |
+
+Outbound counts overlap: notices are subsets of corresponding flows, replay
+counts overlap retained PUBREL state, and inbound acknowledgement tracking is
+excluded from `DRAINED`. Queue depths and `DRAINED` do not prove tracked operation
+or ordered-fence completion. Store identity agreement does not prove broker
+session resumption. Session and redirect optional values require their named
+presence flags. Redirect strings borrow from the snapshot until destruction;
+copy them for a longer lifetime. Approved references retain the existing redirect
+API disclosure contract and may contain application-selected WebSocket resources;
+apply the application's diagnostic-data policy before logging them.
+
+Native data is captured during preparation and after completed polls, before
+application event delivery. Its generation starts at one, advances only on native
+publication, and saturates rather than wraps. Pending polls can leave it stale
+indefinitely, including idle connections with keepalive disabled. A fresh snapshot
+assembly does not refresh native age or generation. Wrapper termination retains
+the last native capture; it does not assert native disconnect completion. All
+observed values, including lifecycle, remain frozen in a retained snapshot, while
+ages continue increasing. Acquire again to observe later wrapper status.
+
+Producer channel lengths are sequential observations, not transactional counts.
+Retry/configuration/fence groups are sampled independently of native data and of
+each other. Their identifiers are retry cycle count, configuration revision,
+effective tuning revision, connection attempt, or wrapper fence sequence; they
+are not one common generation. Group metadata exposes each source's own age.
+Configuration's effective batching sample may differ from native batching at a
+later or earlier capture. Ordered deadline values are remaining at capture time,
+not live countdowns. No cross-group atomic consistency or maximum staleness is
+promised.
+
+The library retains one latest native cache, not a snapshot history. Acquisition
+shares immutable native data and copies bounded wrapper observations without
+native tracking scans. Caller-retained snapshots consume caller-owned memory.
+Existing tracked diagnostics admission/completion, record layouts, backpressure,
+and close semantics remain unchanged. See [`examples/diagnostics.c`](examples/diagnostics.c)
+for inspection after client destruction.
+Capture/read cost and retention evidence is recorded in
+[diagnostics measurements](../wrapper-core/benches/diagnostics.md).
+
 ## Shared execution
 
 Dedicated execution remains the default: each started client has its own driver

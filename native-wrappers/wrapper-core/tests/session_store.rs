@@ -315,8 +315,18 @@ fn checkpoint_and_clear_failures_terminate_and_release_the_store() {
                 }
             }
             client.join(Duration::from_secs(3)).unwrap();
+            let diagnostics = client.handle().diagnostics_snapshot();
+            let native = diagnostics.native.as_ref().unwrap();
+            assert!(diagnostics.terminated);
+            assert!(native.session.store_configured);
+            if failure == StoreFailure::Clear {
+                assert!(native.session.store_clear_pending);
+                assert!(native.session.connack.is_none());
+            }
             drop(publish);
             assert!(weak.upgrade().is_none());
+            // The retained diagnostic values must not retain the store registration.
+            assert!(native.session.store_configured);
             broker.join().unwrap();
         }
     }

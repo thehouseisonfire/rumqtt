@@ -5,6 +5,7 @@ pub use tls::build_tls;
 
 mod auth;
 pub mod configuration;
+mod diagnostics;
 mod reconnect;
 mod redirect;
 pub mod session;
@@ -446,6 +447,17 @@ impl BackendClient {
 }
 
 impl BackendDriver {
+    pub(crate) fn capture_diagnostics(&self) -> crate::NativeDiagnosticsSnapshot {
+        match self {
+            Self::V4(driver) => {
+                crate::NativeDiagnosticsSnapshot::v4(&driver.eventloop.diagnostics())
+            }
+            Self::V5(driver) => {
+                crate::NativeDiagnosticsSnapshot::v5(driver.eventloop.diagnostics())
+            }
+        }
+    }
+
     pub(crate) fn set_connection_observation(
         &mut self,
         observation: rumqttc_core::ConnectionObservation,
