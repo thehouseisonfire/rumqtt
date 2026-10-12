@@ -13,6 +13,10 @@
 
 This crate is not a full MQTT client and does not expose the v4 or v5 protocol APIs by itself.
 
+The optional `session-recovery` feature provides internal managed-owner recovery
+coordination. Protocol clients forward it, and native wrappers enable it explicitly.
+It is disabled by default.
+
 ## Terminal transport failures
 
 Socket connectors and custom streams can return

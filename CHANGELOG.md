@@ -188,6 +188,13 @@
 
 ### Fixed
 
+- Rust clients: Make explicit managed-owner session recovery opt-in through the
+  `session-recovery` Cargo feature in the core, v4/v5 clients, and MQTT 5 facade.
+  Default builds compile out recovery state, allocations, identity copies, mutex
+  operations, poll checks, and recovery-only APIs/error variants. Native wrappers
+  explicitly enable the feature to preserve their recovery behavior. Ordinary
+  reconnect and session persistence remain available without it.
+
 - C wrapper: Keep structured native and wrapper ordered-shutdown diagnostic
   records absent when the C crate feature is disabled, including builds that
   independently enable ordered shutdown in wrapper-core. Match group availability

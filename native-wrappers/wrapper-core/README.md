@@ -24,6 +24,11 @@ after success, and treat previously transmitted discarded work as ambiguous.
 Terminal clients require store administration and replacement. See the
 [C contract and operator example](../c/README.md#explicit-session-recovery).
 
+Wrapper-core explicitly enables the clients' `session-recovery` Cargo feature.
+Ordinary Rust client builds leave it disabled and compile out the recovery state
+and polling overhead. Cargo unifies features when a client and wrapper-core share
+the same dependency graph, so those client instances also include recovery support.
+
 The hidden native event-loop recovery methods are coordinated support for this
 managed owner. Calling them without the shared producer/shutdown barrier does not
 provide the wrapper's transaction guarantees.

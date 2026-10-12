@@ -204,7 +204,9 @@ const fn connection_error_kind(error: &ConnectionError) -> &'static str {
         ConnectionError::SessionRestore(_) => "session_restore",
         ConnectionError::BrokerTransportMismatch => "configuration",
         ConnectionError::RequestsDone => "requests_done",
+        #[cfg(feature = "session-recovery")]
         ConnectionError::SessionRecoveryPending => "session_recovery_pending",
+        #[cfg(feature = "session-recovery")]
         ConnectionError::SessionRecoveryInvalid => "session_recovery_invalid",
         ConnectionError::AuthProcessingError => "authentication",
         #[cfg(feature = "websocket")]
@@ -237,7 +239,9 @@ const fn connection_error_kind(error: &ConnectionError) -> &'static str {
         ConnectionError::SessionRestore(_) => "session_restore",
         ConnectionError::BrokerTransportMismatch => "configuration",
         ConnectionError::RequestsDone => "requests_done",
+        #[cfg(feature = "session-recovery")]
         ConnectionError::SessionRecoveryPending => "session_recovery_pending",
+        #[cfg(feature = "session-recovery")]
         ConnectionError::SessionRecoveryInvalid => "session_recovery_invalid",
         ConnectionError::AuthProcessingError => "authentication",
         #[cfg(feature = "websocket")]

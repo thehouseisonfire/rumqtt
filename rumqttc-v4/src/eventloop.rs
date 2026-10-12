@@ -194,8 +194,10 @@ impl SessionSave {
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
+    #[cfg(feature = "session-recovery")]
     #[error("session recovery requires an owner transition")]
     SessionRecoveryPending,
+    #[cfg(feature = "session-recovery")]
     #[error("session recovery identity changed or transition is unavailable")]
     SessionRecoveryInvalid,
     #[cfg(feature = "ordered-shutdown")]
@@ -438,7 +440,9 @@ pub struct RuntimeConfigDiagnostics {
 
 /// Eventloop with all the state of a connection
 pub struct EventLoop {
+    #[cfg(feature = "session-recovery")]
     recovery: Arc<rumqttc_core::session_recovery::SessionRecoveryGate>,
+    #[cfg(feature = "session-recovery")]
     recovery_clean_finished: bool,
     /// Options of the current mqtt connection
     pub mqtt_options: MqttOptions,
@@ -507,6 +511,7 @@ pub enum Event {
     Outgoing(Outgoing),
 }
 
+#[cfg(feature = "session-recovery")]
 #[path = "eventloop_recovery.rs"]
 mod session_recovery;
 
@@ -664,10 +669,12 @@ impl EventLoop {
         let ack_mode = mqtt_options.ack_mode;
 
         Self {
+            #[cfg(feature = "session-recovery")]
             recovery: rumqttc_core::session_recovery::SessionRecoveryGate::new(
                 mqtt_options.client_id(),
                 mqtt_options.session_store_scope().to_owned(),
             ),
+            #[cfg(feature = "session-recovery")]
             recovery_clean_finished: false,
             mqtt_options,
             connection_observation: None,
@@ -719,6 +726,7 @@ impl EventLoop {
     /// > Use [`pending_len`](Self::pending_len) or [`pending_is_empty`](Self::pending_is_empty)
     /// > for observation-only checks.
     pub fn clean(&mut self) {
+        #[cfg(feature = "session-recovery")]
         self.recovery.disconnected(
             self.mqtt_options.client_id(),
             self.mqtt_options.session_store_scope().to_owned(),
@@ -1305,6 +1313,7 @@ impl EventLoop {
         self.session_client_id = Some(self.mqtt_options.client_id());
         self.session_store_key = Some(self.mqtt_options.session_store_key());
         self.network = Some(network);
+        #[cfg(feature = "session-recovery")]
         self.recovery.establish(
             self.mqtt_options.client_id(),
             self.mqtt_options.session_store_scope().to_owned(),
@@ -1471,6 +1480,7 @@ impl EventLoop {
             return self.establish_connection().await;
         }
 
+        #[cfg(feature = "session-recovery")]
         if self.recovery.requested() {
             return Err(ConnectionError::SessionRecoveryPending);
         }

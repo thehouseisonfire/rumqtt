@@ -32,7 +32,12 @@ This crate forwards the MQTT 5 client features from `rumqttc-v5-next`, including
 - `auth-scram`
 - `url`
 - `stream`
+- `session-recovery` (opt-in managed-owner recovery coordination)
 - `tracing`
 - `tracing-log-compat`
+
+`session-recovery` is disabled by default. Without it, the recovery gate and its
+allocations, identity copies, and poll-time checks and locking are compiled out.
+Native wrappers enable it automatically.
 
 See the `rumqttc-v5-next` documentation for the full API and examples.

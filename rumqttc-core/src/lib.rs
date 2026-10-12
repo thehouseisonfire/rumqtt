@@ -23,6 +23,7 @@ mod scheduler;
 pub use connection_observation::{
     AttemptOutcome, ConnectionObservation, ConnectionObservationSnapshot, ConnectionRoute,
 };
+#[cfg(feature = "session-recovery")]
 #[doc(hidden)]
 pub mod session_recovery;
 mod transport_error;

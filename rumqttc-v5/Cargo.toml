@@ -21,6 +21,8 @@ features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+# Opt-in coordination for explicit session abandonment by a managed connection owner.
+session-recovery = ["rumqttc-core/session-recovery"]
 ordered-shutdown = ["rumqttc-core/ordered-shutdown"]
 default = ["use-rustls"]
 bench-instrumentation = ["mqttbytes-v5/bench-instrumentation"]
@@ -211,3 +213,8 @@ required-features = ["tracing-log-compat"]
 name = "tracing_behavior"
 path = "tests/tracing_behavior.rs"
 required-features = ["tracing"]
+
+[[test]]
+name = "session_recovery_redirects"
+path = "tests/session_recovery_redirects.rs"
+required-features = ["session-recovery"]

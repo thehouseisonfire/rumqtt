@@ -266,8 +266,10 @@ jobs:
             fi
             echo "Mutually-exclusive rustls provider feature guards failed as expected."
 
-      - name: Verify cross-crate transport feature isolation
+      - name: Verify cross-crate feature isolation
         run: |
+            cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v5-next/session-recovery
+            cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v4-next/session-recovery
             cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v5-next/websocket
             cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v4-next/websocket
             cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features --features "rumqttc-v4-next/use-rustls-ring rumqttc-v5-next/use-rustls-aws-lc"
@@ -276,6 +278,8 @@ jobs:
       - name: Verify rumqttc-next feature forwarding
         run: |
             cargo check -p rumqttc-next --no-default-features --features ordered-shutdown
+            cargo check -p rumqttc-next --no-default-features --features session-recovery
+            cargo check -p rumqttc-next --no-default-features --features "session-recovery,ordered-shutdown,tracing"
             cargo check -p rumqttc-next --no-default-features --features websocket
             cargo check -p rumqttc-next --no-default-features --features use-native-tls
             cargo check -p rumqttc-next --no-default-features --features "auth-scram,url"

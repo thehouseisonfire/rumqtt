@@ -41,6 +41,15 @@ rumqttc_v5 = { package = "rumqttc-v5-next", version = "0.34.0-alpha" }
 Import them through those names, for example `use rumqttc_v4::MqttOptions` and
 `use rumqttc_v5::MqttOptions`.
 
+## Optional session recovery
+
+The `session-recovery` Cargo feature enables the hidden event-loop coordination API
+for explicit session abandonment by managed connection owners. It is disabled by
+default: builds without it omit the recovery gate and its allocations, identity
+copies, poll-time checks, and locking. Ordinary reconnect and session persistence do not
+require this feature. Native wrappers enable it automatically and provide the
+producer/shutdown coordination required by the recovery API.
+
 ## Examples
 
 A simple synchronous publish and subscribe

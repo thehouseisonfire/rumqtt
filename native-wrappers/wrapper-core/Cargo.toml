@@ -51,16 +51,33 @@ x509-parser = { version = "0.18.1", default-features = false, optional = true }
 rustls-webpki = { version = "0.103.12", default-features = false, features = ["std"], optional = true }
 sha2 = { version = "0.11", optional = true }
 rustls = { version = "0.23.40", default-features = false, features = ["std"], optional = true }
-rumqttc-core-next = { path = "../../rumqttc-core", version = "0.34.0-alpha", default-features = false }
 scram = { package = "scram-rs", version = "0.24.0", default-features = false, features = ["std"], optional = true }
 thiserror = "2.0.8"
 tokio = { version = "1.40", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "io-util"] }
 tokio-socks = { version = "0.5.3", optional = true }
-rumqttc_v4 = { package = "rumqttc-v4-next", path = "../../rumqttc-v4", version = "0.34.0-alpha", default-features = false }
-rumqttc_v5 = { package = "rumqttc-v5-next", path = "../../rumqttc-v5", version = "0.34.0-alpha", default-features = false }
 native-tls = { version = "0.2.18", optional = true, features = ["alpn"] }
 http = { version = "1", optional = true }
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std", "attributes"] }
+
+[dependencies.rumqttc-core-next]
+path = "../../rumqttc-core"
+version = "0.34.0-alpha"
+default-features = false
+features = ["session-recovery"]
+
+[dependencies.rumqttc_v4]
+package = "rumqttc-v4-next"
+path = "../../rumqttc-v4"
+version = "0.34.0-alpha"
+default-features = false
+features = ["session-recovery"]
+
+[dependencies.rumqttc_v5]
+package = "rumqttc-v5-next"
+path = "../../rumqttc-v5"
+version = "0.34.0-alpha"
+default-features = false
+features = ["session-recovery"]
 
 [target.'cfg(not(any(target_os = "windows", target_vendor = "apple")))'.dependencies]
 # The same OpenSSL build as native-tls; metadata gates enforceable version bounds.

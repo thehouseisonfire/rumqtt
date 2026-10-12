@@ -227,8 +227,10 @@ impl SessionSave {
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
+    #[cfg(feature = "session-recovery")]
     #[error("session recovery requires an owner transition")]
     SessionRecoveryPending,
+    #[cfg(feature = "session-recovery")]
     #[error("session recovery identity changed or transition is unavailable")]
     SessionRecoveryInvalid,
     #[cfg(feature = "ordered-shutdown")]
@@ -534,6 +536,7 @@ enum PendingServerRedirect {
 
 /// Eventloop with all the state of a connection
 pub struct EventLoop {
+    #[cfg(feature = "session-recovery")]
     recovery: Arc<rumqttc_core::session_recovery::SessionRecoveryGate>,
     /// Options of the current mqtt connection
     pub options: MqttOptions,
@@ -676,6 +679,7 @@ impl Drop for EventLoop {
     }
 }
 
+#[cfg(feature = "session-recovery")]
 #[path = "eventloop_recovery.rs"]
 mod session_recovery;
 
@@ -956,6 +960,7 @@ impl EventLoop {
         state.set_async_authenticator(options.async_authenticator());
 
         Self {
+            #[cfg(feature = "session-recovery")]
             recovery: rumqttc_core::session_recovery::SessionRecoveryGate::new(
                 options.client_id(),
                 options.session_store_scope().to_owned(),
@@ -1122,6 +1127,7 @@ impl EventLoop {
     }
 
     fn clean_with_notice_reason(&mut self, reason: NoticeFailureReason) {
+        #[cfg(feature = "session-recovery")]
         self.recovery.disconnected(
             self.options.client_id(),
             self.options.session_store_scope().to_owned(),
@@ -2010,6 +2016,7 @@ impl EventLoop {
         self.redirect_visited.clear();
         // Cleanup recorded the target identity before the origin profile was restored.
         // Refresh disconnected admission; the gate retains an already admitted recovery's pin.
+        #[cfg(feature = "session-recovery")]
         self.recovery.disconnected(
             self.options.client_id(),
             self.options.session_store_scope().to_owned(),
@@ -2116,6 +2123,7 @@ impl EventLoop {
             .set_async_authenticator(self.options.async_authenticator());
         // Recovery admitted after profile acceptance belongs to the target identity.
         // A recovery already admitted during the transition keeps its original pin.
+        #[cfg(feature = "session-recovery")]
         self.recovery.disconnected(
             self.options.client_id(),
             self.options.session_store_scope().to_owned(),
@@ -2515,6 +2523,7 @@ impl EventLoop {
                     if let ConnectionError::Redirect(redirect) = failure.error {
                         // Recovery pins identity/store scope; never apply a redirect profile
                         // while its producer barrier is held, including an active candidate.
+                        #[cfg(feature = "session-recovery")]
                         if self.recovery.requested() {
                             return Err(ConnectionError::SessionRecoveryInvalid);
                         }
@@ -2573,6 +2582,7 @@ impl EventLoop {
             self.session_store_key = Some(self.options.session_store_key());
         }
         self.network = Some(network);
+        #[cfg(feature = "session-recovery")]
         self.recovery.establish(
             self.options.client_id(),
             self.options.session_store_scope().to_owned(),
@@ -2965,6 +2975,7 @@ impl EventLoop {
             }
         }
 
+        #[cfg(feature = "session-recovery")]
         if self.recovery.requested() {
             return Err(ConnectionError::SessionRecoveryPending);
         }
