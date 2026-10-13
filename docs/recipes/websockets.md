@@ -52,6 +52,12 @@ Compile-checked example:
 
 Do not log secrets from request modifiers.
 
+Both request modifier APIs receive `WebSocketRequestContext` in the request's
+HTTP extensions. It contains the configured broker, dial target, TLS authority,
+and original connection deadline; changing the request URI does not change
+these transport choices. Context is constructed only when a modifier is invoked,
+so connections without modifiers avoid its allocations.
+
 ## Native wrapper token refresh
 
 Wrapper-core supports an owned asynchronous `WebSocketHandshake` authority;

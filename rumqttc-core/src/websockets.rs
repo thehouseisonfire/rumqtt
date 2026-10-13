@@ -2,7 +2,7 @@
 
 use http::{Response, header::ToStrError};
 
-/// Owned routing and deadline metadata attached to each prepared client request.
+/// Owned routing and deadline metadata attached to requests passed to WebSocket request modifiers.
 ///
 /// URI edits do not change these transport choices. `dial_target` names the proxy
 /// endpoint when a proxy is configured, otherwise the broker endpoint. It includes

@@ -4257,14 +4257,86 @@ async fn connect(
     Ok((network, connack))
 }
 
+#[cfg(feature = "websocket")]
+fn websocket_request_context(
+    options: &MqttOptions,
+    domain: &str,
+    port: u16,
+    tls_authority: Option<&str>,
+    deadline: Option<std::time::Instant>,
+) -> crate::WebSocketRequestContext {
+    let (dial_host, dial_port) = (domain, port);
+    #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
+    let (dial_host, dial_port) = options
+        .proxy
+        .as_ref()
+        .map_or((dial_host, dial_port), |proxy| (proxy.host(), proxy.port()));
+    #[cfg(not(any(feature = "http-proxy", feature = "socks-proxy")))]
+    let _ = options;
+
+    crate::WebSocketRequestContext {
+        broker_host: domain.to_owned(),
+        broker_port: port,
+        dial_target: socket_address(dial_host, dial_port),
+        tls_authority: tls_authority.map(str::to_owned),
+        deadline,
+    }
+}
+
+#[cfg(feature = "websocket")]
+async fn prepare_websocket_request(
+    options: &MqttOptions,
+    domain: &str,
+    port: u16,
+    tls_authority: Option<&str>,
+    deadline: Option<std::time::Instant>,
+) -> Result<http::Request<()>, ConnectionError> {
+    let mut request = options
+        .broker()
+        .websocket_url()
+        .ok_or(ConnectionError::BrokerTransportMismatch)?
+        .into_client_request()?;
+    request
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
+
+    if let Some(request_modifier) = options.fallible_request_modifier() {
+        request.extensions_mut().insert(websocket_request_context(
+            options,
+            domain,
+            port,
+            tls_authority,
+            deadline,
+        ));
+        request_modifier(request)
+            .await
+            .map_err(ConnectionError::RequestModifier)
+    } else if let Some(request_modifier) = options.request_modifier() {
+        request.extensions_mut().insert(websocket_request_context(
+            options,
+            domain,
+            port,
+            tls_authority,
+            deadline,
+        ));
+        Ok(request_modifier(request).await)
+    } else {
+        Ok(request)
+    }
+}
+
 #[expect(clippy::too_many_lines)]
 async fn network_connect(
     options: &MqttOptions,
     network_options: crate::NetworkOptions,
 ) -> Result<Network, ConnectionError> {
     let max_incoming_pkt_size = options.max_incoming_packet_size();
-    #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
-    let tls_deadline = network_options.connection_deadline();
+    #[cfg(any(
+        feature = "websocket",
+        feature = "use-rustls-no-provider",
+        feature = "use-native-tls"
+    ))]
+    let connection_deadline = network_options.connection_deadline();
     let transport = options.transport();
 
     // Process Unix files early, as proxy is not supported for them.
@@ -4306,28 +4378,6 @@ async fn network_connect(
             .ok_or(ConnectionError::BrokerTransportMismatch)?,
     };
 
-    #[cfg(feature = "websocket")]
-    let websocket_context = crate::WebSocketRequestContext {
-        broker_host: domain.clone(),
-        broker_port: port,
-        dial_target: {
-            #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
-            if let Some(proxy) = options.proxy() {
-                socket_address(proxy.host(), proxy.port())
-            } else {
-                socket_address(&domain, port)
-            }
-            #[cfg(not(any(feature = "http-proxy", feature = "socks-proxy")))]
-            socket_address(&domain, port)
-        },
-        tls_authority: if matches!(&transport, Transport::Ws) {
-            None
-        } else {
-            Some(domain.clone())
-        },
-        deadline: network_options.connection_deadline(),
-    };
-
     let tcp_stream: Box<dyn AsyncReadWrite> = {
         #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
         if let Some(proxy) = options.proxy() {
@@ -4363,7 +4413,7 @@ async fn network_connect(
                 port,
                 &tls_config,
                 tcp_stream,
-                tls_deadline,
+                connection_deadline,
             )
             .await?;
             Network::new(socket, max_incoming_pkt_size)
@@ -4372,24 +4422,9 @@ async fn network_connect(
         Transport::Unix => unreachable!(),
         #[cfg(feature = "websocket")]
         Transport::Ws => {
-            let mut request = options
-                .broker()
-                .websocket_url()
-                .ok_or(ConnectionError::BrokerTransportMismatch)?
-                .into_client_request()?;
-            request
-                .headers_mut()
-                .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
-
-            request.extensions_mut().insert(websocket_context.clone());
-
-            if let Some(request_modifier) = options.fallible_request_modifier() {
-                request = request_modifier(request)
-                    .await
-                    .map_err(ConnectionError::RequestModifier)?;
-            } else if let Some(request_modifier) = options.request_modifier() {
-                request = request_modifier(request).await;
-            }
+            let request =
+                prepare_websocket_request(options, &domain, port, None, connection_deadline)
+                    .await?;
 
             let (socket, response) =
                 async_tungstenite::tokio::client_async(request, tcp_stream).await?;
@@ -4402,31 +4437,21 @@ async fn network_connect(
             feature = "websocket"
         ))]
         Transport::Wss(tls_config) => {
-            let mut request = options
-                .broker()
-                .websocket_url()
-                .ok_or(ConnectionError::BrokerTransportMismatch)?
-                .into_client_request()?;
-            request
-                .headers_mut()
-                .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
-
-            request.extensions_mut().insert(websocket_context.clone());
-
-            if let Some(request_modifier) = options.fallible_request_modifier() {
-                request = request_modifier(request)
-                    .await
-                    .map_err(ConnectionError::RequestModifier)?;
-            } else if let Some(request_modifier) = options.request_modifier() {
-                request = request_modifier(request).await;
-            }
+            let request = prepare_websocket_request(
+                options,
+                &domain,
+                port,
+                Some(&domain),
+                connection_deadline,
+            )
+            .await?;
 
             let tls_stream = tls::tls_connect_with_deadline(
                 &domain,
                 port,
                 &tls_config,
                 tcp_stream,
-                tls_deadline,
+                connection_deadline,
             )
             .await?;
             let (socket, response) =

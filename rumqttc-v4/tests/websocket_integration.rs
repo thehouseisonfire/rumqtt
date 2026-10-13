@@ -1,5 +1,8 @@
 #![cfg(feature = "websocket")]
 
+#[path = "support/websocket_request_context.rs"]
+mod request_context;
+
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 #[cfg(feature = "use-native-tls")]
@@ -95,6 +98,7 @@ fn encode_packet(packet: Packet) -> Vec<u8> {
     buffer.to_vec()
 }
 
+#[expect(clippy::result_large_err, reason = "tungstenite callback API")]
 fn websocket_handshake_callback(
     request: &Request,
     mut response: Response,

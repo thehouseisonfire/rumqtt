@@ -1,5 +1,8 @@
 #![cfg(feature = "websocket")]
 
+#[path = "support/websocket_request_context.rs"]
+mod request_context;
+
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 #[cfg(feature = "use-native-tls")]
