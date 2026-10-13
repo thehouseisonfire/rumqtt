@@ -535,6 +535,7 @@ enum PendingServerRedirect {
 }
 
 /// Eventloop with all the state of a connection
+#[allow(clippy::struct_excessive_bools)]
 pub struct EventLoop {
     #[cfg(feature = "session-recovery")]
     recovery: Arc<rumqttc_core::session_recovery::SessionRecoveryGate>,
@@ -708,17 +709,22 @@ impl EventLoop {
     }
 
     fn observe_configuration_route(&self) {
-        let route = if let Some(active) = &self.active_redirect {
-            if active.outcome.reason == RedirectReason::UseAnotherServer {
-                crate::ConnectionRoute::TemporaryTarget
-            } else {
-                crate::ConnectionRoute::PermanentTarget
-            }
-        } else if self.configuration_origin {
-            crate::ConnectionRoute::Origin
-        } else {
-            crate::ConnectionRoute::PermanentTarget
-        };
+        let route = self.active_redirect.as_ref().map_or_else(
+            || {
+                if self.configuration_origin {
+                    crate::ConnectionRoute::Origin
+                } else {
+                    crate::ConnectionRoute::PermanentTarget
+                }
+            },
+            |active| {
+                if active.outcome.reason == RedirectReason::UseAnotherServer {
+                    crate::ConnectionRoute::TemporaryTarget
+                } else {
+                    crate::ConnectionRoute::PermanentTarget
+                }
+            },
+        );
         if let Some(observation) = &self.connection_observation {
             observation.set_route(route);
         }
@@ -1543,6 +1549,7 @@ impl EventLoop {
         if self.options.session_store().is_some() && !self.options.clean_start() {
             // Resetting the previous session can release reservations and wake producers.
             // Close admission first so they cannot take the target checkpoint's capacity.
+            #[cfg(feature = "bounded-publish")]
             self.begin_publish_recovery();
         }
         if self.session_store_key.is_some() {
@@ -1558,12 +1565,14 @@ impl EventLoop {
             .reconcile_outgoing_tracking_capacity(self.pending.is_empty());
     }
 
+    #[cfg(feature = "bounded-publish")]
     fn begin_publish_recovery(&self) {
         if let Some(admission) = &self.publish_admission {
             admission.begin_recovery();
         }
     }
 
+    #[cfg(feature = "bounded-publish")]
     fn finish_publish_recovery(&self) {
         if let Some(budget) = self
             .publish_admission
@@ -1577,11 +1586,13 @@ impl EventLoop {
     fn restore_publish_replay(
         &mut self,
         session: &crate::PersistedSession,
-    ) -> Result<Vec<RequestEnvelope>, crate::SessionRestoreError> {
+    ) -> Result<(), crate::SessionRestoreError> {
+        #[cfg(feature = "bounded-publish")]
         let budget = self
             .publish_admission
             .as_ref()
             .and_then(|admission| admission.budget.as_ref());
+        #[cfg(feature = "bounded-publish")]
         let mut reservations = if let Some(budget) = budget {
             let costs = session
                 .replay
@@ -1595,38 +1606,42 @@ impl EventLoop {
         let replay = self
             .state
             .restore_persisted_session(&self.options, session)?;
-        Ok(replay
-            .into_iter()
-            .map(|request| {
-                let mut envelope = RequestEnvelope::plain_replay(request);
-                if budget.is_some()
-                    && matches!(envelope.request, Request::Publish(_) | Request::PubRel(_))
-                {
-                    let mut notice = PublishNoticeTx::internal();
-                    notice.reserve(reservations.next());
-                    notice.mark_transmission_started();
-                    envelope.notice = Some(TrackedNoticeTx::Publish(notice));
-                }
-                envelope
-            })
-            .collect())
+        self.pending.extend(replay.into_iter().map(|request| {
+            let envelope = RequestEnvelope::plain_replay(request);
+            #[cfg(feature = "bounded-publish")]
+            let mut envelope = envelope;
+            #[cfg(feature = "bounded-publish")]
+            if budget.is_some()
+                && matches!(envelope.request, Request::Publish(_) | Request::PubRel(_))
+            {
+                let mut notice = PublishNoticeTx::internal();
+                notice.reserve(reservations.next());
+                notice.mark_transmission_started();
+                envelope.notice = Some(TrackedNoticeTx::Publish(notice));
+            }
+            envelope
+        }));
+        Ok(())
     }
 
     async fn load_persisted_session_if_needed(&mut self) -> Result<(), ConnectionError> {
         if self.session_store.clear_pending {
             self.clear_persisted_session().await?;
+            #[cfg(feature = "bounded-publish")]
             self.finish_publish_recovery();
             return Ok(());
         }
 
         if self.session_store.loaded || self.options.clean_start() {
             self.session_store.loaded = true;
+            #[cfg(feature = "bounded-publish")]
             self.finish_publish_recovery();
             return Ok(());
         }
 
         let Some(store) = self.options.session_store() else {
             self.session_store.loaded = true;
+            #[cfg(feature = "bounded-publish")]
             self.finish_publish_recovery();
             self.session_store.clear_pending = false;
             return Ok(());
@@ -1636,6 +1651,7 @@ impl EventLoop {
         let client_id = key.client_id().to_owned();
         // Every fresh load owns recovery admission, including loads caused by public
         // option changes or retried after cancellation/error. No lock crosses the await.
+        #[cfg(feature = "bounded-publish")]
         self.begin_publish_recovery();
         let Some(session) = store
             .load(&key)
@@ -1643,17 +1659,20 @@ impl EventLoop {
             .map_err(ConnectionError::SessionStore)?
         else {
             self.session_store.loaded = true;
+            #[cfg(feature = "bounded-publish")]
             self.finish_publish_recovery();
             return Ok(());
         };
 
-        let replay = self.restore_publish_replay(&session)?;
         #[cfg(feature = "tracing")]
-        let replay_count = replay.len();
-        self.pending.extend(replay);
+        let previous_pending = self.pending.len();
+        self.restore_publish_replay(&session)?;
+        #[cfg(feature = "tracing")]
+        let replay_count = self.pending.len() - previous_pending;
         self.session_client_id = Some(client_id);
         self.session_store_key = Some(key);
         self.session_store.loaded = true;
+        #[cfg(feature = "bounded-publish")]
         self.finish_publish_recovery();
         #[cfg(feature = "tracing")]
         crate::instrumentation::session_restored(
@@ -1980,6 +1999,7 @@ impl EventLoop {
             return Ok(());
         };
         let admission = self.publish_admission.clone();
+        #[cfg(feature = "bounded-publish")]
         if let Some(budget) = admission
             .as_ref()
             .and_then(|admission| admission.budget.as_ref())
@@ -1997,8 +2017,7 @@ impl EventLoop {
             .set_async_authenticator(self.options.async_authenticator());
         if let Some(origin) = active.origin_session {
             self.reset_session_state_for_redirect();
-            let replay = self.restore_publish_replay(&origin.checkpoint)?;
-            self.pending.extend(replay);
+            self.restore_publish_replay(&origin.checkpoint)?;
             self.session_client_id = origin.session_client_id;
             self.session_store_key = origin.session_store_key;
             self.effective_session_expiry_interval = origin.effective_session_expiry_interval;
@@ -2010,6 +2029,7 @@ impl EventLoop {
         } else {
             self.reset_session_state_for_redirect();
         }
+        #[cfg(feature = "bounded-publish")]
         self.finish_publish_recovery();
         self.redirect_attempts = 0;
         self.redirect_selected_reference = None;
@@ -2042,6 +2062,7 @@ impl EventLoop {
         let _cleanup = admission
             .as_ref()
             .map(|admission| admission.begin_connection_cleanup());
+        #[cfg(feature = "bounded-publish")]
         if !preserve_session
             && matches!(profile.session_policy(), RedirectSession::Reuse { .. })
             && (profile.session_store.is_some() || old_store.is_some())
@@ -4654,7 +4675,29 @@ mod tests {
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
     use tokio::sync::Notify;
 
+    // These sizes are the pre-budget x86-64 layouts. Even an untracked request carries the
+    // inline notice storage, so growing it would penalize feature-off clients.
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        not(feature = "bounded-publish")
+    ))]
+    #[test]
+    fn feature_off_publish_tracking_preserves_compact_request_storage() {
+        #[cfg(not(feature = "ordered-shutdown"))]
+        {
+            assert_eq!(std::mem::size_of::<Option<PublishNoticeTx>>(), 16);
+            assert_eq!(std::mem::size_of::<RequestEnvelope>(), 240);
+        }
+        #[cfg(feature = "ordered-shutdown")]
+        {
+            assert_eq!(std::mem::size_of::<Option<PublishNoticeTx>>(), 32);
+            assert_eq!(std::mem::size_of::<RequestEnvelope>(), 296);
+        }
+    }
+
     #[tokio::test]
+    #[cfg(feature = "bounded-publish")]
     async fn publish_budget_reserves_restored_work_before_opening_admission() {
         use crate::{
             AsyncClient, ClientError, PublishAdmissionPolicy, PublishBudgetError,
@@ -4743,6 +4786,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "bounded-publish")]
     async fn fresh_checkpoint_load_rearms_recovery_without_a_session_key_transition() {
         use crate::{
             AsyncClient, ClientError, PublishBudgetError, PublishBudgetLimits, PublishOptions,
@@ -4792,6 +4836,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "bounded-publish")]
     async fn restored_pubrel_counts_as_outstanding_publish_and_failed_preflight_is_atomic() {
         use crate::{AsyncClient, PublishBudgetLimits};
         let store = CapturingSessionStore::new();
@@ -13626,6 +13671,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bounded-publish")]
     fn redirect_store_replacement_requires_publish_recovery_even_with_the_same_scope() {
         for replace_store in [false, true] {
             let origin: Arc<dyn crate::SessionStore> = Arc::new(CapturingSessionStore::new());
@@ -13647,6 +13693,7 @@ mod tests {
                 })
                 .build();
             eventloop.session_store.loaded = true;
+            #[cfg(feature = "bounded-publish")]
             eventloop.finish_publish_recovery();
             let reference = crate::redirect::parse_server_references(Some("backup.example"))
                 .unwrap()

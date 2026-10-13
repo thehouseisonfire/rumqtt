@@ -690,3 +690,8 @@ outputs retain their existing behavior. See the
 overlapping counts, provenance, and ownership rules.
 Capture/read cost and retention evidence is recorded in
 [diagnostics measurements](benches/diagnostics.md).
+
+Wrapper-core enables the MQTT 5 client's `bounded-publish` feature automatically,
+including builds without wrapper default features. Direct Rust client users opt in
+to this feature for publish budgets and detailed transmission outcomes; wrapper
+admission defaults and capacity reclamation are unchanged.

@@ -91,6 +91,8 @@ pub struct SessionRecoveryGate {
     changed: Notify,
 }
 impl SessionRecoveryGate {
+    // Preserve the existing constructor's warning behavior for downstream callers.
+    #[allow(clippy::must_use_candidate)]
     pub fn new(client_id: String, scope: String) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {

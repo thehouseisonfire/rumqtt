@@ -7,6 +7,7 @@ use tokio::sync::Notify;
 
 use crate::mqttbytes::QoS;
 use crate::mqttbytes::v5::{ConnAck, Publish};
+#[cfg(feature = "bounded-publish")]
 use crate::publish_budget::{
     PublishBudget, PublishBudgetError, PublishBudgetLimits, PublishReservation, publish_charge,
 };
@@ -41,12 +42,14 @@ pub enum PublishAdmissionError {
 }
 
 /// Change notification for capabilities, recovery, publish budget or request-channel capacity.
+#[cfg(feature = "bounded-publish")]
 #[derive(Clone)]
 pub struct PublishAdmissionWaiter {
     progress: Arc<PublishProgress>,
     revision: u64,
 }
 
+#[cfg(feature = "bounded-publish")]
 impl fmt::Debug for PublishAdmissionWaiter {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -57,12 +60,14 @@ impl fmt::Debug for PublishAdmissionWaiter {
 }
 
 /// Separate lock from capability state: terminal senders can release capacity during cleanup.
+#[cfg(feature = "bounded-publish")]
 #[derive(Debug, Default)]
 pub struct PublishProgress {
     revision: Mutex<u64>,
     changed: Notify,
     changed_blocking: Condvar,
 }
+#[cfg(feature = "bounded-publish")]
 impl PublishProgress {
     pub(crate) fn notify(&self) {
         let mut revision = self
@@ -75,6 +80,7 @@ impl PublishProgress {
         self.changed_blocking.notify_all();
     }
 }
+#[cfg(feature = "bounded-publish")]
 impl PublishAdmissionWaiter {
     /// Wait for capability, recovery, retained-work capacity or channel progress.
     /// Cancelling this wait never admits a request.
@@ -110,6 +116,63 @@ impl PublishAdmissionWaiter {
     }
 }
 
+/// Change notification returned when strict admission needs an active connection's capabilities.
+#[cfg(not(feature = "bounded-publish"))]
+#[derive(Clone)]
+pub struct PublishAdmissionWaiter {
+    admission: Arc<ManagedPublishAdmission>,
+    revision: u64,
+}
+
+#[cfg(not(feature = "bounded-publish"))]
+impl fmt::Debug for PublishAdmissionWaiter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PublishAdmissionWaiter")
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(feature = "bounded-publish"))]
+impl PublishAdmissionWaiter {
+    /// Waits until capability, reconnect, or request-channel progress makes a retry meaningful.
+    ///
+    /// Cancelling this future does not admit a request or change Topic Alias state.
+    pub async fn wait_async(&self) {
+        loop {
+            let changed = self.admission.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self
+                .admission
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .revision
+                != self.revision
+            {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    pub(crate) fn wait_blocking(&self) {
+        let state = self
+            .admission
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(
+            self.admission
+                .changed_blocking
+                .wait_while(state, |state| state.revision == self.revision)
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Capabilities {
     maximum_qos: QoS,
@@ -119,6 +182,8 @@ struct Capabilities {
 
 #[derive(Debug)]
 struct AdmissionState {
+    #[cfg(not(feature = "bounded-publish"))]
+    revision: u64,
     closed: bool,
     generation: u64,
     capabilities: Option<Capabilities>,
@@ -128,15 +193,23 @@ struct AdmissionState {
 #[derive(Debug)]
 pub struct ManagedPublishAdmission {
     state: Mutex<AdmissionState>,
+    #[cfg(feature = "bounded-publish")]
     policy: PublishAdmissionPolicy,
+    #[cfg(feature = "bounded-publish")]
     pub(crate) budget: Option<Arc<PublishBudget>>,
+    #[cfg(feature = "bounded-publish")]
     progress: Arc<PublishProgress>,
+    #[cfg(not(feature = "bounded-publish"))]
+    changed: Notify,
+    #[cfg(not(feature = "bounded-publish"))]
+    changed_blocking: Condvar,
 }
 
 #[derive(Debug)]
 pub enum AdmissionFailure {
     CapabilitiesUnavailable(PublishAdmissionWaiter),
     Rejected(PublishAdmissionError),
+    #[cfg(feature = "bounded-publish")]
     Budget(PublishBudgetError, Option<PublishAdmissionWaiter>),
     Closed,
 }
@@ -154,6 +227,10 @@ impl Drop for ConnectionCleanupGuard<'_> {
             .expect("cleanup guard owns admission state");
         state.capabilities = None;
         state.aliases.clear();
+        #[cfg(not(feature = "bounded-publish"))]
+        {
+            state.revision = state.revision.wrapping_add(1);
+        }
         drop(state);
         self.admission.notify_waiters();
     }
@@ -162,6 +239,7 @@ impl Drop for ConnectionCleanupGuard<'_> {
 impl ManagedPublishAdmission {
     /// Close recovery admission after any producer transaction already in progress.
     /// The lock is released before invoking or awaiting the session store.
+    #[cfg(feature = "bounded-publish")]
     pub(crate) fn begin_recovery(&self) {
         let Some(budget) = &self.budget else {
             return;
@@ -175,15 +253,33 @@ impl ManagedPublishAdmission {
         self.notify_waiters();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, not(feature = "bounded-publish")))]
     pub(crate) fn new() -> Arc<Self> {
-        Self::configured(
-            PublishAdmissionPolicy::RequireNegotiatedCapabilities,
-            None,
-            false,
-        )
+        #[cfg(feature = "bounded-publish")]
+        {
+            Self::configured(
+                PublishAdmissionPolicy::RequireNegotiatedCapabilities,
+                None,
+                false,
+            )
+        }
+        #[cfg(not(feature = "bounded-publish"))]
+        {
+            Arc::new(Self {
+                state: Mutex::new(AdmissionState {
+                    revision: 0,
+                    closed: false,
+                    generation: 0,
+                    capabilities: None,
+                    aliases: HashMap::new(),
+                }),
+                changed: Notify::new(),
+                changed_blocking: Condvar::new(),
+            })
+        }
     }
 
+    #[cfg(feature = "bounded-publish")]
     pub(crate) fn configured(
         policy: PublishAdmissionPolicy,
         limits: Option<PublishBudgetLimits>,
@@ -210,30 +306,89 @@ impl ManagedPublishAdmission {
         publish: &Publish,
         send: impl FnOnce() -> Result<T, E>,
     ) -> Result<Result<T, E>, AdmissionFailure> {
-        self.try_admit_reserved(publish, |_| send())
+        #[cfg(feature = "bounded-publish")]
+        {
+            self.try_admit_reserved(publish, |_| send())
+        }
+        #[cfg(not(feature = "bounded-publish"))]
+        {
+            self.try_admit_reserved(publish, send)
+        }
+    }
+
+    fn validate_capabilities(
+        state: &AdmissionState,
+        publish: &Publish,
+        alias: Option<u16>,
+        capabilities: Capabilities,
+    ) -> Result<(), PublishAdmissionError> {
+        if publish.retain && !capabilities.retain_available {
+            return Err(PublishAdmissionError::RetainUnavailable);
+        }
+        if publish.qos > capabilities.maximum_qos {
+            return Err(PublishAdmissionError::MaximumQos {
+                requested: publish.qos,
+                maximum: capabilities.maximum_qos,
+            });
+        }
+        if let Some(alias) = alias {
+            if alias == 0 {
+                return Err(PublishAdmissionError::TopicAliasZero);
+            }
+            if alias > capabilities.topic_alias_maximum {
+                return Err(PublishAdmissionError::TopicAliasMaximum {
+                    alias,
+                    maximum: capabilities.topic_alias_maximum,
+                });
+            }
+            if publish.topic.is_empty() && !state.aliases.contains_key(&alias) {
+                return Err(PublishAdmissionError::TopicAliasUnmapped(alias));
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn try_admit_reserved<T, E>(
         self: &Arc<Self>,
         publish: &Publish,
-        send: impl FnOnce(Option<PublishReservation>) -> Result<T, E>,
+        #[cfg(feature = "bounded-publish")] send: impl FnOnce(
+            Option<PublishReservation>,
+        ) -> Result<T, E>,
+        #[cfg(not(feature = "bounded-publish"))] send: impl FnOnce() -> Result<T, E>,
     ) -> Result<Result<T, E>, AdmissionFailure> {
-        let progress = self.waiter();
-        let bytes = self
-            .budget
-            .as_ref()
-            .map(|budget| budget.check_size(publish_charge(publish)))
-            .transpose()
-            .map_err(|reason| AdmissionFailure::Budget(reason, None))?;
-        let reserve = || {
-            self.budget
+        #[cfg(feature = "bounded-publish")]
+        let progress = self.budget.as_ref().map(|_| self.waiter());
+        #[cfg(feature = "bounded-publish")]
+        let send = {
+            let reservation_progress = progress.clone();
+            let bytes = self
+                .budget
                 .as_ref()
-                .map(|budget| budget.reserve(bytes.expect("budget charge exists")))
+                .map(|budget| budget.check_size(publish_charge(publish)))
                 .transpose()
-                .map_err(|reason| {
-                    AdmissionFailure::Budget(reason, reason.can_wait().then(|| progress.clone()))
-                })
+                .map_err(|reason| AdmissionFailure::Budget(reason, None))?;
+            let reserve = move || {
+                self.budget
+                    .as_ref()
+                    .map(|budget| budget.reserve(bytes.expect("budget charge exists")))
+                    .transpose()
+                    .map_err(|reason| {
+                        AdmissionFailure::Budget(
+                            reason,
+                            reason.can_wait().then(|| {
+                                reservation_progress
+                                    .as_ref()
+                                    .expect("budget progress exists")
+                                    .clone()
+                            }),
+                        )
+                    })
+            };
+            move || Ok(send(reserve()?))
         };
+        #[cfg(not(feature = "bounded-publish"))]
+        let send = || Ok(send());
         let mut state = self
             .state
             .lock()
@@ -241,6 +396,7 @@ impl ManagedPublishAdmission {
         if state.closed {
             return Err(AdmissionFailure::Closed);
         }
+        #[cfg(feature = "bounded-publish")]
         if self
             .budget
             .as_ref()
@@ -248,7 +404,7 @@ impl ManagedPublishAdmission {
         {
             return Err(AdmissionFailure::Budget(
                 PublishBudgetError::RecoveryPending,
-                Some(progress),
+                Some(progress.expect("budget progress exists")),
             ));
         }
         let alias = publish
@@ -257,51 +413,23 @@ impl ManagedPublishAdmission {
             .and_then(|properties| properties.topic_alias);
         let depends_on_capabilities =
             publish.qos != QoS::AtMostOnce || publish.retain || alias.is_some();
+        #[cfg(feature = "bounded-publish")]
         if self.policy == PublishAdmissionPolicy::EventLoopValidated {
-            return Ok(send(reserve()?));
+            return send();
         }
         let Some(capabilities) = state.capabilities else {
             if depends_on_capabilities {
-                return Err(AdmissionFailure::CapabilitiesUnavailable(self.waiter()));
+                return Err(AdmissionFailure::CapabilitiesUnavailable(
+                    self.waiter_with_state(&state),
+                ));
             }
-            return Ok(send(reserve()?));
+            return send();
         };
 
-        if publish.retain && !capabilities.retain_available {
-            return Err(AdmissionFailure::Rejected(
-                PublishAdmissionError::RetainUnavailable,
-            ));
-        }
-        if publish.qos > capabilities.maximum_qos {
-            return Err(AdmissionFailure::Rejected(
-                PublishAdmissionError::MaximumQos {
-                    requested: publish.qos,
-                    maximum: capabilities.maximum_qos,
-                },
-            ));
-        }
-        if let Some(alias) = alias {
-            if alias == 0 {
-                return Err(AdmissionFailure::Rejected(
-                    PublishAdmissionError::TopicAliasZero,
-                ));
-            }
-            if alias > capabilities.topic_alias_maximum {
-                return Err(AdmissionFailure::Rejected(
-                    PublishAdmissionError::TopicAliasMaximum {
-                        alias,
-                        maximum: capabilities.topic_alias_maximum,
-                    },
-                ));
-            }
-            if publish.topic.is_empty() && !state.aliases.contains_key(&alias) {
-                return Err(AdmissionFailure::Rejected(
-                    PublishAdmissionError::TopicAliasUnmapped(alias),
-                ));
-            }
-        }
+        Self::validate_capabilities(&state, publish, alias, capabilities)
+            .map_err(AdmissionFailure::Rejected)?;
 
-        let result = send(reserve()?);
+        let result = send()?;
         if result.is_ok()
             && let Some(alias) = alias
             && !publish.topic.is_empty()
@@ -334,6 +462,10 @@ impl ManagedPublishAdmission {
                 .unwrap_or(0),
         });
         state.aliases.clear();
+        #[cfg(not(feature = "bounded-publish"))]
+        {
+            state.revision = state.revision.wrapping_add(1);
+        }
         drop(state);
         self.notify_waiters();
     }
@@ -380,8 +512,20 @@ impl ManagedPublishAdmission {
         }
     }
 
+    #[cfg(feature = "bounded-publish")]
     pub(crate) fn notify_progress(&self) {
         self.progress.notify();
+    }
+
+    #[cfg(not(feature = "bounded-publish"))]
+    pub(crate) fn notify_progress(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.revision = state.revision.wrapping_add(1);
+        drop(state);
+        self.notify_waiters();
     }
 
     pub(crate) fn close(&self) {
@@ -393,14 +537,20 @@ impl ManagedPublishAdmission {
             return;
         }
         state.closed = true;
+        #[cfg(not(feature = "bounded-publish"))]
+        {
+            state.revision = state.revision.wrapping_add(1);
+        }
         drop(state);
         self.notify_waiters();
     }
 
+    #[cfg(feature = "bounded-publish")]
     fn notify_waiters(&self) {
         self.progress.notify();
     }
 
+    #[cfg(feature = "bounded-publish")]
     pub(crate) fn waiter(self: &Arc<Self>) -> PublishAdmissionWaiter {
         let revision = *self
             .progress
@@ -410,6 +560,38 @@ impl ManagedPublishAdmission {
         PublishAdmissionWaiter {
             progress: Arc::clone(&self.progress),
             revision,
+        }
+    }
+    #[cfg(not(feature = "bounded-publish"))]
+    fn notify_waiters(&self) {
+        self.changed.notify_waiters();
+        self.changed_blocking.notify_all();
+    }
+
+    #[cfg(not(feature = "bounded-publish"))]
+    pub(crate) fn waiter(self: &Arc<Self>) -> PublishAdmissionWaiter {
+        let revision = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revision;
+        PublishAdmissionWaiter {
+            admission: Arc::clone(self),
+            revision,
+        }
+    }
+    fn waiter_with_state(self: &Arc<Self>, state: &AdmissionState) -> PublishAdmissionWaiter {
+        #[cfg(feature = "bounded-publish")]
+        {
+            let _ = state;
+            self.waiter()
+        }
+        #[cfg(not(feature = "bounded-publish"))]
+        {
+            PublishAdmissionWaiter {
+                admission: Arc::clone(self),
+                revision: state.revision,
+            }
         }
     }
 }
@@ -527,6 +709,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bounded-publish")]
     fn exhausted_budget_does_not_commit_alias_bindings() {
         let admission = ManagedPublishAdmission::configured(
             PublishAdmissionPolicy::RequireNegotiatedCapabilities,

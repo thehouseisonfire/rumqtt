@@ -19,9 +19,9 @@ use super::{
     ConfigError, ConnectionError, Disconnect, DisconnectProperties, DisconnectReasonCode, Event,
     EventLoop, MqttOptions, Request,
 };
-use crate::notice::{
-    AuthNoticeTx, PublishNoticeTx, SubscribeNoticeTx, TrackedNoticeTx, UnsubscribeNoticeTx,
-};
+#[cfg(feature = "bounded-publish")]
+use crate::notice::TrackedNoticeTx;
+use crate::notice::{AuthNoticeTx, PublishNoticeTx, SubscribeNoticeTx, UnsubscribeNoticeTx};
 use crate::publish_admission::{AdmissionFailure, ManagedPublishAdmission};
 use crate::{
     AuthNotice, PublishAdmissionError, PublishAdmissionPolicy, PublishAdmissionWaiter,
@@ -415,6 +415,7 @@ pub enum ClientError {
         request: Box<Request>,
         reason: PublishAdmissionError,
     },
+    #[cfg(feature = "bounded-publish")]
     #[error("publish retained-work admission failed: {reason}")]
     PublishBudget {
         request: Box<Request>,
@@ -439,8 +440,6 @@ pub enum ClientBuildError {
     Config(#[from] ConfigError),
     #[error("Failed to create Tokio runtime: {0}")]
     Runtime(#[source] std::io::Error),
-    #[error("publish budget limits must be nonzero")]
-    InvalidPublishBudget,
 }
 
 fn map_plain_send_error(error: SendError<Request>) -> ClientError {
@@ -480,8 +479,11 @@ enum RequestSender {
     },
 }
 
-fn into_request(mut envelope: RequestEnvelope) -> Request {
+fn into_request(envelope: RequestEnvelope) -> Request {
+    #[cfg(feature = "bounded-publish")]
+    let mut envelope = envelope;
     // Budgeted channel attempts hold the admission mutex until this rollback completes.
+    #[cfg(feature = "bounded-publish")]
     if let Some(TrackedNoticeTx::Publish(notice)) = &mut envelope.notice {
         notice.rollback_admission();
     }
@@ -656,6 +658,7 @@ pub struct ClientBuilder {
     options: MqttOptions,
     capacity: RequestChannelCapacity,
     publish_admission_policy: PublishAdmissionPolicy,
+    #[cfg(feature = "bounded-publish")]
     publish_budget: Option<crate::PublishBudgetLimits>,
 }
 
@@ -669,6 +672,7 @@ pub struct AsyncClientBuilder {
     options: MqttOptions,
     capacity: RequestChannelCapacity,
     publish_admission_policy: PublishAdmissionPolicy,
+    #[cfg(feature = "bounded-publish")]
     publish_budget: Option<crate::PublishBudgetLimits>,
 }
 
@@ -677,15 +681,21 @@ fn build_async_client(
     options: MqttOptions,
     capacity: RequestChannelCapacity,
     publish_admission_policy: PublishAdmissionPolicy,
-    publish_budget: Option<crate::PublishBudgetLimits>,
+    #[cfg(feature = "bounded-publish")] publish_budget: Option<crate::PublishBudgetLimits>,
 ) -> (AsyncClient, EventLoop) {
+    #[cfg(feature = "bounded-publish")]
     let recovery = options.session_store().is_some() && !options.clean_start();
+    #[cfg(feature = "bounded-publish")]
     let publish_admission = (publish_admission_policy
         == PublishAdmissionPolicy::RequireNegotiatedCapabilities
         || publish_budget.is_some())
     .then(|| {
         ManagedPublishAdmission::configured(publish_admission_policy, publish_budget, recovery)
     });
+    #[cfg(not(feature = "bounded-publish"))]
+    let publish_admission = (publish_admission_policy
+        == PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+        .then(ManagedPublishAdmission::new);
     let (eventloop, request_tx, control_request_tx, immediate_disconnect_tx) =
         EventLoop::new_for_async_client_with_capacity_and_admission(
             options,
@@ -713,6 +723,7 @@ impl ClientBuilder {
             options,
             capacity,
             publish_admission_policy: PublishAdmissionPolicy::EventLoopValidated,
+            #[cfg(feature = "bounded-publish")]
             publish_budget: None,
         }
     }
@@ -747,6 +758,7 @@ impl ClientBuilder {
     /// Bounds retained publish work across channel, replay and protocol state.
     /// Both limits must be nonzero. Omit this setting to retain native default behavior.
     #[must_use]
+    #[cfg(feature = "bounded-publish")]
     pub const fn publish_budget(mut self, limits: crate::PublishBudgetLimits) -> Self {
         self.publish_budget = Some(limits);
         self
@@ -774,16 +786,18 @@ impl ClientBuilder {
     /// current-thread Tokio runtime cannot be created.
     pub fn try_build(self) -> Result<(Client, Connection), ClientBuildError> {
         self.options.validate()?;
+        #[cfg(feature = "bounded-publish")]
         if self
             .publish_budget
             .is_some_and(|limits| limits.max_outstanding == 0 || limits.max_bytes == 0)
         {
-            return Err(ClientBuildError::InvalidPublishBudget);
+            return Err(ConfigError::InvalidPublishBudget.into());
         }
         let (client, eventloop) = build_async_client(
             self.options,
             self.capacity,
             self.publish_admission_policy,
+            #[cfg(feature = "bounded-publish")]
             self.publish_budget,
         );
         let client = Client { client };
@@ -807,6 +821,7 @@ impl AsyncClientBuilder {
             options,
             capacity,
             publish_admission_policy: PublishAdmissionPolicy::EventLoopValidated,
+            #[cfg(feature = "bounded-publish")]
             publish_budget: None,
         }
     }
@@ -841,6 +856,7 @@ impl AsyncClientBuilder {
     /// Bounds retained publish work across channel, replay and protocol state.
     /// Both limits must be nonzero. Omit this setting to retain native default behavior.
     #[must_use]
+    #[cfg(feature = "bounded-publish")]
     pub const fn publish_budget(mut self, limits: crate::PublishBudgetLimits) -> Self {
         self.publish_budget = Some(limits);
         self
@@ -868,16 +884,18 @@ impl AsyncClientBuilder {
     /// Returns [`ClientBuildError`] if options validation fails.
     pub fn try_build(self) -> Result<(AsyncClient, EventLoop), ClientBuildError> {
         self.options.validate()?;
+        #[cfg(feature = "bounded-publish")]
         if self
             .publish_budget
             .is_some_and(|limits| limits.max_outstanding == 0 || limits.max_bytes == 0)
         {
-            return Err(ClientBuildError::InvalidPublishBudget);
+            return Err(ConfigError::InvalidPublishBudget.into());
         }
         Ok(build_async_client(
             self.options,
             self.capacity,
             self.publish_admission_policy,
+            #[cfg(feature = "bounded-publish")]
             self.publish_budget,
         ))
     }
@@ -940,6 +958,7 @@ impl AsyncClient {
 
     /// Coherent retained-work usage, if configured on the builder.
     #[must_use]
+    #[cfg(feature = "bounded-publish")]
     pub fn publish_budget_snapshot(&self) -> Option<crate::PublishBudgetSnapshot> {
         self.publish_admission
             .as_ref()?
@@ -986,6 +1005,7 @@ impl AsyncClient {
             AdmissionFailure::Rejected(reason) => {
                 ClientError::PublishAdmissionRejected { request, reason }
             }
+            #[cfg(feature = "bounded-publish")]
             AdmissionFailure::Budget(reason, waiter) => ClientError::PublishBudget {
                 request,
                 reason,
@@ -1014,6 +1034,7 @@ impl AsyncClient {
             AdmissionFailure::Rejected(reason) => {
                 ClientError::PublishAdmissionRejected { request, reason }
             }
+            #[cfg(feature = "bounded-publish")]
             AdmissionFailure::Budget(reason, waiter) => ClientError::PublishBudget {
                 request,
                 reason,
@@ -1027,22 +1048,28 @@ impl AsyncClient {
         let Some(admission) = &self.publish_admission else {
             return self.try_send_request(Request::Publish(publish));
         };
-        let result = admission.try_admit_reserved(&publish, |reservation| {
-            let RequestSender::WithNotice { requests, .. } = &self.request_tx else {
-                // Supplied plain senders have no budget or event-loop terminal ownership.
-                return self.try_send_request(Request::Publish(publish.clone()));
-            };
-            let envelope = if reservation.is_some() {
-                let mut notice = PublishNoticeTx::internal();
-                notice.reserve(reservation);
-                RequestEnvelope::tracked_publish(publish.clone(), notice)
-            } else {
-                RequestEnvelope::plain(Request::Publish(publish.clone()))
-            };
-            requests
-                .try_send(envelope)
-                .map_err(map_try_send_envelope_error)
-        });
+        let result = admission.try_admit_reserved(
+            &publish,
+            |#[cfg(feature = "bounded-publish")] reservation| {
+                let RequestSender::WithNotice { requests, .. } = &self.request_tx else {
+                    // Supplied plain senders have no budget or event-loop terminal ownership.
+                    return self.try_send_request(Request::Publish(publish.clone()));
+                };
+                #[cfg(feature = "bounded-publish")]
+                let envelope = if reservation.is_some() {
+                    let mut notice = PublishNoticeTx::internal();
+                    notice.reserve(reservation);
+                    RequestEnvelope::tracked_publish(publish.clone(), notice)
+                } else {
+                    RequestEnvelope::plain(Request::Publish(publish.clone()))
+                };
+                #[cfg(not(feature = "bounded-publish"))]
+                let envelope = RequestEnvelope::plain(Request::Publish(publish.clone()));
+                requests
+                    .try_send(envelope)
+                    .map_err(map_try_send_envelope_error)
+            },
+        );
         #[cfg(not(feature = "ordered-shutdown"))]
         return result.map_err(|failure| Self::map_publish_admission_failure(&publish, failure))?;
         #[cfg(feature = "ordered-shutdown")]
@@ -1057,6 +1084,7 @@ impl AsyncClient {
             let progress = admission.waiter();
             match self.try_send_managed_publish(publish.clone()) {
                 Err(ClientError::RequestChannelFull(_)) => progress.wait_blocking(),
+                #[cfg(feature = "bounded-publish")]
                 Err(ClientError::PublishBudget {
                     waiter: Some(waiter),
                     ..
@@ -1073,13 +1101,14 @@ impl AsyncClient {
         loop {
             let progress = admission.waiter();
             match self.try_send_managed_publish(publish.clone()) {
-                Err(
-                    ClientError::PublishBudget {
-                        waiter: Some(waiter),
-                        ..
-                    }
-                    | ClientError::PublishAdmissionPending { waiter, .. },
-                ) => {
+                #[cfg(feature = "bounded-publish")]
+                Err(ClientError::PublishBudget {
+                    waiter: Some(waiter),
+                    ..
+                }) => {
+                    waiter.wait_async().await;
+                }
+                Err(ClientError::PublishAdmissionPending { waiter, .. }) => {
                     waiter.wait_async().await;
                 }
                 Err(ClientError::RequestChannelFull(_)) => {
@@ -1189,13 +1218,14 @@ impl AsyncClient {
         loop {
             let progress = admission.waiter();
             match self.try_send_tracked_publish(publish.clone()) {
-                Err(
-                    ClientError::PublishBudget {
-                        waiter: Some(waiter),
-                        ..
-                    }
-                    | ClientError::PublishAdmissionPending { waiter, .. },
-                ) => {
+                #[cfg(feature = "bounded-publish")]
+                Err(ClientError::PublishBudget {
+                    waiter: Some(waiter),
+                    ..
+                }) => {
+                    waiter.wait_async().await;
+                }
+                Err(ClientError::PublishAdmissionPending { waiter, .. }) => {
                     waiter.wait_async().await;
                 }
                 Err(ClientError::RequestChannelFull(_)) => {
@@ -1226,27 +1256,39 @@ impl AsyncClient {
         #[cfg(not(feature = "ordered-shutdown"))]
         {
             admission
-                .try_admit_reserved(&publish, |reservation| {
-                    let (mut notice_tx, notice) = PublishNoticeTx::new();
-                    notice_tx.reserve(reservation);
-                    request_tx
-                        .try_send(RequestEnvelope::tracked_publish(publish.clone(), notice_tx))
-                        .map_err(map_try_send_envelope_error)?;
-                    Ok(notice)
-                })
+                .try_admit_reserved(
+                    &publish,
+                    |#[cfg(feature = "bounded-publish")] reservation| {
+                        let (notice_tx, notice) = PublishNoticeTx::new();
+                        #[cfg(feature = "bounded-publish")]
+                        let mut notice_tx = notice_tx;
+                        #[cfg(feature = "bounded-publish")]
+                        notice_tx.reserve(reservation);
+                        request_tx
+                            .try_send(RequestEnvelope::tracked_publish(publish.clone(), notice_tx))
+                            .map_err(map_try_send_envelope_error)?;
+                        Ok(notice)
+                    },
+                )
                 .map_err(|failure| Self::map_publish_admission_failure(&publish, failure))?
         }
         #[cfg(feature = "ordered-shutdown")]
         {
             admission
-                .try_admit_reserved(&publish, |reservation| {
-                    let (mut notice_tx, notice) = PublishNoticeTx::new();
-                    notice_tx.reserve(reservation);
-                    request_tx
-                        .try_send(RequestEnvelope::tracked_publish(publish.clone(), notice_tx))
-                        .map_err(map_try_send_envelope_error)?;
-                    Ok(notice)
-                })
+                .try_admit_reserved(
+                    &publish,
+                    |#[cfg(feature = "bounded-publish")] reservation| {
+                        let (notice_tx, notice) = PublishNoticeTx::new();
+                        #[cfg(feature = "bounded-publish")]
+                        let mut notice_tx = notice_tx;
+                        #[cfg(feature = "bounded-publish")]
+                        notice_tx.reserve(reservation);
+                        request_tx
+                            .try_send(RequestEnvelope::tracked_publish(publish.clone(), notice_tx))
+                            .map_err(map_try_send_envelope_error)?;
+                        Ok(notice)
+                    },
+                )
                 .map_err(|failure| self.map_publish_admission_failure(&publish, failure))?
         }
     }
@@ -3376,6 +3418,7 @@ impl Client {
 
     /// Returns coherent retained publish usage when the builder enabled a publish budget.
     #[must_use]
+    #[cfg(feature = "bounded-publish")]
     pub fn publish_budget_snapshot(&self) -> Option<crate::PublishBudgetSnapshot> {
         self.client.publish_budget_snapshot()
     }

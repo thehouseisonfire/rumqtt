@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Arc, ConnectionError, Disconnect, DisconnectReasonCode, Event, EventLoop, NoticeFailureReason,
+    Packet, time,
+};
 use rumqttc_core::session_recovery::{RecoveryPhase, SessionRecoveryGate};
 
 impl EventLoop {
@@ -59,6 +62,7 @@ impl EventLoop {
                 Self::fail_tracked_notice(notice, NoticeFailureReason::SessionReset);
             }
         }
+        #[cfg(feature = "bounded-publish")]
         self.begin_publish_recovery();
         {
             let admission = self.publish_admission.clone();
@@ -75,6 +79,7 @@ impl EventLoop {
         observation.abandoned();
         observation.phase(RecoveryPhase::ClearingCheckpoint);
         self.clear_persisted_session().await?;
+        #[cfg(feature = "bounded-publish")]
         self.finish_publish_recovery();
         observation.cleared();
         observation.phase(RecoveryPhase::EstablishingFresh);
@@ -132,6 +137,8 @@ impl EventLoop {
     /// Establishes recovery traffic only; no application queue is processed.
     /// `still_running` must observe committed shutdown under the owner's admission barrier.
     #[doc(hidden)]
+    // The lifecycle predicate may observe thread-local state on a current-thread runtime.
+    #[allow(clippy::future_not_send)]
     pub async fn establish_session_for_recovery(
         &mut self,
         still_running: impl Fn() -> bool,
@@ -211,7 +218,15 @@ impl EventLoop {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ConnectionError, EventLoop, NoticeFailureReason};
+    use crate::eventloop::RequestEnvelope;
+    use crate::notice::{PublishNoticeTx, TrackedNoticeTx};
+    use crate::redirect::parse_server_references;
+    use crate::{
+        Incoming, MqttOptions, Publish, PublishNoticeError, RedirectClientId, RedirectDecision,
+        RedirectOutcome, RedirectReason, RedirectSession, RedirectSource, RedirectTargetProfile,
+        Request, Transport,
+    };
 
     #[tokio::test]
     async fn redirect_profile_application_preserves_an_admitted_recovery_identity() {

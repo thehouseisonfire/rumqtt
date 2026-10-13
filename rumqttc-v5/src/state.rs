@@ -2424,12 +2424,15 @@ impl MqttState {
     }
 
     fn replay_collision_publish(&mut self, pkid: u16) -> Option<Packet> {
-        self.check_collision(pkid).map(|(publish, mut notice)| {
+        self.check_collision(pkid).map(|(publish, notice)| {
+            #[cfg(feature = "bounded-publish")]
+            let mut notice = notice;
             let pkid = publish.pkid;
             let replay_publish = self.publish_for_replay_tracking(&publish);
             self.ensure_outgoing_tracking_capacity(usize::from(pkid) + 1);
             self.reserve_outbound_pkid(pkid)
                 .expect("collision replay packet identifier should have been released");
+            #[cfg(feature = "bounded-publish")]
             if let Some(notice) = &mut notice {
                 notice.mark_transmission_started();
             }
@@ -2685,6 +2688,7 @@ impl MqttState {
                 self.reserve_outbound_pkid(pkid)?;
             }
             let replay_publish = self.publish_for_replay_tracking(&publish);
+            #[cfg(feature = "bounded-publish")]
             if let Some(notice) = &mut notice {
                 notice.mark_transmission_started();
             }
@@ -2719,6 +2723,7 @@ impl MqttState {
         self.events.push_back(event);
 
         if publish.qos == QoS::AtMostOnce {
+            #[cfg(feature = "bounded-publish")]
             if let Some(notice) = &mut notice {
                 notice.mark_transmission_started();
             }
@@ -2734,6 +2739,7 @@ impl MqttState {
         notice: Option<PublishNoticeTx>,
     ) -> Result<(Option<Packet>, Option<PublishNoticeTx>), StateError> {
         let pubrel = self.save_pubrel_with_notice(pubrel, notice)?;
+        #[cfg(feature = "bounded-publish")]
         if let Some(notice) = &mut self.outgoing_rel_notice[usize::from(pubrel.pkid)] {
             notice.mark_transmission_started();
         }

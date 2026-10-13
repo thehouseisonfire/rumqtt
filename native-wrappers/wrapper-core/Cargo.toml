@@ -77,7 +77,7 @@ package = "rumqttc-v5-next"
 path = "../../rumqttc-v5"
 version = "0.34.0-alpha"
 default-features = false
-features = ["session-recovery"]
+features = ["session-recovery", "bounded-publish"]
 
 [target.'cfg(not(any(target_os = "windows", target_vendor = "apple")))'.dependencies]
 # The same OpenSSL build as native-tls; metadata gates enforceable version bounds.

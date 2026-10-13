@@ -1,3 +1,4 @@
+#![cfg(feature = "bounded-publish")]
 use futures_util::FutureExt;
 use rumqttc::{
     AsyncClient, Client, ClientError, Event, EventLoop, Incoming, MqttOptions, Outgoing,

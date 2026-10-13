@@ -46,7 +46,9 @@ mod notice;
 pub use disconnect::{DisconnectNotice, DisconnectNoticeError, ShutdownPhase};
 
 mod publish_admission;
+#[cfg(feature = "bounded-publish")]
 mod publish_budget;
+#[cfg(feature = "bounded-publish")]
 pub use publish_budget::{PublishBudgetError, PublishBudgetLimits, PublishBudgetSnapshot};
 mod redirect;
 mod session;
@@ -76,9 +78,11 @@ pub use eventloop::{
 };
 pub use mqttbytes::v5::*;
 pub use mqttbytes::*;
+#[cfg(feature = "bounded-publish")]
+pub use notice::PublishNoticeOutcome;
 pub use notice::{
     AuthNotice, AuthNoticeError, NoticeFailureReason, PublishNotice, PublishNoticeError,
-    PublishNoticeOutcome, PublishResult, SubscribeNotice, SubscribeNoticeError, UnsubscribeNotice,
+    PublishResult, SubscribeNotice, SubscribeNoticeError, UnsubscribeNotice,
     UnsubscribeNoticeError,
 };
 pub use publish_admission::{
@@ -2500,6 +2504,9 @@ pub(crate) const fn broker_transport_matches(broker: &Broker, transport: &Transp
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
+    #[cfg(feature = "bounded-publish")]
+    #[error("publish budget limits must be nonzero")]
+    InvalidPublishBudget,
     #[error("Broker target is incompatible with the selected transport")]
     BrokerTransportMismatch,
     #[error("Invalid receive-maximum value")]

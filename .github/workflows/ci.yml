@@ -266,8 +266,14 @@ jobs:
             fi
             echo "Mutually-exclusive rustls provider feature guards failed as expected."
 
+      - name: Verify bounded publish combinations
+        run: |
+            cargo test -p rumqttc-v5-next --no-default-features --features bounded-publish
+            cargo test -p rumqttc-v5-next --no-default-features --features "bounded-publish,ordered-shutdown,session-recovery"
+
       - name: Verify cross-crate feature isolation
         run: |
+            cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v5-next/bounded-publish
             cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v5-next/session-recovery
             cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v4-next/session-recovery
             cargo check -p rumqttc-v4-next -p rumqttc-v5-next --no-default-features -F rumqttc-v5-next/websocket
@@ -277,6 +283,8 @@ jobs:
 
       - name: Verify rumqttc-next feature forwarding
         run: |
+            cargo check -p rumqttc-next --no-default-features --features bounded-publish
+            cargo check -p rumqttc-next --no-default-features --features "bounded-publish,ordered-shutdown,session-recovery"
             cargo check -p rumqttc-next --no-default-features --features ordered-shutdown
             cargo check -p rumqttc-next --no-default-features --features session-recovery
             cargo check -p rumqttc-next --no-default-features --features "session-recovery,ordered-shutdown,tracing"

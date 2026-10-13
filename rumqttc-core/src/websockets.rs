@@ -3,6 +3,7 @@
 use http::{Response, header::ToStrError};
 
 /// Owned routing and deadline metadata attached to each prepared client request.
+///
 /// URI edits do not change these transport choices. `dial_target` names the proxy
 /// endpoint when a proxy is configured, otherwise the broker endpoint. It includes
 /// the port and brackets IPv6 literals, and is not a resolved socket address.

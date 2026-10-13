@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+### Changed
+
+- MQTT 5: Move publish budgets and detailed transmission outcomes behind the
+  default-off `bounded-publish` feature, forwarded by `rumqttc-next`. Feature-off
+  clients retain compact request/notice storage and strict capability admission.
+  Native wrappers enable the feature automatically and retain their admission
+  guarantees. Existing budget/outcome callers must enable the feature; invalid
+  limits now return `ClientBuildError::Config(ConfigError::InvalidPublishBudget)`
+  so the original builder-error variants remain compatible. Restore persisted
+  replay directly into the pending queue without an intermediate envelope vector.
+
 ### Added
 
 - Native wrappers: Add tracked explicit session abandonment and fresh recovery for running,

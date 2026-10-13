@@ -31,7 +31,9 @@ of charged publish data**, under either admission policy. Configure nonzero
 `V5Config::publish_budget` limits or call `rumqttc_config_set_v5_publish_budget`;
 `rumqttc_config_reset_v5_publish_budget` restores these defaults. No unlimited
 wrapper setting is provided. Direct native Rust builders retain their existing
-unbudgeted default and may opt in with `publish_budget`.
+unbudgeted default and may opt in by enabling the `bounded-publish` Cargo feature
+and configuring `publish_budget`. Wrapper-core always enables this feature on its
+MQTT 5 dependency, including when wrapper default features are disabled.
 
 `ClientHandle::publish_budget_snapshot` and the additive C
 `rumqttc_client_v5_publish_budget_snapshot` return coherent current counters and

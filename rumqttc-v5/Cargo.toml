@@ -17,10 +17,12 @@ readme = "README.md"
 name = "rumqttc"
 
 [package.metadata.docs.rs]
-features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "http-proxy", "socks-proxy", "auth-scram", "url", "stream", "tracing", "tracing-log-compat", "system-srv-resolver"]
+features = ["bounded-publish", "use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket", "proxy", "http-proxy", "socks-proxy", "auth-scram", "url", "stream", "tracing", "tracing-log-compat", "system-srv-resolver"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+# Retained publish budgets and detailed terminal transmission outcomes.
+bounded-publish = []
 # Opt-in coordination for explicit session abandonment by a managed connection owner.
 session-recovery = ["rumqttc-core/session-recovery"]
 ordered-shutdown = ["rumqttc-core/ordered-shutdown"]

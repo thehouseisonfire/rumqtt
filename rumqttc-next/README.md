@@ -41,3 +41,8 @@ allocations, identity copies, and poll-time checks and locking are compiled out.
 Native wrappers enable it automatically.
 
 See the `rumqttc-v5-next` documentation for the full API and examples.
+
+The optional `bounded-publish` feature forwards to `rumqttc-v5-next` and enables
+retained publish budgets and detailed terminal transmission outcomes. It is disabled
+by default; ordinary publish notices and strict capability admission remain available
+without it. See the [MQTT 5 client documentation](../rumqttc-v5/README.md) for usage.

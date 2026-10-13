@@ -1,3 +1,4 @@
+#![cfg(feature = "bounded-publish")]
 use rumqttc::{
     AsyncClient, ClientError, MqttOptions, PublishAdmissionPolicy, PublishBudgetError,
     PublishBudgetLimits, PublishNoticeError, PublishOptions, PublishProperties, QoS,
@@ -140,14 +141,6 @@ async fn unsent_alias_replay_failure_releases_capacity_and_wakes_waiter() {
     client
         .try_publish("a", "ok", PublishOptions::at_least_once())
         .unwrap();
-}
-
-#[test]
-fn direct_native_builders_keep_the_budget_opt_in() {
-    let (client, _driver) = AsyncClient::builder(MqttOptions::new("legacy", "localhost"))
-        .capacity(1)
-        .build();
-    assert_eq!(client.publish_budget_snapshot(), None);
 }
 
 #[test]

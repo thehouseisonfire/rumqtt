@@ -539,11 +539,30 @@ explicit compatibility policy was used. It is committed only after all
 connection-establishment barriers succeed and is cleared on connection cleanup.
 Raw CONNACK packets remain unchanged.
 
-Builder `publish_budget(PublishBudgetLimits { max_outstanding, max_bytes })` opts
-into finite retained publish accounting across channel, replay and protocol
-state, including restored PUBLISH/PUBREL. Both values must be nonzero. Direct
-native builders remain unbudgeted by default. `publish_budget_snapshot()`
+The default-off `bounded-publish` Cargo feature enables retained publish budgets
+and detailed terminal transmission outcomes. Without it, Rust clients retain compact
+request and completion storage. Strict negotiated-capability admission and ordinary
+tracked publish notices remain available without this feature.
+
+Enable it on `rumqttc-v5-next` (or through the `rumqttc-next` facade):
+
+```toml
+rumqttc = { package = "rumqttc-v5-next", version = "0.34.0-alpha", features = ["bounded-publish"] }
+```
+
+With the feature enabled, builder
+`publish_budget(PublishBudgetLimits { max_outstanding, max_bytes })` opts into
+finite retained publish accounting across channel, replay and protocol state,
+including restored PUBLISH/PUBREL. Both values must be nonzero; invalid limits
+return `ClientBuildError::Config(ConfigError::InvalidPublishBudget)`.
+Clients remain unbudgeted unless limits are configured. `publish_budget_snapshot()`
 observes current usage. `PublishNotice::wait_outcome[_async]` additionally reports
-conservative transmission history while existing notice methods keep their
-result API. The [wrapper accounting contract](../native-wrappers/wrapper-core/publish-admission.md)
-describes byte charges, recovery preflight and separate allocation limits.
+conservative transmission history, while existing notice methods keep their result API.
+
+Callers using budget or outcome APIs introduced before this feature must now enable
+`bounded-publish`. Native wrappers enable it automatically and retain their configured
+budgets. Cargo unifies dependency features, so an application using both wrappers and
+direct Rust clients also compiles the direct clients with this feature. Budget enforcement
+still requires per-client configuration. The
+[wrapper accounting contract](../native-wrappers/wrapper-core/publish-admission.md)
+describes byte charges, recovery and capacity reclamation.

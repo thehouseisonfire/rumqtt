@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, ConnectionError, Duration, Event, EventLoop, NoticeFailureReason, Packet, time};
 use rumqttc_core::session_recovery::{RecoveryPhase, SessionRecoveryGate};
 
 impl EventLoop {
@@ -156,7 +156,10 @@ impl EventLoop {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::EventLoop;
+    use crate::eventloop::RequestEnvelope;
+    use crate::notice::{PublishNoticeTx, TrackedNoticeTx};
+    use crate::{Incoming, MqttOptions, Publish, PublishNoticeError, Request};
 
     #[tokio::test]
     async fn abandonment_retires_every_request_source_and_protocol_ownership() {

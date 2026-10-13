@@ -191,10 +191,16 @@ fn notice_channel<T, E>() -> (NoticeTx<T, E>, NoticeRx<T, E>) {
 
 /// Wait handle returned by tracked publish APIs.
 #[derive(Debug)]
-pub struct PublishNotice(oneshot::Receiver<PublishNoticeOutcome>);
+pub struct PublishNotice(oneshot::Receiver<PublishNoticePayload>);
+
+#[cfg(feature = "bounded-publish")]
+type PublishNoticePayload = PublishNoticeOutcome;
+#[cfg(not(feature = "bounded-publish"))]
+type PublishNoticePayload = PublishNoticeResult;
 
 /// Native terminal result with conservative transmission history.
 /// `possibly_transmitted=false` proves no packet was handed toward network output.
+#[cfg(feature = "bounded-publish")]
 #[derive(Debug)]
 pub struct PublishNoticeOutcome {
     pub result: Result<PublishResult, PublishNoticeError>,
@@ -213,7 +219,16 @@ impl PublishNotice {
     ///
     /// Panics if called in an async context.
     pub fn wait(self) -> PublishNoticeResult {
-        self.wait_outcome().result
+        #[cfg(feature = "bounded-publish")]
+        {
+            self.wait_outcome().result
+        }
+        #[cfg(not(feature = "bounded-publish"))]
+        {
+            self.0
+                .blocking_recv()
+                .unwrap_or(Err(PublishNoticeError::Recv))
+        }
     }
 
     /// Wait for the publish protocol result asynchronously.
@@ -223,7 +238,14 @@ impl PublishNotice {
     /// Returns an error if the event loop drops the notice sender or if the
     /// publish fails before a protocol result is available.
     pub async fn wait_async(self) -> PublishNoticeResult {
-        self.wait_outcome_async().await.result
+        #[cfg(feature = "bounded-publish")]
+        {
+            self.wait_outcome_async().await.result
+        }
+        #[cfg(not(feature = "bounded-publish"))]
+        {
+            self.0.await.unwrap_or(Err(PublishNoticeError::Recv))
+        }
     }
 
     /// Wait for a native outcome, including whether transmission may have started.
@@ -231,6 +253,7 @@ impl PublishNotice {
     /// # Panics
     /// Panics if called in an async context.
     #[must_use]
+    #[cfg(feature = "bounded-publish")]
     pub fn wait_outcome(self) -> PublishNoticeOutcome {
         self.0.blocking_recv().unwrap_or(PublishNoticeOutcome {
             result: Err(PublishNoticeError::Recv),
@@ -239,6 +262,7 @@ impl PublishNotice {
     }
 
     /// Await a native outcome. Dropping this observer never cancels admitted work.
+    #[cfg(feature = "bounded-publish")]
     pub async fn wait_outcome_async(self) -> PublishNoticeOutcome {
         self.0.await.unwrap_or(PublishNoticeOutcome {
             result: Err(PublishNoticeError::Recv),
@@ -569,6 +593,7 @@ impl AuthNotice {
     }
 }
 
+#[cfg(feature = "bounded-publish")]
 #[derive(Debug)]
 pub struct PublishNoticeTx {
     sender: Option<oneshot::Sender<PublishNoticeOutcome>>,
@@ -578,6 +603,7 @@ pub struct PublishNoticeTx {
     observation: Option<crate::disconnect::Observation>,
 }
 
+#[cfg(feature = "bounded-publish")]
 impl PublishNoticeTx {
     pub(crate) const fn internal() -> Self {
         Self {
@@ -647,6 +673,62 @@ impl PublishNoticeTx {
     pub(crate) fn observe(&mut self, ledger: &std::sync::Arc<crate::disconnect::Ledger>) {
         if self.observation.is_none() {
             self.observation = Some(crate::disconnect::Observation::new(ledger.clone()));
+        }
+    }
+}
+
+#[cfg(all(not(feature = "bounded-publish"), not(feature = "ordered-shutdown")))]
+#[derive(Debug)]
+pub struct PublishNoticeTx(NoticeTx<PublishResult, PublishNoticeError>);
+
+#[cfg(all(not(feature = "bounded-publish"), feature = "ordered-shutdown"))]
+#[derive(Debug)]
+pub struct PublishNoticeTx(
+    NoticeTx<PublishResult, PublishNoticeError>,
+    Option<crate::disconnect::Observation>,
+);
+
+#[cfg(not(feature = "bounded-publish"))]
+impl PublishNoticeTx {
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) const fn internal() -> Self {
+        Self(NoticeTx(None), None)
+    }
+
+    pub(crate) fn new() -> (Self, PublishNotice) {
+        let (tx, rx) = notice_channel();
+        #[cfg(not(feature = "ordered-shutdown"))]
+        {
+            (Self(tx), PublishNotice(rx.0))
+        }
+        #[cfg(feature = "ordered-shutdown")]
+        {
+            (Self(tx, None), PublishNotice(rx.0))
+        }
+    }
+
+    pub(crate) fn success(self, result: PublishResult) {
+        #[cfg(feature = "ordered-shutdown")]
+        if let Some(observation) = self.1 {
+            observation.finish(validate_v5_publish_completion(&result));
+        }
+
+        self.0.success(result);
+    }
+
+    pub(crate) fn error(self, err: PublishNoticeError) {
+        #[cfg(feature = "ordered-shutdown")]
+        if let Some(observation) = self.1 {
+            observation.finish(Err(err.clone()));
+        }
+
+        self.0.error(err);
+    }
+
+    #[cfg(feature = "ordered-shutdown")]
+    pub(crate) fn observe(&mut self, ledger: &std::sync::Arc<crate::disconnect::Ledger>) {
+        if self.1.is_none() {
+            self.1 = Some(crate::disconnect::Observation::new(ledger.clone()));
         }
     }
 }
@@ -801,9 +883,12 @@ fn validate_v5_unsuback_completion(unsuback: &UnsubAck) -> Result<(), Unsubscrib
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "bounded-publish")]
     use crate::publish_admission::PublishProgress;
+    #[cfg(feature = "bounded-publish")]
     use crate::publish_budget::{PublishBudget, PublishBudgetLimits};
 
+    #[cfg(feature = "bounded-publish")]
     fn one_publish_budget() -> std::sync::Arc<PublishBudget> {
         PublishBudget::new(
             PublishBudgetLimits {
@@ -816,6 +901,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bounded-publish")]
     fn terminal_publish_results_release_capacity_before_observation() {
         let mut recovered = PubComp::new(1, None);
         recovered.reason = PubCompReason::PacketIdentifierNotFound;
@@ -845,6 +931,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bounded-publish")]
     fn terminal_publish_errors_release_capacity_with_dropped_observers() {
         let errors = vec![
             PublishNoticeError::Recv,
@@ -899,6 +986,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "bounded-publish")]
     fn abandoning_native_publish_releases_capacity_without_observer_ownership() {
         for observe in [false, true] {
             let budget = one_publish_budget();

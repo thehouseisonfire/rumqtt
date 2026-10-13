@@ -84,6 +84,10 @@ pub enum Error {
 type RustlsClientConfigBuilder = ConfigBuilder<ClientConfig, WantsVerifier>;
 
 #[cfg(feature = "use-rustls-no-provider")]
+/// Select the installed or feature-selected Rustls crypto provider.
+///
+/// # Errors
+/// Returns an error if no crypto provider is available.
 pub fn rustls_crypto_provider() -> Result<Arc<CryptoProvider>, Error> {
     if let Some(provider) = CryptoProvider::get_default() {
         return Ok(Arc::clone(provider));
@@ -123,6 +127,10 @@ pub fn rustls_client_config_builder() -> Result<RustlsClientConfigBuilder, Error
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
+/// Load the platform's trusted certificates into a Rustls root store.
+///
+/// # Errors
+/// Returns errors loading native certificates or adding them to the root store.
 pub fn rustls_native_root_store() -> Result<RootCertStore, Error> {
     let native = rustls_native_certs::load_native_certs();
     if !native.errors.is_empty() {
@@ -137,6 +145,10 @@ pub fn rustls_native_root_store() -> Result<RootCertStore, Error> {
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
+/// Load trusted certificates from PEM data into a Rustls root store.
+///
+/// # Errors
+/// Returns an error if certificates cannot be parsed or added, or the input is empty.
 pub fn rustls_pem_root_store(ca: &[u8]) -> Result<RootCertStore, Error> {
     let certificates = CertificateDer::pem_slice_iter(ca).collect::<Result<Vec<_>, _>>()?;
     if certificates.is_empty() {
@@ -180,6 +192,8 @@ pub fn rustls_client_config(
 }
 
 #[cfg(feature = "use-rustls-no-provider")]
+// The number of unsupported configuration variants depends on the enabled backends.
+#[allow(clippy::match_wildcard_for_single_variants)]
 pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector, Error> {
     let config = match tls_config {
         TlsConfiguration::Simple {
@@ -207,6 +221,8 @@ pub fn rustls_connector(tls_config: &TlsConfiguration) -> Result<RustlsConnector
 }
 
 #[cfg(feature = "use-native-tls")]
+// The number of unsupported configuration variants depends on the enabled backends.
+#[allow(clippy::match_wildcard_for_single_variants)]
 pub fn native_tls_connector(tls_config: &TlsConfiguration) -> Result<NativeTlsConnector, Error> {
     let connector = match tls_config {
         TlsConfiguration::SimpleNative { ca, client_auth } => {
@@ -313,11 +329,11 @@ pub fn websocket_tls_connector(
 ///
 pub async fn tls_connect(
     addr: &str,
-    _port: u16,
+    port: u16,
     tls_config: &TlsConfiguration,
     tcp: Box<dyn AsyncReadWrite>,
 ) -> Result<Box<dyn AsyncReadWrite>, Error> {
-    tls_connect_with_deadline(addr, _port, tls_config, tcp, None).await
+    tls_connect_with_deadline(addr, port, tls_config, tcp, None).await
 }
 
 /// Establish TLS with the original connection attempt's absolute deadline.
