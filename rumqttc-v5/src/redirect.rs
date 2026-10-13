@@ -887,10 +887,9 @@ impl RedirectTargetProfile {
         {
             return Err(RedirectPolicyFailure::Timeout.into());
         }
-        let current_id = options.client_id();
         let client_id = match &self.client_id {
             RedirectClientId::Fresh => "",
-            RedirectClientId::Reuse => current_id.as_str(),
+            RedirectClientId::Reuse => options.client_id.as_str(),
             RedirectClientId::Replace(id) => id.as_str(),
         };
         // Validate wire strings before applying any options, including requests from Rust policies.
@@ -913,15 +912,13 @@ impl RedirectTargetProfile {
         {
             return Err(RedirectPolicyFailure::InvalidResponse.into());
         }
-        if let RedirectSession::Reuse { store_scope } = &self.session {
-            if store_scope.contains('\0') || u16::try_from(store_scope.len()).is_err() {
-                return Err(RedirectPolicyFailure::InvalidResponse.into());
-            }
-            if (options.session_store().is_some() || self.session_store.is_some())
-                && (client_id.is_empty() || store_scope.is_empty())
-            {
-                return Err(RedirectPolicyFailure::InvalidResponse.into());
-            }
+        // Store scopes are application metadata, not MQTT wire strings. In particular,
+        // an externally scoped store may legitimately use the default empty scope.
+        if matches!(self.session, RedirectSession::Reuse { .. })
+            && (options.session_store.is_some() || self.session_store.is_some())
+            && client_id.is_empty()
+        {
+            return Err(RedirectPolicyFailure::InvalidResponse.into());
         }
         Ok(())
     }

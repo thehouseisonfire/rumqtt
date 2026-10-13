@@ -805,6 +805,14 @@ impl MqttState {
         self.async_authenticator = authenticator;
     }
 
+    pub(crate) fn refresh_auth_client_id(&mut self, client_id: &str) {
+        if self.authenticator.is_some() || self.async_authenticator.is_some() {
+            client_id.clone_into(&mut self.auth_client_id);
+        } else {
+            self.auth_client_id.clear();
+        }
+    }
+
     pub(crate) fn uses_async_authentication(&self) -> bool {
         self.async_authenticator.is_some()
     }

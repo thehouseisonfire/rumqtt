@@ -4441,7 +4441,7 @@ async fn mqtt_connect(
     network: &mut Network,
     state: &mut MqttState,
 ) -> Result<ConnAck, ConnectionError> {
-    state.auth_client_id = options.client_id();
+    state.refresh_auth_client_id(&options.client_id);
     state.connection_failure_packet = None;
     network.set_max_outgoing_size(None);
     state.set_client_topic_alias_max(options.topic_alias_max());
@@ -4553,7 +4553,7 @@ async fn mqtt_connect_inner(
                             if !assigned_client_identifier.is_empty() =>
                         {
                             options.set_client_id(assigned_client_identifier.clone());
-                            state.auth_client_id = options.client_id();
+                            state.refresh_auth_client_id(&options.client_id);
                         }
                         (Some(_) | None, true) | (Some(_), false) => {
                             send_protocol_error_disconnect(network).await;
@@ -6482,6 +6482,66 @@ mod tests {
         connack.properties.as_mut().unwrap().server_keep_alive = None;
         eventloop.apply_connack_keep_alive(&connack);
         assert_eq!(eventloop.effective_keep_alive, Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn mqtt_connect_tracks_identity_only_for_configured_authentication_callbacks() {
+        #[derive(Debug)]
+        struct AsyncAuthority;
+
+        impl crate::AsyncAuthenticator for AsyncAuthority {
+            fn respond(
+                &self,
+                _context: crate::AsyncAuthContext,
+                _challenge: crate::AsyncAuthChallenge,
+            ) -> crate::AuthFuture {
+                Box::pin(async { Ok(crate::AuthAction::Complete) })
+            }
+        }
+
+        for mode in 0..3 {
+            let mut state = MqttState::builder(10).build();
+            match mode {
+                1 => state.set_authenticator(Some(Arc::new(Mutex::new(StaticAuthManager {
+                    response: Ok(None),
+                })))),
+                2 => state.set_async_authenticator(Some(Arc::new(AsyncAuthority))),
+                _ => {}
+            }
+            for client_id in ["first-client", "second-client", ""] {
+                let (client, mut peer) = tokio::io::duplex(1024);
+                let mut network = Network::new(client, Some(1024));
+                let mut options = MqttOptions::new(client_id, "localhost");
+                let mut connack = build_connack_with_receive_max(10);
+                let effective_id = if client_id.is_empty() {
+                    connack
+                        .properties
+                        .as_mut()
+                        .unwrap()
+                        .assigned_client_identifier = Some("assigned-client".into());
+                    "assigned-client"
+                } else {
+                    client_id
+                };
+                let broker = async {
+                    let _connect = read_packet_bytes(&mut peer).await;
+                    let mut bytes = BytesMut::new();
+                    connack.write(&mut bytes).unwrap();
+                    peer.write_all(&bytes).await.unwrap();
+                };
+                let (result, ()) =
+                    tokio::join!(mqtt_connect(&mut options, &mut network, &mut state), broker);
+                result.unwrap();
+                assert_eq!(options.client_id(), effective_id);
+                assert_eq!(
+                    state.auth_client_id,
+                    if mode == 0 { "" } else { effective_id }
+                );
+                if mode == 0 {
+                    assert_eq!(state.auth_client_id.capacity(), 0);
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -13490,56 +13550,63 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_same_identity_session_reuse_preserves_pending_work_without_reloading() {
-        let store = ClearFailingSessionStore::new();
-        let policy =
-            crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
-                RedirectDecision::follow(
-                    RedirectTargetProfile::isolated(
-                        context.references[0].clone(),
-                        Transport::tcp(),
+        for scope in [
+            String::new(),
+            "cluster-a".into(),
+            "cluster\0a".into(),
+            "a".repeat(65_536),
+        ] {
+            let store = ClearFailingSessionStore::new();
+            let policy =
+                crate::RedirectPolicy::new(std::num::NonZeroUsize::new(2).unwrap(), |context| {
+                    RedirectDecision::follow(
+                        RedirectTargetProfile::isolated(
+                            context.references[0].clone(),
+                            Transport::tcp(),
+                        )
+                        .expect("valid advertised redirect target")
+                        .client_id(RedirectClientId::Reuse)
+                        .session(RedirectSession::Reuse {
+                            store_scope: context.store_scope.to_owned(),
+                        }),
                     )
-                    .expect("valid advertised redirect target")
-                    .client_id(RedirectClientId::Reuse)
-                    .session(RedirectSession::Reuse {
-                        store_scope: "cluster-a".to_owned(),
-                    }),
-                )
-            });
-        let mut options = MqttOptions::new("client", "primary.example");
-        options
-            .set_clean_start(false)
-            .set_session_store(store.clone())
-            .set_session_store_scope("cluster-a")
-            .set_redirect_policy(policy);
-        let mut eventloop = EventLoop::new(options, 1);
-        mark_local_session(&mut eventloop);
-        eventloop.session_store.loaded = true;
-        eventloop
-            .pending
-            .push_back(RequestEnvelope::plain(Request::Publish(Publish::new(
-                "pending",
-                QoS::AtLeastOnce,
-                vec![1],
-                None,
-            ))));
+                });
+            let mut options = MqttOptions::new("client", "primary.example");
+            options
+                .set_clean_start(false)
+                .set_session_store(store.clone())
+                .set_session_store_scope(scope.clone())
+                .set_redirect_policy(policy);
+            let mut eventloop = EventLoop::new(options, 1);
+            mark_local_session(&mut eventloop);
+            eventloop.session_store.loaded = true;
+            eventloop
+                .pending
+                .push_back(RequestEnvelope::plain(Request::Publish(Publish::new(
+                    "pending",
+                    QoS::AtLeastOnce,
+                    vec![1],
+                    None,
+                ))));
 
-        eventloop
-            .handle_redirect_outcome(redirect_outcome(
-                RedirectReason::ServerMoved,
-                RedirectSource::Disconnect,
-                Some("backup.example"),
-            ))
-            .unwrap();
+            eventloop
+                .handle_redirect_outcome(redirect_outcome(
+                    RedirectReason::ServerMoved,
+                    RedirectSource::Disconnect,
+                    Some("backup.example"),
+                ))
+                .unwrap();
 
-        assert_eq!(eventloop.pending.len(), 1);
-        assert_eq!(eventloop.options.client_id(), "client");
-        assert_eq!(eventloop.options.session_store_scope(), "cluster-a");
-        assert!(!eventloop.options.clean_start());
-        assert!(eventloop.session_store.loaded);
+            assert_eq!(eventloop.pending.len(), 1);
+            assert_eq!(eventloop.options.client_id(), "client");
+            assert_eq!(eventloop.options.session_store_scope(), scope);
+            assert!(!eventloop.options.clean_start());
+            assert!(eventloop.session_store.loaded);
 
-        eventloop.load_persisted_session_if_needed().await.unwrap();
-        assert_eq!(store.load_count(), 0);
-        assert_eq!(eventloop.pending.len(), 1);
+            eventloop.load_persisted_session_if_needed().await.unwrap();
+            assert_eq!(store.load_count(), 0);
+            assert_eq!(eventloop.pending.len(), 1);
+        }
     }
 
     #[test]

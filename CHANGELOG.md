@@ -2,6 +2,12 @@
 
 ### Changed
 
+- MQTT 5: Preserve application-defined redirect session-store scopes, including
+  empty scopes for externally scoped stores, without MQTT wire-string restrictions.
+  Retain validation of CONNECT fields before applying redirect profiles. Avoid
+  copying client IDs into authentication state when no authentication callbacks
+  are configured, and reuse the allocation when refreshing callback identities.
+
 - MQTT 5: Move publish budgets and detailed transmission outcomes behind the
   default-off `bounded-publish` feature, forwarded by `rumqttc-next`. Feature-off
   clients retain compact request/notice storage and strict capability admission.
