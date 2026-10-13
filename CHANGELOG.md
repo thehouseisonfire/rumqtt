@@ -13,6 +13,30 @@
 
 ### Added
 
+- Native wrappers: Add optional audited structured C logging with explicit retained
+  contexts, immutable sink filters, configuration/live placement, opaque client
+  identities, typed bounded records and independent copies. Deliver on a bounded
+  logging thread independently of MQTT execution; expose loss/failure statistics,
+  accepted-prefix flush observers, and retryable teardown that includes callback
+  owner destruction. Scoped routing preserves unrelated host instrumentation and
+  installs no global subscriber/logger. Add capability reporting, a C example,
+  native consumers and concurrency/redaction tests. Enabled by `tracing`; default
+  features, existing C layouts/statuses, and JavaScript/Python APIs are unchanged.
+  Native source routing is isolated behind the client/core `wrapper-tracing`
+  integration feature, enabled by wrapper tracing. Standalone client `tracing`
+  and `tracing-log-compat` retain their original event path without routing checks.
+  Cargo unifies this integration feature if the same build also enables wrapper tracing.
+  Logging join deadlines and zero-time polling include delivery-thread TLS
+  destruction and contended observation locks. Each explicit logging context
+  also owns one teardown observer to join the delivery worker independently of
+  timed callers. Lifecycle coverage tests retry only overload-accounted captures.
+  Client finalization tolerates logging TLS already destroyed by host thread exit.
+  Flush polling and timed waits observe completion without acquiring the delivery
+  queue mutex, including after notification or timeout.
+  Pending/timed-out C logging observations publish owned errors when requested,
+  without cancelling delivery or teardown. Compatibility records preserve the
+  v4 broker's Boolean `raw_session_present` separately from `session_resumed`.
+
 - Native wrappers: Add tracked explicit session abandonment and fresh recovery for running,
   disconnected MQTT v4/v5 clients. Serialize producers and shutdown, retire unfinished native
   work and stale ACK/alias ownership, clear durable state before reconnecting, and retain

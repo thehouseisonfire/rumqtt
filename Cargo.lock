@@ -2175,6 +2175,7 @@ dependencies = [
  "tokio-native-tls",
  "tokio-rustls",
  "tokio-socks",
+ "tracing",
 ]
 
 [[package]]

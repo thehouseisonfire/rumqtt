@@ -204,6 +204,15 @@ jobs:
           cmake --build target/rumqttc-c-native --config Debug
           ctest --test-dir target/rumqttc-c-native -C Debug --output-on-failure --output-junit results.xml
 
+      - name: C structured logging consumers
+        env:
+          RUMQTTC_TEST_REQUIRE_LOGGING: "1"
+        run: |
+          cargo build --locked -p rumqttc-c-next --features tracing
+          cmake --build target/rumqttc-c-native --config Debug --target rumqttc-native-logging rumqttc-example-logging
+          ctest --test-dir target/rumqttc-c-native -C Debug -R '(native-logging|example-logging)' --output-on-failure
+          cargo build --locked -p rumqttc-c-next
+
       - name: C ordered shutdown consumers
         run: |
           cargo build --locked -p rumqttc-c-next --features ordered-shutdown

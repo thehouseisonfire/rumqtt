@@ -2313,6 +2313,214 @@ RUMQTTC_API uint32_t rumqttc_diagnostics_snapshot_last_failure(
     const rumqttc_diagnostics_snapshot_t *snapshot, rumqttc_error_t **out,
     rumqttc_error_t **error_out);
 
+
+/* Optional audited structured logging. One retained context owns one delivery
+ * thread shared by its registrations and one teardown observer. The observer
+ * joins the delivery thread, including sink-created TLS destruction, without
+ * executing sink callbacks or owner destructors. Callbacks and destructors execute
+ * on the delivery thread, outside MQTT execution and internal locks. They must not unwind across C.
+ * A blocked sink stalls this context's logging, independently of MQTT progress.
+ *
+ * Ownership of user data transfers only when registration_new returns OK.
+ * Configurations/clients retain registrations. Replacement applies to future
+ * logging scopes; active scopes and accepted records retain their original sink.
+ * Callback records and accessor views are borrowed for the callback duration.
+ * record_copy produces owned data; release only copied record handles.
+ * Nonzero callback return disables the registration. Check statistics for loss.
+ * No process-global subscriber/logger is installed. Scoped records go only to
+ * the C sink; unattached clients preserve ambient tracing/log behavior.
+ *
+ * Flush observes an accepted-record prefix, including accounted discards, not
+ * persistence in the host logger. Poll/zero-time waits return WOULD_BLOCK while
+ * pending. Timeouts end observation without cancelling delivery or ownership.
+ * WOULD_BLOCK/TIMEOUT results publish an owned error when error_out is supplied.
+ * try_join reports pending as OK with out=0 and a NULL error output instead.
+ * Flush observation never waits for the delivery queue mutex, including after
+ * notification or timeout. Client finalization still completes if host thread
+ * exit has already destroyed its scoped logging state.
+ * Join requires shutdown, drained records and released registration bindings;
+ * it also waits for owner destruction and full delivery-thread/TLS termination.
+ * Zero-time join observation does not wait on delivery or contended observation
+ * locks. Timeout cannot interrupt a C callback/destructor and never proves quiescence. Blocking waits
+ * are forbidden in callbacks and on MQTT execution workers.
+ * Release configurations/client bindings and registrations, request logging
+ * shutdown, successfully join, then release observers before unloading code.
+ * Copied records remain readable after logging/client teardown.
+ * See README.md's structured logging contract for coverage, bounds and targets.
+ */
+typedef struct rumqttc_logging_context_t rumqttc_logging_context_t;
+typedef struct rumqttc_logging_registration_t rumqttc_logging_registration_t;
+typedef struct rumqttc_logging_flush_t rumqttc_logging_flush_t;
+typedef struct rumqttc_log_record_t rumqttc_log_record_t;
+
+typedef struct rumqttc_logging_options_t {
+  uint32_t struct_size;
+  uint32_t reserved;
+  size_t record_capacity;
+  size_t byte_capacity;
+  size_t registration_capacity;
+} rumqttc_logging_options_t;
+
+typedef struct rumqttc_logging_filter_t {
+  uint32_t struct_size;
+  uint32_t level;
+  const struct rumqttc_string_view_t *targets;
+  size_t target_count;
+} rumqttc_logging_filter_t;
+
+typedef struct rumqttc_logging_vtable_t {
+  uint32_t struct_size;
+  uint32_t reserved;
+  uint32_t (*record)(void*, const struct rumqttc_log_record_t*);
+  void (*destroy)(void*);
+} rumqttc_logging_vtable_t;
+
+typedef struct rumqttc_logging_statistics_t {
+  uint32_t struct_size;
+  uint32_t failed;
+  uint64_t accepted;
+  uint64_t delivered;
+  uint64_t overload;
+  uint64_t rejected;
+  uint64_t suppressed;
+  uint64_t failures;
+  uint64_t discarded;
+} rumqttc_logging_statistics_t;
+
+typedef struct rumqttc_log_record_info_t {
+  uint32_t struct_size;
+  uint32_t level;
+  uint64_t client_id;
+  struct rumqttc_string_view_t name;
+  struct rumqttc_string_view_t target;
+  struct rumqttc_string_view_t message;
+  size_t field_count;
+  uint8_t message_present;
+  uint8_t truncated;
+  uint8_t reserved[6];
+} rumqttc_log_record_info_t;
+
+typedef struct rumqttc_log_field_t {
+  uint32_t struct_size;
+  uint32_t kind;
+  struct rumqttc_string_view_t name;
+  struct rumqttc_string_view_t text;
+  int64_t signed_value;
+  uint64_t unsigned_value;
+  double float_value;
+  uint8_t bool_value;
+  uint8_t reserved[7];
+} rumqttc_log_field_t;
+#define RUMQTTC_CAP_LOGGING_SINK (UINT64_C(1) << 18)
+#define RUMQTTC_LOG_OFF 0u
+#define RUMQTTC_LOG_ERROR 1u
+#define RUMQTTC_LOG_WARN 2u
+#define RUMQTTC_LOG_INFO 3u
+#define RUMQTTC_LOG_DEBUG 4u
+#define RUMQTTC_LOG_TRACE 5u
+#define RUMQTTC_LOG_FIELD_BOOL 1u
+#define RUMQTTC_LOG_FIELD_SIGNED 2u
+#define RUMQTTC_LOG_FIELD_UNSIGNED 3u
+#define RUMQTTC_LOG_FIELD_FLOAT 4u
+#define RUMQTTC_LOG_FIELD_TEXT 5u
+#define RUMQTTC_LOGGING_OPEN 0u
+#define RUMQTTC_LOGGING_CLOSING 1u
+#define RUMQTTC_LOGGING_QUIESCENT 2u
+#define RUMQTTC_LOGGING_OPTIONS_INIT {sizeof(rumqttc_logging_options_t), 0, 1024, 4 * 1024 * 1024, 64}
+#define RUMQTTC_LOGGING_VTABLE_INIT {sizeof(rumqttc_logging_vtable_t), 0, NULL, NULL}
+#define RUMQTTC_LOGGING_FILTER_INIT {sizeof(rumqttc_logging_filter_t), RUMQTTC_LOG_INFO, NULL, 0}
+#define RUMQTTC_LOGGING_STATISTICS_INIT {sizeof(rumqttc_logging_statistics_t), 0, 0, 0, 0, 0, 0, 0, 0}
+#define RUMQTTC_LOG_RECORD_INFO_INIT {sizeof(rumqttc_log_record_info_t), 0, 0, {NULL, 0}, {NULL, 0}, {NULL, 0}, 0, 0, 0, {0}}
+#define RUMQTTC_LOG_FIELD_INIT {sizeof(rumqttc_log_field_t), 0, {NULL, 0}, {NULL, 0}, 0, 0, 0.0, 0, {0}}
+
+RUMQTTC_API uint32_t rumqttc_logging_context_new(const struct rumqttc_logging_options_t *options,
+                                     struct rumqttc_logging_context_t **out,
+                                     struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_registration_new(const struct rumqttc_logging_context_t *context_ptr,
+                                          const struct rumqttc_logging_filter_t *filter,
+                                          const struct rumqttc_logging_vtable_t *vtable,
+                                          void *data,
+                                          struct rumqttc_logging_registration_t **out,
+                                          struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_config_set_logging(struct rumqttc_config_t *config,
+                                    const struct rumqttc_logging_registration_t *value,
+                                    struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_config_clear_logging(struct rumqttc_config_t *config,
+                                      struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_client_set_logging(struct rumqttc_client_t *client,
+                                    const struct rumqttc_logging_registration_t *value,
+                                    struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_client_clear_logging(struct rumqttc_client_t *client,
+                                      struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_context_request_shutdown(const struct rumqttc_logging_context_t *value,
+                                                  struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_context_state(const struct rumqttc_logging_context_t *value,
+                                       uint32_t *out,
+                                       struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_context_join_timeout_ms(const struct rumqttc_logging_context_t *value,
+                                                 uint64_t timeout_ms,
+                                                 struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_context_flush(const struct rumqttc_logging_context_t *value,
+                                       struct rumqttc_logging_flush_t **out,
+                                       struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_flush_wait_timeout_ms(const struct rumqttc_logging_flush_t *value,
+                                               uint64_t timeout_ms,
+                                               struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_context_statistics(const struct rumqttc_logging_context_t *value,
+                                            struct rumqttc_logging_statistics_t *out,
+                                            struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_registration_statistics(const struct rumqttc_logging_registration_t *value,
+                                                 struct rumqttc_logging_statistics_t *out,
+                                                 struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_log_record_info(const struct rumqttc_log_record_t *value,
+                                 struct rumqttc_log_record_info_t *out,
+                                 struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_log_record_field(const struct rumqttc_log_record_t *value,
+                                  size_t index,
+                                  struct rumqttc_log_field_t *out,
+                                  struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_log_record_copy(const struct rumqttc_log_record_t *value,
+                                 struct rumqttc_log_record_t **out,
+                                 struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_context_retain(const struct rumqttc_logging_context_t *value,
+                                        struct rumqttc_logging_context_t **out,
+                                        struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_registration_retain(const struct rumqttc_logging_registration_t *value,
+                                             struct rumqttc_logging_registration_t **out,
+                                             struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_logging_context_release(struct rumqttc_logging_context_t *value);
+
+RUMQTTC_API void rumqttc_logging_registration_release(struct rumqttc_logging_registration_t *value);
+
+RUMQTTC_API void rumqttc_logging_flush_release(struct rumqttc_logging_flush_t *value);
+
+RUMQTTC_API void rumqttc_log_record_release(struct rumqttc_log_record_t *value);
+
+RUMQTTC_API uint32_t rumqttc_logging_context_try_join(const struct rumqttc_logging_context_t *value,
+                                          uint8_t *out,
+                                          struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_logging_flush_poll(const struct rumqttc_logging_flush_t *value,
+                                    struct rumqttc_error_t **error_out);
+
 #ifdef __cplusplus
 }
 #endif

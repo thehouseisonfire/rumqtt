@@ -50,6 +50,10 @@ fn subscribe() -> Command {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Verify an entire recovery transaction and its terminal ownership"
+)]
 fn recovery_hides_candidate_connections_discards_queues_and_preserves_session_policy() {
     for mqtt5 in [false, true] {
         for persistent in [false, true] {
@@ -799,6 +803,10 @@ impl SessionStore for MemoryStore {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Verify an entire recovery transaction and its terminal ownership"
+)]
 fn abandonment_retires_inflight_qos2_subscriptions_and_incoming_ownership() {
     for mqtt5 in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1136,6 +1144,8 @@ fn racing_producers_are_either_discarded_or_definitely_not_admitted() {
         let mut events = client.take_events().unwrap();
         entered.recv_timeout(DEADLINE).unwrap();
         let barrier = Arc::new(std::sync::Barrier::new(9));
+        // Start every producer before entering the barrier; a lazy iterator would deadlock.
+        #[allow(clippy::needless_collect)]
         let producers: Vec<_> = (0..8)
             .map(|_| {
                 let handle = client.handle();
@@ -1461,6 +1471,10 @@ fn failed_recovery_candidate_retirement_fails_graceful_shutdown() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Verify an entire recovery transaction and its terminal ownership"
+)]
 fn shutdown_during_recovery_handshakes_retires_candidates_with_committed_options() {
     for (mqtt5, options, fail_clear) in [
         (false, None, false),

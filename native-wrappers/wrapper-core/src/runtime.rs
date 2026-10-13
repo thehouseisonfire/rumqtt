@@ -191,16 +191,22 @@ impl DriverTerminal {
         );
         self.shared.fail_all_operations(&unresolved);
         self.shared.terminate_diagnostics();
+        #[cfg(feature = "tracing")]
+        rumqttc_core::scoped_event!(name: "mqtt.wrapper.shutdown_completed", target: "rumqttc::wrapper", tracing::Level::INFO,
+            success = matches!(terminal, TerminalStatus::Closed { .. }));
         let _ = sender.send(terminal);
     }
 }
 
 impl Drop for DriverTerminal {
     fn drop(&mut self) {
-        self.finish(TerminalStatus::Failed(Error::new(
-            ErrorKind::Internal,
-            "driver execution cancelled before terminal reconciliation",
-        )));
+        let logging = self.shared.client_logging().clone();
+        logging.enter(|| {
+            self.finish(TerminalStatus::Failed(Error::new(
+                ErrorKind::Internal,
+                "driver execution cancelled before terminal reconciliation",
+            )));
+        });
     }
 }
 
@@ -626,18 +632,64 @@ impl std::fmt::Debug for NativeClient {
 }
 
 impl NativeClient {
+    /// Starts a dedicated client without installing a logging subscriber.
+    /// # Errors
+    /// Returns configuration, execution-capacity, logging-placement, or startup errors.
+    pub fn start(config: ClientConfig) -> Result<Self> {
+        Self::start_with_logging(config, None)
+    }
+
+    /// Starts a client with a retained, optional logging registration.
+    /// # Errors
+    /// Returns configuration, execution-capacity, logging-placement, or startup errors.
+    pub fn start_with_logging(
+        config: ClientConfig,
+        registration: Option<crate::LoggingRegistration>,
+    ) -> Result<Self> {
+        let identity = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
+        let logging = crate::logging::ClientLogging::default();
+        logging.set(registration, identity)?;
+        logging.enter(|| Self::start_logged(config, &logging, identity))
+    }
+
+    /// Starts a client on shared execution, preserving ambient logging.
+    /// # Errors
+    /// Returns configuration, execution-capacity, logging-placement, or startup errors.
+    pub fn start_in(config: ClientConfig, execution: &ExecutionContext) -> Result<Self> {
+        Self::start_in_with_logging(config, execution, None)
+    }
+
+    /// Starts a shared-execution client with independently owned logging.
+    /// # Errors
+    /// Returns configuration, execution-capacity, logging-placement, or startup errors.
+    pub fn start_in_with_logging(
+        config: ClientConfig,
+        execution: &ExecutionContext,
+        registration: Option<crate::LoggingRegistration>,
+    ) -> Result<Self> {
+        let identity = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
+        let logging = crate::logging::ClientLogging::default();
+        logging.set(registration, identity)?;
+        logging.enter(|| Self::start_in_logged(config, execution, &logging, identity))
+    }
+
     /// Starts a dedicated MQTT driver thread.
     ///
     /// # Errors
     ///
     /// Returns an error when configuration validation, protocol client construction, TLS setup,
     /// or driver-thread creation fails.
-    #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.start", skip_all, fields(protocol = ?config.protocol_version())))]
     #[allow(
         clippy::too_many_lines,
         reason = "Build the channels, driver thread, and lifetime owners as one startup transaction"
     )]
-    pub fn start(config: ClientConfig) -> Result<Self> {
+    fn start_logged(
+        config: ClientConfig,
+        logging: &crate::logging::ClientLogging,
+        identity: u64,
+    ) -> Result<Self> {
+        #[cfg(feature = "tracing")]
+        let _span = rumqttc_core::scoped_info_span!(name: "mqtt.wrapper.start", target: "rumqttc_wrapper_core::runtime", protocol = ?config.protocol_version(),).entered();
         config.validate()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -646,7 +698,7 @@ impl NativeClient {
                 Error::sourced(ErrorKind::Internal, DeliveryStatus::NotApplicable, error)
             })?;
         let runtime = StartupRuntime(Some(runtime));
-        let prepared = Self::prepare(config)?;
+        let prepared = Self::prepare_logged(config, logging, identity)?;
         let (done, observe) = flume::bounded(1);
         let PreparedClient {
             identity,
@@ -684,8 +736,14 @@ impl NativeClient {
     ///
     /// # Errors
     /// Returns configuration/startup errors, context backpressure, or a closing-context error.
-    #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.start", skip_all, fields(protocol = ?config.protocol_version())))]
-    pub fn start_in(config: ClientConfig, execution: &ExecutionContext) -> Result<Self> {
+    fn start_in_logged(
+        config: ClientConfig,
+        execution: &ExecutionContext,
+        logging: &crate::logging::ClientLogging,
+        identity: u64,
+    ) -> Result<Self> {
+        #[cfg(feature = "tracing")]
+        let _span = rumqttc_core::scoped_info_span!(name: "mqtt.wrapper.start", target: "rumqttc_wrapper_core::runtime", protocol = ?config.protocol_version(),).entered();
         let reservation = execution.reserve()?;
         let PreparedClient {
             identity,
@@ -693,7 +751,7 @@ impl NativeClient {
             events,
             driver,
             work,
-        } = Self::prepare(config)?;
+        } = Self::prepare_logged(config, logging, identity)?;
         let done = reservation.start(identity, handle.clone(), work, driver)?;
         Ok(Self::from_prepared(
             handle,
@@ -726,7 +784,24 @@ impl NativeClient {
         clippy::too_many_lines,
         reason = "Build client resources as one startup transaction"
     )]
-    fn prepare(mut config: ClientConfig) -> Result<PreparedClient> {
+    #[cfg(test)]
+    fn prepare(config: ClientConfig) -> Result<PreparedClient> {
+        Self::prepare_logged(
+            config,
+            &crate::logging::ClientLogging::default(),
+            NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Prepare client resources as one startup transaction"
+    )]
+    fn prepare_logged(
+        mut config: ClientConfig,
+        logging: &crate::logging::ClientLogging,
+        client_identity: u64,
+    ) -> Result<PreparedClient> {
         install_boundary_panic_hook();
         config.validate()?;
         let reconnect = crate::reconnect::Controller::new(config.common.reconnect.clone());
@@ -758,7 +833,6 @@ impl NativeClient {
         let (immediate_shutdown_tx, immediate_shutdown_rx) = flume::unbounded();
         let (panic_tx, panic_rx) = flume::unbounded();
 
-        let client_identity = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
         let (client, mut driver) = backend::build(config.clone())?;
         let observation = rumqttc_core::ConnectionObservation::default();
         driver.set_connection_observation(observation.clone());
@@ -779,6 +853,13 @@ impl NativeClient {
             panic_tx,
             reconnect,
         );
+        shared
+            .logging_identity
+            .store(client_identity, Ordering::Relaxed);
+        shared
+            .logging
+            .set(logging.clone())
+            .unwrap_or_else(|_| unreachable!("client logging placement initialized once"));
         shared.set_configuration(configuration.control.clone());
         shared.set_protocol_admission_state(session_expiry_zero, reauthentication_enabled);
         shared.publish_native_diagnostics(driver.capture_diagnostics());
@@ -802,7 +883,7 @@ impl NativeClient {
             sender: Some(terminal_tx),
         };
         let task_work = work.clone();
-        let driver = Box::pin(async move {
+        let driver = Box::pin(logging.future(async move {
             let mut terminal = terminal;
             let outcome = DRIVER_WORK
                 .scope(
@@ -811,7 +892,7 @@ impl NativeClient {
                 )
                 .await;
             terminal.finish(outcome.unwrap_or_else(|_| driver_panic()));
-        });
+        }));
         Ok(PreparedClient {
             identity: client_identity,
             handle: ClientHandle::new(shared),
@@ -1020,69 +1101,79 @@ impl<'a> ShutdownInputs<'a> {
     }
 }
 
-#[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.driver", skip_all, fields(protocol = ?context.protocol)))]
 async fn run_driver(driver: BackendDriver, context: DriverContext) -> TerminalStatus {
-    let shared = Arc::clone(&context.shared);
-    let tls_callbacks = driver.tls_callback_monitor();
-    #[cfg(not(feature = "ordered-shutdown"))]
-    let terminal = tokio::select! {
-        terminal = driver.run(context) => Some(terminal),
-        () = shared.wait_graceful_timeout() => None,
-    };
-    #[cfg(feature = "ordered-shutdown")]
-    let terminal = {
-        let execution = driver.run(context);
-        let observation = shared.observe_ordered();
-        tokio::pin!(execution, observation);
-        let mut observed = false;
-        let terminal = loop {
-            tokio::select! {
-                biased;
-                () = &mut observation, if !observed => { observed = true; },
-                () = shared.wait_ordered_abort() => {
-                    // Explicit abort is the boundary allowed to cancel pending native cleanup.
-                    break None;
-                },
-                terminal = &mut execution => break Some(terminal),
-                () = shared.wait_graceful_timeout() => break None,
-            }
+    #[cfg(feature = "tracing")]
+    let span = rumqttc_core::scoped_info_span!(name: "mqtt.wrapper.driver", target: "rumqttc_wrapper_core::runtime", protocol = ?context.protocol,);
+    let work = async move {
+        let shared = Arc::clone(&context.shared);
+        let tls_callbacks = driver.tls_callback_monitor();
+        #[cfg(not(feature = "ordered-shutdown"))]
+        let terminal = tokio::select! {
+            terminal = driver.run(context) => Some(terminal),
+            () = shared.wait_graceful_timeout() => None,
         };
-        // The native sender may finish in the same poll that terminates execution.
-        if !observed {
-            let _ = observation.as_mut().now_or_never();
+        #[cfg(feature = "ordered-shutdown")]
+        let terminal = {
+            let execution = driver.run(context);
+            let observation = shared.observe_ordered();
+            tokio::pin!(execution, observation);
+            let mut observed = false;
+            let terminal = loop {
+                tokio::select! {
+                    biased;
+                    () = &mut observation, if !observed => { observed = true; },
+                    () = shared.wait_ordered_abort() => {
+                        // Explicit abort is the boundary allowed to cancel pending native cleanup.
+                        break None;
+                    },
+                    terminal = &mut execution => break Some(terminal),
+                    () = shared.wait_graceful_timeout() => break None,
+                }
+            };
+            // The native sender may finish in the same poll that terminates execution.
+            if !observed {
+                let _ = observation.as_mut().now_or_never();
+            }
+            terminal
+        };
+        // The backend future has been dropped. Its inner cancellation checks cannot
+        // run, so inspect destruction failures before reconciling a cancelled close.
+        let terminal = terminal.unwrap_or_else(|| {
+            tls_callbacks.failure().map_or_else(
+                || {
+                    shared.reconcile_closed();
+                    TerminalStatus::Closed { graceful: false }
+                },
+                |failure| {
+                    TerminalStatus::Failed(
+                        Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous),
+                    )
+                },
+            )
+        });
+        #[cfg(not(feature = "ordered-shutdown"))]
+        {
+            terminal
         }
-        terminal
+        #[cfg(feature = "ordered-shutdown")]
+        {
+            if shared.immediate_shutdown_requested() {
+                return terminal;
+            }
+            match (&terminal, shared.ordered_result()) {
+                (TerminalStatus::Failed(_), _) | (_, None) => terminal,
+                (_, Some(Ok(_))) => TerminalStatus::Closed { graceful: true },
+                (_, Some(Err(error))) => TerminalStatus::Failed(error),
+            }
+        }
     };
-    // The backend future has been dropped. Its inner cancellation checks cannot
-    // run, so inspect destruction failures before reconciling a cancelled close.
-    let terminal = terminal.unwrap_or_else(|| {
-        tls_callbacks.failure().map_or_else(
-            || {
-                shared.reconcile_closed();
-                TerminalStatus::Closed { graceful: false }
-            },
-            |failure| {
-                TerminalStatus::Failed(
-                    Error::tls_callback(failure).with_delivery(DeliveryStatus::Ambiguous),
-                )
-            },
-        )
-    });
-    #[cfg(not(feature = "ordered-shutdown"))]
+    #[cfg(feature = "tracing")]
     {
-        terminal
+        use tracing::Instrument as _;
+        work.instrument(span).await
     }
-    #[cfg(feature = "ordered-shutdown")]
-    {
-        if shared.immediate_shutdown_requested() {
-            return terminal;
-        }
-        match (&terminal, shared.ordered_result()) {
-            (TerminalStatus::Failed(_), _) | (_, None) => terminal,
-            (_, Some(Ok(_))) => TerminalStatus::Closed { graceful: true },
-            (_, Some(Err(error))) => TerminalStatus::Failed(error),
-        }
-    }
+    #[cfg(not(feature = "tracing"))]
+    work.await
 }
 
 pub struct EventDelivery<'a> {

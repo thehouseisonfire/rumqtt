@@ -85,6 +85,19 @@ jobs:
       - name: Check client workspace
         run: cargo check --locked --workspace --exclude benchmarks --all-targets
 
+      - name: Check standalone tracing isolation
+        run: |
+          for profile in default tracing tracing-log-compat; do
+            cargo tree --locked -p rumqttc-v4-next -p rumqttc-v5-next \
+              --no-default-features --features "$profile" -e normal,build,features \
+              -i rumqttc-core-next > target/standalone-tracing-features.txt
+            if rg -q 'feature "wrapper-tracing"' target/standalone-tracing-features.txt; then
+              cat target/standalone-tracing-features.txt
+              echo 'ordinary client features must not enable wrapper tracing' >&2
+              exit 1
+            fi
+          done
+
       - name: Check client feature matrix
         run: |
           cargo hack --locked --each-feature --exclude-all-features \

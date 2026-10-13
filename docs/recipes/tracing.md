@@ -6,6 +6,13 @@ established and lost connections, session restoration and replay, and protocol
 violations. Payloads, topics, credentials, broker URLs, client IDs, and MQTT user
 properties are not recorded.
 
+Ordinary `tracing` and `tracing-log-compat` use tracing's event macros directly;
+they do not enable native-wrapper routing or add its thread-local checks. The
+native wrapper enables the separate `wrapper-tracing` integration feature for
+scoped capture. Cargo features are additive: if the same build uses a tracing-enabled
+wrapper and the same versioned client crate, they share the routing-enabled crate.
+Standalone clients need only the ordinary tracing features shown below.
+
 ## Install a Subscriber
 
 rumqttc emits events but deliberately does not install a subscriber. Enable the

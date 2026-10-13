@@ -1,6 +1,10 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[doc(hidden)]
+#[cfg(feature = "wrapper-tracing")]
+pub mod native_tracing;
+
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;

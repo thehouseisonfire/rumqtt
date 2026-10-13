@@ -31,7 +31,7 @@ socks-proxy = ["rumqttc_v4/socks-proxy", "rumqttc_v5/socks-proxy", "dep:tokio-so
 proxy = ["http-proxy", "socks-proxy"]
 system-srv-resolver = ["rumqttc_v5/system-srv-resolver"]
 auth-scram = ["rumqttc_v5/auth-scram", "dep:scram"]
-tracing = ["rumqttc_v4/tracing", "rumqttc_v5/tracing", "dep:tracing"]
+tracing = ["rumqttc_v4/wrapper-tracing", "rumqttc_v5/wrapper-tracing", "dep:tracing", "dep:arc-swap"]
 tracing-log-compat = ["tracing", "rumqttc_v4/tracing-log-compat", "rumqttc_v5/tracing-log-compat", "tracing/log"]
 ordered-shutdown = ["rumqttc_v4/ordered-shutdown", "rumqttc_v5/ordered-shutdown"]
 panic-testing = []
@@ -39,6 +39,7 @@ panic-testing = []
 transport-proof = ["dep:cc"]
 
 [dependencies]
+arc-swap = { version = "1", optional = true }
 fastrand = "2.5"
 async-tungstenite = { version = "0.35", default-features = false, features = ["handshake"], optional = true }
 bytes = "1.12.1"
@@ -57,7 +58,7 @@ tokio = { version = "1.40", features = ["macros", "rt", "rt-multi-thread", "sync
 tokio-socks = { version = "0.5.3", optional = true }
 native-tls = { version = "0.2.18", optional = true, features = ["alpn"] }
 http = { version = "1", optional = true }
-tracing = { version = "0.1", optional = true, default-features = false, features = ["std", "attributes"] }
+tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dependencies.rumqttc-core-next]
 path = "../../rumqttc-core"

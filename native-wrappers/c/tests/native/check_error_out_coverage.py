@@ -9,7 +9,8 @@ import sys
 
 root = pathlib.Path(__file__).resolve().parents[2]
 header = (root / "include" / "rumqttc.h").read_text(encoding="utf-8")
-source = (pathlib.Path(__file__).parent / "error_out_contract.c").read_text(encoding="utf-8")
+source = "\n".join((pathlib.Path(__file__).parent / name).read_text(encoding="utf-8")
+                   for name in ("error_out_contract.c", "native_logging.c"))
 functions = set(
     re.findall(
         r"RUMQTTC_API\s+[^;]*?\b(rumqttc_[a-z0-9_]+)\s*\([^;]*?rumqttc_error_t\s*\*\*\s*error_out\b[^;]*\);",

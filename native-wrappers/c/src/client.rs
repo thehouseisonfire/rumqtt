@@ -26,11 +26,12 @@ impl ClientObject {
     pub fn start(
         config: rumqttc_wrapper_core::ClientConfig,
         execution: Option<&ExecutionContext>,
+        logging: Option<rumqttc_wrapper_core::LoggingRegistration>,
     ) -> Result<Self, rumqttc_wrapper_core::Error> {
         let protocol = config.protocol_version();
         let mut native = match execution {
-            Some(execution) => NativeClient::start_in(config, execution)?,
-            None => NativeClient::start(config)?,
+            Some(execution) => NativeClient::start_in_with_logging(config, execution, logging)?,
+            None => NativeClient::start_with_logging(config, logging)?,
         };
         let handle = native.handle();
         let closer = native.closer();

@@ -22,6 +22,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 # Opt-in coordination for explicit session abandonment by a managed connection owner.
 session-recovery = []
+# Scoped capture for native wrappers; ordinary client tracing does not enable this.
+wrapper-tracing = ["dep:tracing"]
 ordered-shutdown = []
 default = ["use-rustls"]
 use-rustls = ["use-rustls-aws-lc"]
@@ -35,6 +37,7 @@ http-proxy = ["dep:async-http-proxy"]
 socks-proxy = ["dep:tokio-socks"]
 
 [dependencies]
+tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 tokio = { version = "1.40", features = ["io-util", "net", "sync", "time", "macros"] }
 thiserror = "2.0.8"
 

@@ -264,22 +264,25 @@ impl Dispatch {
         let _stop = Stop(stop);
         let runtime = tokio::runtime::Handle::current();
         let blocking_work = crate::execution::register_blocking_work();
+        let logging = crate::logging::ClientLogging::current();
         let mut worker = tokio::task::spawn_blocking(move || {
-            let _blocking_work = blocking_work;
-            let _entered = runtime.enter();
-            futures_executor::block_on(async move {
-                match futures_util::future::select(
-                    Box::pin(handshake),
-                    Box::pin(cancelled.recv_async()),
-                )
-                .await
-                {
-                    futures_util::future::Either::Left((result, _)) => result,
-                    futures_util::future::Either::Right(_) => Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "TLS handshake cancelled",
-                    )),
-                }
+            logging.enter(|| {
+                let _blocking_work = blocking_work;
+                let _entered = runtime.enter();
+                futures_executor::block_on(async move {
+                    match futures_util::future::select(
+                        Box::pin(handshake),
+                        Box::pin(cancelled.recv_async()),
+                    )
+                    .await
+                    {
+                        futures_util::future::Either::Left((result, _)) => result,
+                        futures_util::future::Either::Right(_) => Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "TLS handshake cancelled",
+                        )),
+                    }
+                })
             })
         });
         let mut run = Box::pin(async {

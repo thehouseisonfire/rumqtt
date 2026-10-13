@@ -25,9 +25,9 @@ forward compatibility. C Cargo features forward to wrapper-core (`use-rustls`,
 includes `tracing`. The default build enables AWS-LC Rustls and WebSocket.
 The library does not install a process-global tracing subscriber or logger.
 An embedding Rust host can install its own subscriber before creating clients.
-A C-only host that wants Rust trace output can link a small Rust integration
-shim that installs the host's chosen subscriber or logger at process startup;
-the C ABI does not currently configure or own that process-global sink.
+C hosts can use optional scoped registrations described in
+[Structured logging](#structured-logging), or link a Rust shim for host-owned
+global integration. A scoped C registration does not fan out to the host subscriber.
 For Ring, build with `--no-default-features --features use-rustls-ring,websocket`.
 Ring and AWS-LC cannot be enabled together. The Rust-only wrapper core also
 supports `use-rustls-no-provider` for hosts that install a process default
@@ -37,6 +37,144 @@ negotiation. `RUMQTTC_CAP_SESSION_STORE_CALLBACKS` reports the available
 durable-session callback API.
 `RUMQTTC_CAP_AUTH_CALLBACKS` reports the raw MQTT 5 asynchronous
 authenticator callback API.
+
+## Structured logging
+
+Build with `--features tracing` and test `RUMQTTC_CAP_LOGGING_SINK` before using
+logging registration APIs. `RUMQTTC_CAP_TRACING` describes instrumentation;
+`RUMQTTC_CAP_LOGGING_SINK` describes the C integration. Disabled creation and
+attachment APIs return `CONFIG_ERROR`, initialize outputs, and transfer no user
+data. Default features remain unchanged. `tracing-log-compat` enables tracing's
+legacy-log fallback; it does not capture native/dependency `log!` calls.
+
+Wrapper tracing enables the separate `wrapper-tracing` integration feature in
+the native client/core crates. Standalone Rust `tracing` and `tracing-log-compat`
+keep their original event path, without routing checks or routing thread-local
+state. Cargo unifies features when the same build includes a tracing-enabled
+wrapper and the same client crate; that combined build uses the scoped routing path.
+
+Create a `rumqttc_logging_context_t`, then a registration from a callback vtable
+and immutable filter. Configuration set/clear operations snapshot placement at
+client startup. Live client set/clear operations replace it for subsequently
+entered scopes; already active scopes and accepted records retain their original
+registration. Retain handles explicitly when sharing ownership. Logging placement
+is independent of MQTT runtime configuration, protocol, events, and completions.
+
+A context owns one delivery thread shared by all its registrations and one
+teardown observer that joins that thread, including its TLS destruction. The
+observer invokes no sink callbacks or owner destructors. Callbacks and
+owner destructors run serially there, without queue, lifecycle, or admission
+locks held by that thread. A blocked sink/destructor stalls that context's other
+logging, while MQTT keepalive, QoS, reconnect and shutdown continue independently.
+Callbacks may call nonblocking wrapper APIs. Nonzero native waits are forbidden
+from callbacks, including logging flush/join and waits for another client.
+Records generated during logging callbacks/destructors are suppressed, including
+reentrant wrapper instrumentation and the later completion records of operations
+admitted by those callbacks. C callbacks/destructors must never unwind.
+
+Only audited records are forwarded:
+
+| Target | Records |
+| --- | --- |
+| `rumqttc::lifecycle` | `mqtt.connection_attempt`, `mqtt.connection_attempt_failed`, `mqtt.connection_established`, `mqtt.connection_lost`, `mqtt.session_restored`, `mqtt.replay_prepared`, `mqtt.protocol_violation`, v4 `mqtt.protocol_compatibility` |
+| `rumqttc_wrapper_core::runtime` | `mqtt.wrapper.start`, `mqtt.wrapper.driver` |
+| `rumqttc_wrapper_core::handle` | `mqtt.wrapper.try_admit`, `mqtt.wrapper.admit` |
+| `rumqttc_wrapper_core::operations` | `mqtt.wrapper.complete` |
+| `rumqttc::wrapper` | `mqtt.wrapper.shutdown_requested`, `mqtt.wrapper.shutdown_completed` |
+
+Selected wrapper span creation produces one record. No span tree or repeated
+entry/exit records are exported. Driver-start records are explicit events so a
+long-lived driver span does not pin a replaced sink. Startup, synchronous
+admission, driver polling/cancellation, terminal reconciliation, and wrapper
+TLS blocking work explicitly carry scoped dispatch. Other dependency-created
+threads/tasks and legacy log sources are outside coverage. Audited event sources
+use a library-local dispatcher; this does not set tracing's default or its global
+"subscriber ever set" latch. Selected wrapper spans become records in that route
+and remain ordinary host spans when unattached. No global logger or subscriber is
+installed. Audited records in attached scopes route exclusively to their C sink;
+unattached clients and unrelated host work preserve ambient tracing/log fallback.
+A failed/closing attached sink does not fall back to the host subscriber.
+If host thread exit has already destroyed the scoped routing state, client
+finalization still completes; logging capture on that thread is unavailable.
+
+Records include event name, level, target, a wrapper-generated opaque client
+identity, optional message, typed fields, and a truncation flag. Identity is
+stable across reconnect and replacement; it is not the MQTT client ID. Native
+lifecycle fields retain scalar types: attempt/generation/count fields are
+unsigned integers and reconnect/session flags are Boolean. Classification and
+protocol fields are text; native protocol values are `v4`/`v5`, while wrapper
+Debug text is backend-specific. Completion records carry unsigned `operation_id`
+and Boolean `success`; shutdown records carry mode or success. Names and these
+field meanings are documented observations, not MQTT operation outcomes.
+The v4 `mqtt.protocol_compatibility` record for `AcceptAsClean` preserves
+`raw_session_present=true` from the broker and `session_resumed=false` from the
+accepted fresh-session interpretation as separate Boolean fields.
+
+Metadata filters run before field visitation; unsupported names/targets are
+rejected regardless of filter verbosity. Empty target lists match all supported
+targets; other lists match exact strings. INFO is the default, DEBUG includes
+connection attempts, and OFF disables records. Compiled tracing maximum-level
+filters also apply to capture. Filters permit at most 16 targets of 128 bytes each.
+The audit excludes credentials, key/authentication material,
+persistence contents, proxy passwords, handshake headers, topics, payloads, and
+broker response properties. Dependency WebSocket TRACE requests are never
+forwarded. Protocol contents remain available through explicit event/completion
+accessors.
+
+Defaults are 1,024 queued records, 4 MiB aggregate owned record storage, and
+64 registrations per context, all configurable at construction. Each record
+has at most 16 fields and 4 KiB owned storage, including allocated field storage
+and metadata. Text fields are limited to 256 bytes and optional messages to
+1,024 bytes, with UTF-8-safe truncation indicators. The worker holds at most one
+additional active record. Registration slots remain occupied through destruction;
+retirement is serviced even under sustained record traffic. Context limits do not
+bound copies explicitly retained by the application.
+
+Admission never waits for queue capacity: newest records are rejected on capacity
+exhaustion or producer lock contention. Accepted records are delivered in context
+admission order; concurrent producer chronology and other wrapper channels have
+no shared ordering guarantee. Independently readable, saturating statistics
+report accepted/delivered records, overload drops, failed/closing rejections,
+recursive suppression, callback failures, and failed-sink backlog discards.
+Snapshots read counters independently. A nonzero callback result disables that
+registration permanently; its accepted backlog is discarded with accounting and
+other registrations continue. Rejected logging never becomes MQTT event loss or
+a broker/protocol error. Rust sink panics are contained as logging failures;
+foreign unwinding remains forbidden.
+
+Accessor views borrow the callback record until callback return. Use
+`rumqttc_log_record_copy()` to obtain independent owned data; copied-record views
+remain valid until `rumqttc_log_record_release()`, including after client/logging
+teardown. Never release a callback-borrowed record. A copied record retains no
+sink or context.
+
+`rumqttc_logging_context_flush()` captures an accepted-record prefix in a retained
+observer. Poll or wait observes processing of that prefix, including explicit
+discards; it does not prove durable output in the host logger. Zero-time pending
+waits return `WOULD_BLOCK`; nonzero expiry returns `TIMEOUT` without cancelling
+work or changing the observer's boundary. New records do not extend that boundary.
+Observation never acquires the delivery queue mutex, including after a wake or
+timeout, so queue contention cannot block polling or extend the wait budget.
+Flush polling/waiting and timed joins publish an owned error for `WOULD_BLOCK`
+or `TIMEOUT` when `error_out` is supplied. Release it with
+`rumqttc_error_destroy()`, then retry the same observer as needed.
+`rumqttc_logging_context_try_join()` instead reports pending as `OK` with
+`out=0` and a NULL error output.
+
+MQTT close/join does not wait for logging. Release configuration/client bindings
+and registrations, request logging shutdown, then successfully join the logging
+context. Shutdown stops admission and drains accepted records. `Closing` persists
+while records, active calls, owner destruction, delivery-thread TLS destruction,
+or registration references remain. `Quiescent` is reported only after the delivery
+thread and its teardown observer have joined. Zero-time join polling never waits
+for pending teardown or contended observation locks. A deadline cannot
+interrupt a blocked callback/destructor: timeout retains ownership and join may
+be retried. Final-owner release requests cleanup without waiting; it proves no
+quiescence. Keep an observer until join succeeds, release remaining flush/copied
+record/context handles, and only then unload the library or callback code.
+
+See [`examples/logging.c`](examples/logging.c) for registration, delivery loss
+accounting, separate MQTT close, flush, and logging teardown.
 
 ## Runtime configuration updates
 
@@ -1344,6 +1482,7 @@ The [`examples`](examples) directory contains warning-clean C11 programs for:
 
 - [single-threaded event polling](examples/event_polling.c);
 - [classified reconnects and finite retry budgets](examples/reconnect.c);
+- [structured logging, loss accounting, and logging teardown](examples/logging.c);
 - [publishing from multiple native threads](examples/multithreaded_publishing.c);
 - [bounded offline MQTT 5 publishing](examples/offline_publishing.c);
 - [polling and timed waiting for tracked completions](examples/tracked_completion.c);
@@ -1364,7 +1503,8 @@ cmake --build native-wrappers/target/rumqttc-c-native
 ctest --test-dir native-wrappers/target/rumqttc-c-native -L example --output-on-failure
 ```
 
-The WebSocket token example exits with code 77 when the loaded library lacks
+The logging example exits with code 77 without `tracing`; the WebSocket token
+example exits with code 77 when the loaded library lacks
 `RUMQTTC_CAP_WEBSOCKET_CALLBACKS`; CTest reports it as skipped. Invalid invocation
 arguments remain errors.
 

@@ -57,6 +57,8 @@ impl AdmissionGate {
 pub static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct Shared {
+    pub(crate) logging: std::sync::OnceLock<crate::logging::ClientLogging>,
+    pub(crate) logging_identity: AtomicU64,
     diagnostics: Mutex<Option<Arc<crate::NativeDiagnosticsSnapshot>>>,
     diagnostics_terminated: AtomicBool,
     pub(crate) reconnect: Arc<crate::reconnect::Controller>,
@@ -78,6 +80,11 @@ pub struct Shared {
 }
 
 impl Shared {
+    pub(crate) fn client_logging(&self) -> &crate::logging::ClientLogging {
+        self.logging
+            .get_or_init(crate::logging::ClientLogging::default)
+    }
+
     pub(crate) fn publish_native_diagnostics(&self, value: crate::NativeDiagnosticsSnapshot) {
         let mut next = Arc::new(value);
         let mut cache = self
@@ -141,6 +148,8 @@ impl Shared {
             BackendClient::V5(_) => ProtocolVersion::V5,
         };
         Arc::new(Self {
+            logging: std::sync::OnceLock::new(),
+            logging_identity: AtomicU64::new(0),
             diagnostics: Mutex::new(None),
             diagnostics_terminated: AtomicBool::new(false),
             reconnect,
@@ -276,7 +285,8 @@ impl Shared {
             protocol,
             session_present,
         });
-        if let Some(operation) = self.recovery_operation.lock().unwrap().take() {
+        let operation = self.recovery_operation.lock().unwrap().take();
+        if let Some(operation) = operation {
             self.recovery.complete();
             self.operations
                 .complete(operation, Ok(crate::Completion::SessionRecovered));
@@ -425,7 +435,8 @@ impl Shared {
     }
     pub(crate) fn fail_recovery(&self, error: &Error, interrupted: bool) {
         let _guard = self.admission_gate.lock();
-        if let Some(operation) = self.recovery_operation.lock().unwrap().take() {
+        let operation = self.recovery_operation.lock().unwrap().take();
+        if let Some(operation) = operation {
             let observation = self
                 .recovery
                 .observation()
@@ -537,12 +548,33 @@ impl std::fmt::Debug for ClientHandle {
 impl Drop for ClientHandle {
     fn drop(&mut self) {
         if self.shared.release_handle() {
-            self.shared.best_effort_immediate_close();
+            let logging = self.shared.client_logging().clone();
+            logging.enter(|| {
+                #[cfg(feature = "tracing")]
+                rumqttc_core::scoped_event!(
+                    name: "mqtt.wrapper.shutdown_requested",
+                    target: "rumqttc::wrapper",
+                    tracing::Level::INFO,
+                    mode = "immediate",
+                );
+                self.shared.best_effort_immediate_close();
+            });
         }
     }
 }
 
 impl ClientHandle {
+    /// Replace logging placement; MQTT state and active logging scopes are unchanged.
+    /// # Errors
+    /// Returns invalid-state errors for failed registrations or closing logging contexts.
+    pub fn set_logging(&self, registration: Option<crate::LoggingRegistration>) -> Result<()> {
+        let logging = self.shared.client_logging().clone();
+        logging.set(
+            registration,
+            self.shared.logging_identity.load(Ordering::Relaxed),
+        )
+    }
+
     /// Captures independent wrapper observations and shares the last native sample.
     /// This never queues driver work or waits for MQTT/event delivery. Values remain
     /// readable after termination; native data may be indefinitely stale.
@@ -613,12 +645,25 @@ impl ClientHandle {
     /// driver thread to terminate; the owning [`crate::NativeClient`] can subsequently
     /// use [`crate::NativeClient::join`] for bounded cleanup.
     pub fn close_now_idempotent(&self) {
-        self.shared.best_effort_immediate_close();
+        let logging = self.shared.client_logging().clone();
+        logging.enter(|| {
+            #[cfg(feature = "tracing")]
+            rumqttc_core::scoped_event!(name: "mqtt.wrapper.shutdown_requested", target: "rumqttc::wrapper", tracing::Level::INFO, mode = "immediate");
+            self.shared.best_effort_immediate_close();
+        });
     }
 
     /// Terminates the driver through its panic-containment boundary after a host-boundary panic.
     pub fn terminate_for_internal_panic(&self) {
         _ = self.shared.panic_tx.send(());
+    }
+
+    /// Nonblocking admission, scoped to the client's current logging registration.
+    /// # Errors
+    /// Returns an admission error when the command is invalid, the client is closing, or capacity is exhausted.
+    pub fn try_admit(&self, command: Command) -> Result<Admission> {
+        let logging = self.shared.client_logging().clone();
+        logging.enter(|| self.try_admit_logged(command))
     }
 
     /// Nonblocking admission into the underlying bounded MQTT request channel.
@@ -627,11 +672,9 @@ impl ClientHandle {
     ///
     /// Returns an error when the command is invalid, the request channel is full or closed, or the
     /// client is shutting down.
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(name = "mqtt.wrapper.try_admit", skip_all)
-    )]
-    pub fn try_admit(&self, command: Command) -> Result<Admission> {
+    fn try_admit_logged(&self, command: Command) -> Result<Admission> {
+        #[cfg(feature = "tracing")]
+        let _span = rumqttc_core::scoped_info_span!(name: "mqtt.wrapper.try_admit", target: "rumqttc_wrapper_core::handle", ).entered();
         match command {
             Command::Publish(command) => self.try_publish(command),
             Command::Subscribe(command) => self.try_subscribe(command),
@@ -712,43 +755,55 @@ impl ClientHandle {
     ///
     /// Returns an error when the command is invalid, the request channel closes, or the client is
     /// shutting down. A publish exceeding its individual byte limit fails without waiting.
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(name = "mqtt.wrapper.admit", skip_all)
-    )]
     pub async fn admit_async(&self, command: Command) -> Result<Admission> {
-        match command {
-            Command::Publish(command) => self.publish(command).await,
-            Command::Subscribe(command) => self.subscribe(command).await,
-            Command::Unsubscribe(filters) => self.unsubscribe(filters).await,
-            Command::Acknowledge(token) => {
-                self.acknowledge(token, &crate::AcknowledgementProtocolOptions::default())
+        let logging = self.shared.client_logging().clone();
+        logging.future(self.admit_async_logged(command)).await
+    }
+
+    async fn admit_async_logged(&self, command: Command) -> Result<Admission> {
+        #[cfg(feature = "tracing")]
+        let span = rumqttc_core::scoped_info_span!(name: "mqtt.wrapper.admit", target: "rumqttc_wrapper_core::handle", );
+        let work = async move {
+            match command {
+                Command::Publish(command) => self.publish(command).await,
+                Command::Subscribe(command) => self.subscribe(command).await,
+                Command::Unsubscribe(filters) => self.unsubscribe(filters).await,
+                Command::Acknowledge(token) => {
+                    self.acknowledge(token, &crate::AcknowledgementProtocolOptions::default())
+                        .await
+                }
+                Command::AcknowledgeWithOptions { token, protocol } => {
+                    self.acknowledge(token, &protocol).await
+                }
+                Command::Reauthenticate(properties) => {
+                    self.retry_on_backpressure(|| self.try_reauthenticate(properties.as_ref()))
+                        .await
+                }
+                Command::OrderedDisconnect { timeout } => {
+                    self.retry_on_backpressure(|| {
+                        self.try_ordered_close(
+                            timeout,
+                            crate::DisconnectProtocolOptions::VersionNeutral,
+                        )
+                    })
                     .await
+                }
+                Command::OrderedDisconnectWithOptions { timeout, protocol } => {
+                    self.retry_on_backpressure(|| self.try_ordered_close(timeout, protocol.clone()))
+                        .await
+                }
+                // Ordinary shutdown and diagnostics use priority/control paths and never wait for the publish queue.
+                other => self.try_admit(other),
             }
-            Command::AcknowledgeWithOptions { token, protocol } => {
-                self.acknowledge(token, &protocol).await
-            }
-            Command::Reauthenticate(properties) => {
-                self.retry_on_backpressure(|| self.try_reauthenticate(properties.as_ref()))
-                    .await
-            }
-            Command::OrderedDisconnect { timeout } => {
-                self.retry_on_backpressure(|| {
-                    self.try_ordered_close(
-                        timeout,
-                        crate::DisconnectProtocolOptions::VersionNeutral,
-                    )
-                })
-                .await
-            }
-            Command::OrderedDisconnectWithOptions { timeout, protocol } => {
-                self.retry_on_backpressure(|| self.try_ordered_close(timeout, protocol.clone()))
-                    .await
-            }
-            // Ordinary shutdown and diagnostics use priority/control paths and never wait for the publish queue.
-            other => self.try_admit(other),
+            .map_err(|error| self.shared.contextualize(error))
+        };
+        #[cfg(feature = "tracing")]
+        {
+            use tracing::Instrument as _;
+            work.instrument(span).await
         }
-        .map_err(|error| self.shared.contextualize(error))
+        #[cfg(not(feature = "tracing"))]
+        work.await
     }
 
     /// Blocking counterpart to [`Self::admit_async`].
@@ -1012,6 +1067,8 @@ impl ClientHandle {
         timeout: Option<Duration>,
         protocol: crate::DisconnectProtocolOptions,
     ) -> Result<Admission> {
+        #[cfg(feature = "tracing")]
+        rumqttc_core::scoped_event!(name: "mqtt.wrapper.shutdown_requested", target: "rumqttc::wrapper", tracing::Level::INFO, mode = "graceful");
         let _shutdown_guard = self.shared.admission_gate.lock();
         self.shared.validate_disconnect(&protocol)?;
         if !self.shared.shutdown.graceful_admission_allowed() {
@@ -1038,6 +1095,8 @@ impl ClientHandle {
     }
 
     fn try_close_now(&self, protocol: crate::DisconnectProtocolOptions) -> Result<Admission> {
+        #[cfg(feature = "tracing")]
+        rumqttc_core::scoped_event!(name: "mqtt.wrapper.shutdown_requested", target: "rumqttc::wrapper", tracing::Level::INFO, mode = "immediate");
         let _shutdown_guard = self.shared.admission_gate.lock();
         self.shared.validate_disconnect(&protocol)?;
         let Some(immediate_admission) = self.shared.shutdown.immediate_admission() else {

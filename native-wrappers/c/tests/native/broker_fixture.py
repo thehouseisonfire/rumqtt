@@ -878,6 +878,12 @@ class Broker:
             if client_id == b"c-reconnect-example" and attempt <= 2:
                 stream.sendall(frame(2, 0, b"\x00\x89\x00"))
                 return
+            if client_id.startswith(b"native-logging-wire-") and attempt == 1:
+                self.client_ids.add(client_id)
+                ack = frame(2, 0, b"\x00\x00" if protocol == 4 else b"\x00\x00\x00")
+                # A second CONNACK after establishment produces an audited protocol violation.
+                stream.sendall(ack + ack)
+                return
             if client_id.startswith(b"native-session-recovery-") or client_id == b"c-session-recovery-example":
                 if attempt == 1:
                     stream.sendall(frame(2, 0, b"\x00\x89\x00" if protocol == 5 else b"\x00\x03"))

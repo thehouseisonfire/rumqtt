@@ -33,6 +33,25 @@ The hidden native event-loop recovery methods are coordinated support for this
 managed owner. Calling them without the shared producer/shutdown barrier does not
 provide the wrapper's transaction guarantees.
 
+## Logging ownership
+
+With `tracing`, `LoggingContext` owns one bounded delivery worker and one teardown
+observer independently of MQTT execution. The observer joins the delivery thread,
+including sink-created TLS destruction, without blocking timed callers beyond
+their observation budget. This enables the native clients' separate `wrapper-tracing`
+integration feature. Standalone client `tracing`/`tracing-log-compat` retain direct
+tracing macros with no source-routing checks; Cargo unifies the integration feature
+when the same build also enables wrapper tracing. Retained `LoggingRegistration`
+filters route only audited records; `NativeClient::start_with_logging`/`start_in_with_logging` and
+`ClientHandle::set_logging` select placement without changing `ClientConfig`.
+Existing startup methods preserve ambient host tracing. Flush observers capture
+accepted prefixes; shutdown/join observes sink destruction and thread teardown,
+separately from MQTT close. Flush observation never acquires the delivery queue
+mutex. Client finalization continues if host thread exit has already destroyed
+its logging routing TLS. Callbacks/destructors run off MQTT workers and
+blocking native waits are forbidden inside them. See the
+[C coverage, bounds, ownership and teardown contract](../c/README.md#structured-logging).
+
 ## Execution ownership
 
 `NativeClient::start(config)` preserves dedicated-thread startup.

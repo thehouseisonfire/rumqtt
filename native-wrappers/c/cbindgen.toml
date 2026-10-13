@@ -9,6 +9,17 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_logging_context",
+    "rumqttc_logging_registration",
+    "rumqttc_logging_flush",
+    "rumqttc_log_record",
+    "rumqttc_logging_options_t",
+    "rumqttc_logging_vtable_t",
+    "rumqttc_logging_filter_t",
+    "rumqttc_logging_statistics_t",
+    "rumqttc_log_record_info_t",
+    "rumqttc_log_field_t",
+
     "rumqttc_diagnostics_snapshot",
     "rumqttc_diagnostics_status_t",
     "rumqttc_diagnostics_group_info_t",
@@ -128,3 +139,8 @@ include = [
 "rumqttc_configuration_snapshot" = "rumqttc_configuration_snapshot_t"
 
 "rumqttc_diagnostics_snapshot" = "rumqttc_diagnostics_snapshot_t"
+
+"rumqttc_logging_context" = "rumqttc_logging_context_t"
+"rumqttc_logging_registration" = "rumqttc_logging_registration_t"
+"rumqttc_logging_flush" = "rumqttc_logging_flush_t"
+"rumqttc_log_record" = "rumqttc_log_record_t"

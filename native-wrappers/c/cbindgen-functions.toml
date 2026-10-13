@@ -41,3 +41,8 @@ item_types = ["functions"]
 "rumqttc_configuration_snapshot" = "rumqttc_configuration_snapshot_t"
 
 "rumqttc_diagnostics_snapshot" = "rumqttc_diagnostics_snapshot_t"
+
+"rumqttc_logging_context" = "rumqttc_logging_context_t"
+"rumqttc_logging_registration" = "rumqttc_logging_registration_t"
+"rumqttc_logging_flush" = "rumqttc_logging_flush_t"
+"rumqttc_log_record" = "rumqttc_log_record_t"

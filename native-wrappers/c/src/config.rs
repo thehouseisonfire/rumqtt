@@ -14,6 +14,7 @@ pub struct ConfigHandle {
 struct ConfigState {
     config: ClientConfig,
     execution: Option<ExecutionContext>,
+    logging: Option<rumqttc_wrapper_core::LoggingRegistration>,
     // The legacy C builder keeps its TCP address when selecting a WebSocket URL.
     tcp_broker: rumqttc_wrapper_core::BrokerTarget,
 }
@@ -30,6 +31,7 @@ impl ConfigHandle {
                 tcp_broker: config.common.broker.clone(),
                 config,
                 execution: None,
+                logging: None,
             }),
         })
     }
@@ -42,11 +44,40 @@ impl ConfigHandle {
             .map_err(|_| "configuration lock is poisoned")
     }
 
-    pub fn snapshot(&self) -> Result<(ClientConfig, Option<ExecutionContext>), &'static str> {
+    pub fn snapshot(
+        &self,
+    ) -> Result<
+        (
+            ClientConfig,
+            Option<ExecutionContext>,
+            Option<rumqttc_wrapper_core::LoggingRegistration>,
+        ),
+        &'static str,
+    > {
         self.inner
             .lock()
-            .map(|state| (state.config.clone(), state.execution.clone()))
+            .map(|state| {
+                (
+                    state.config.clone(),
+                    state.execution.clone(),
+                    state.logging.clone(),
+                )
+            })
             .map_err(|_| "configuration lock is poisoned")
+    }
+
+    pub fn set_logging(
+        &self,
+        registration: Option<rumqttc_wrapper_core::LoggingRegistration>,
+    ) -> Result<(), &'static str> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| "configuration lock is poisoned")?;
+        let previous = std::mem::replace(&mut state.logging, registration);
+        drop(state);
+        drop(previous);
+        Ok(())
     }
 
     pub fn set_execution(&self, execution: Option<ExecutionContext>) -> Result<(), &'static str> {

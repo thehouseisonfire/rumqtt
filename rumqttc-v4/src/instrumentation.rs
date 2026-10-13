@@ -1,3 +1,8 @@
+#[cfg(feature = "wrapper-tracing")]
+use rumqttc_core::scoped_event as event;
+#[cfg(not(feature = "wrapper-tracing"))]
+use tracing::event;
+
 use crate::{ConnectionError, EventLoopDiagnostics, ProtocolViolation, StateError};
 
 const PROTOCOL: &str = "v4";
@@ -63,7 +68,7 @@ impl ConnectionTelemetry {
 }
 
 pub fn connection_attempt(context: AttemptContext) {
-    tracing::event!(
+    event!(
         name: "mqtt.connection_attempt",
         target: TARGET,
         tracing::Level::DEBUG,
@@ -80,7 +85,7 @@ pub fn connection_attempt_failed(
     phase: &'static str,
     error: &ConnectionError,
 ) {
-    tracing::event!(
+    event!(
         name: "mqtt.connection_attempt_failed",
         target: TARGET,
         tracing::Level::WARN,
@@ -97,7 +102,7 @@ pub fn connection_attempt_failed(
 }
 
 pub fn connection_established(context: AttemptContext, session: crate::ConnAckSessionDiagnostics) {
-    tracing::event!(
+    event!(
         name: "mqtt.connection_established",
         target: TARGET,
         tracing::Level::INFO,
@@ -125,7 +130,7 @@ pub fn connection_lost(
     let queue_depth = diagnostics.queues.pending_len
         + diagnostics.queues.requests_rx_len
         + diagnostics.queues.control_requests_rx_len;
-    tracing::event!(
+    event!(
         name: "mqtt.connection_lost",
         target: TARGET,
         tracing::Level::WARN,
@@ -143,7 +148,7 @@ pub fn connection_lost(
 }
 
 pub fn session_restored(connection_generation: u64, replay_count: usize) {
-    tracing::event!(
+    event!(
         name: "mqtt.session_restored",
         target: TARGET,
         tracing::Level::INFO,
@@ -155,7 +160,7 @@ pub fn session_restored(connection_generation: u64, replay_count: usize) {
 }
 
 pub fn replay_prepared(connection_generation: u64, diagnostics: &EventLoopDiagnostics) {
-    tracing::event!(
+    event!(
         name: "mqtt.replay_prepared",
         target: TARGET,
         tracing::Level::INFO,
@@ -169,7 +174,7 @@ pub fn replay_prepared(connection_generation: u64, diagnostics: &EventLoopDiagno
 }
 
 pub fn protocol_violation(violation: &ProtocolViolation) {
-    tracing::event!(
+    event!(
         name: "mqtt.protocol_violation",
         target: TARGET,
         tracing::Level::ERROR,
@@ -258,7 +263,7 @@ const fn protocol_violation_kind(violation: &ProtocolViolation) -> &'static str 
 
 /// Reports committed recovery after all establishment barriers have succeeded.
 pub fn session_present_mismatch_accepted(context: AttemptContext) {
-    tracing::event!(
+    event!(
         name: "mqtt.protocol_compatibility",
         target: TARGET,
         tracing::Level::WARN,

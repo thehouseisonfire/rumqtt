@@ -222,6 +222,7 @@ pub enum CompletionWaitOutcome {
 
 #[derive(Debug)]
 pub struct CompletionCell {
+    pub(crate) suppress_logging: bool,
     recovery: Mutex<Option<Arc<rumqttc_core::session_recovery::RecoveryObservation>>>,
     operation_id: OperationId,
     result: Mutex<Option<Arc<TerminalOutcome>>>,
@@ -232,6 +233,7 @@ pub struct CompletionCell {
 impl CompletionCell {
     pub(crate) fn new(operation_id: OperationId) -> Arc<Self> {
         Arc::new(Self {
+            suppress_logging: crate::logging::suppressed(),
             recovery: Mutex::new(None),
             operation_id,
             result: Mutex::new(None),
@@ -281,6 +283,8 @@ impl CompletionHandle {
     }
 
     /// Live operation-local progress, retained even after client destruction or failure.
+    /// # Panics
+    /// Panics if the internal recovery observation mutex is poisoned.
     #[must_use]
     pub fn recovery_snapshot(&self) -> Option<crate::RecoverySnapshot> {
         self.cell

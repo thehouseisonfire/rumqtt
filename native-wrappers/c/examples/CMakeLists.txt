@@ -35,6 +35,7 @@ set(RUMQTTC_C_EXAMPLES
     reconnect
     session_recovery
     diagnostics
+    logging
     multithreaded_publishing
     tracked_completion
     offline_publishing
@@ -93,7 +94,7 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
             COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:${target}>)
     endif()
     set_tests_properties(${target} PROPERTIES LABELS "native;example" TIMEOUT 30)
-    if(example STREQUAL "websocket_tokens" OR example STREQUAL "ordered_shutdown")
+    if(example STREQUAL "websocket_tokens" OR example STREQUAL "ordered_shutdown" OR example STREQUAL "logging")
         set_tests_properties(${target} PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endforeach()

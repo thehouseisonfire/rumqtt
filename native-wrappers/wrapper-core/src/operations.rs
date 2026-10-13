@@ -168,7 +168,6 @@ impl OperationRegistry {
         self.complete_outcome(operation_id, result.into());
     }
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(name = "mqtt.wrapper.complete", skip_all, fields(operation_id = ?operation_id, success = outcome.result().is_ok())))]
     pub(crate) fn complete_outcome(&self, operation_id: OperationId, outcome: TerminalOutcome) {
         let cell = self
             .inner
@@ -177,8 +176,16 @@ impl OperationRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&operation_id);
         if let Some(cell) = cell {
-            cell.complete_outcome(outcome.map_error(|error| error.with_operation(operation_id)));
+            crate::logging::with_suppression(cell.suppress_logging, || {
+                Self::finish_cell(operation_id, outcome, &cell);
+            });
         }
+    }
+
+    fn finish_cell(operation_id: OperationId, outcome: TerminalOutcome, cell: &CompletionCell) {
+        #[cfg(feature = "tracing")]
+        let _span = rumqttc_core::scoped_info_span!(name: "mqtt.wrapper.complete", target: "rumqttc_wrapper_core::operations", operation_id = operation_id.get(), success = outcome.result().is_ok(),).entered();
+        cell.complete_outcome(outcome.map_error(|error| error.with_operation(operation_id)));
     }
 
     pub(crate) fn fail_all(&self, error: &Error) {

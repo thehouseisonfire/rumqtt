@@ -39,6 +39,8 @@ url = ["dep:url", "dep:percent-encoding"]
 stream = ["dep:futures-core"]
 tracing = ["dep:tracing"]
 tracing-log-compat = ["tracing", "tracing/log"]
+# Native-wrapper integration; standalone tracing keeps the original event path.
+wrapper-tracing = ["tracing", "rumqttc-core/wrapper-tracing"]
 
 [dependencies]
 futures-core = { version = "0.3", default-features = false, optional = true }

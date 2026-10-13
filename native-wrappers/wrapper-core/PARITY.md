@@ -443,3 +443,24 @@ driver cancellation and error-source owner release have unit regressions.
 `reconnect_stability` verifies capture publication before delivery of a recovered
 MQTT 5 failure packet blocks. Capture/read cost and retention evidence is recorded
 in [diagnostics measurements](benches/diagnostics.md).
+
+## Structured C logging (TODO40)
+
+C exposes explicit retained logging contexts, immutable filtered registrations,
+configuration/live placement, borrowed typed records and independent copies,
+loss/failure statistics, prefix flush observers, and retryable shutdown/join.
+Core/C `tracing` enables audited lifecycle/protocol records and selected wrapper
+instrumentation for both protocols. See the [record inventory and contract](../c/README.md#structured-logging).
+Wrapper tracing alone enables the native `wrapper-tracing` integration feature;
+standalone Rust tracing keeps the original event path without routing checks.
+Cargo unifies routing when a build also includes a tracing-enabled wrapper.
+
+Delivery uses one bounded worker and one teardown observer per explicit context;
+join deadlines include delivery-thread TLS destruction and lock acquisition.
+Flush observation avoids the delivery queue mutex across polling, wakes and
+timeouts. Client finalization tolerates previously destroyed logging routing TLS.
+The observer invokes no sinks or owner destructors. Slow callbacks/destructors
+stall only that context's logging. Native MQTT progress and terminal results stay
+independent. No global subscriber/logger, legacy-log bridge, dependency packet
+trace, span tree, or new JavaScript/Python logging API is introduced. Existing
+language bindings remain compatible with logging-unattached core startup.

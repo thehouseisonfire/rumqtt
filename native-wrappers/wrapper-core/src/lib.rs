@@ -35,6 +35,12 @@ mod error;
 mod event;
 mod execution;
 pub use execution::{ExecutionContext, ExecutionOptions, ExecutionState, blocking_wait_allowed};
+mod logging;
+pub use logging::{
+    LogField, LogFilter, LogLevel, LogRecord, LogSink, LogValue, LoggingContext, LoggingFlush,
+    LoggingOptions, LoggingRegistration, LoggingState, LoggingStatistics, MAX_LOG_FIELDS,
+    MAX_LOG_MESSAGE_BYTES, MAX_LOG_RECORD_BYTES, MAX_LOG_TEXT_BYTES,
+};
 mod handle;
 mod operations;
 mod ordered;
