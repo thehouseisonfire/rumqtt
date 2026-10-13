@@ -2529,7 +2529,11 @@ impl EventLoop {
         };
 
         self.effective_keep_alive = self.options.keep_alive;
-        let connect_deadline = Instant::now() + self.options.connect_timeout();
+        let timeout = self.options.connect_timeout();
+        // Preserve Tokio's far-future overflow fallback and share one deadline with connectors.
+        let connect_deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(|| time::sleep(timeout).deadline());
         let (network, connack) =
             match connect(&mut self.options, &mut self.state, connect_deadline).await {
                 Ok(connection) => connection,

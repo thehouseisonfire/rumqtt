@@ -229,6 +229,10 @@
 
 ### Fixed
 
+- Rust v4/v5 clients: Avoid connection deadline overflow panics for extremely
+  large timeouts. Use Tokio's far-future fallback while preserving the shared
+  attempt deadline passed to socket, TLS, and WebSocket connectors.
+
 - Rust clients: Make explicit managed-owner session recovery opt-in through the
   `session-recovery` Cargo feature in the core, v4/v5 clients, and MQTT 5 facade.
   Default builds compile out recovery state, allocations, identity copies, mutex

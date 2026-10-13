@@ -1254,8 +1254,11 @@ impl EventLoop {
             attempt
         };
 
-        let deadline =
-            Instant::now() + Duration::from_secs(self.network_options.connection_timeout());
+        let timeout = Duration::from_secs(self.network_options.connection_timeout());
+        // Preserve Tokio's far-future overflow fallback and share one deadline with connectors.
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(|| time::sleep(timeout).deadline());
         let mut network_options = self.network_options.clone();
         network_options.set_connection_deadline(deadline.into_std());
         let (network, connack) =
