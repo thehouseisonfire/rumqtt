@@ -81,6 +81,10 @@ impl AuthLifecycle {
         Some((self.state.kind()?, self.state.method()?.to_owned()))
     }
 
+    pub(crate) const fn active_exchange_kind(&self) -> Option<AuthExchangeKind> {
+        self.state.kind()
+    }
+
     pub(crate) fn begin_connect(&mut self, method: Option<String>, events: &mut VecDeque<Event>) {
         self.method.clone_from(&method);
         self.state = method.map_or_else(

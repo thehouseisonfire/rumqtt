@@ -82,6 +82,7 @@ scram = { package = "scram-rs", version = "0.24.0", default-features = false, fe
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
+tokio = { version = "1.40", features = ["test-util"] }
 color-backtrace = "0.7.2"
 matches = "0.1"
 pretty_assertions = "1"

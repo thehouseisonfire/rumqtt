@@ -684,9 +684,12 @@ impl From<&str> for AuthError {
 }
 
 /// Structured reason emitted when an authentication exchange fails.
+///
+/// A refused initial connection is reported as [`Self::ConnectionClosed`]. Its
+/// broker reason remains available through [`AuthError::BrokerRejected`] in the
+/// authority's failure callback and [`ConnectionError::ConnectionRefused`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthFailureReason {
-    BrokerRejected(ConnectReturnCode),
     BrokerDisconnected(DisconnectReasonCode),
     SessionReset,
     Redirected,
@@ -1669,6 +1672,9 @@ impl MqttOptions {
     ///
     /// Covers the full connection establishment deadline (broker lookup,
     /// transport, and MQTT handshake). It does not bound network flushes.
+    /// Final asynchronous authentication verification shares that deadline.
+    /// Without an active asynchronous exchange, post-CONNACK session-store
+    /// reconciliation does not consume the connection budget.
     /// Socket-level tuning stays in `NetworkOptions`.
     pub const fn set_connect_timeout(&mut self, timeout: Duration) -> &mut Self {
         self.connect_timeout = timeout;

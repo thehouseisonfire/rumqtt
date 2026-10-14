@@ -494,9 +494,7 @@ async fn rejected_connack_preserves_reason_in_authentication_failure_notificatio
     assert!(eventloop.state.events.iter().any(|event| matches!(
         event,
         Event::Auth(AuthEvent::Failed {
-            reason: rumqttc::AuthFailureReason::BrokerRejected(
-                rumqttc::ConnectReturnCode::NotAuthorized
-            ),
+            reason: rumqttc::AuthFailureReason::ConnectionClosed,
             ..
         })
     )));

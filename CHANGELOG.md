@@ -2,6 +2,16 @@
 
 ### Changed
 
+- MQTT 5: Dispatch ordinary and replayed requests directly through the synchronous
+  state machine, and install poll cancellation guards only for asynchronous AUTH
+  transitions. Keep asynchronous enhanced authentication available to Rust and
+  native-wrapper users without adding a new feature flag.
+- MQTT 5 authentication: Restore the original exhaustive `AuthFailureReason`
+  variants. Initial broker refusals retain `ConnectionClosed` lifecycle events;
+  typed broker reasons remain available through the nonexhaustive `AuthError`
+  and `AuthNoticeError` APIs and connection refusal errors. Native wrappers retain
+  their broker-rejection classification, including when failure callbacks panic.
+
 - MQTT v4/v5: Build WebSocket routing and deadline metadata only when invoking
   a request modifier. Avoid context allocations for TCP/TLS and unmodified WS/WSS
   connections, redundant context copies, and proxy configuration copies during
@@ -233,6 +243,13 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+- Native wrappers: Preserve authentication failure reasons from earlier connection
+  attempts when a later CONNECT receives a refused CONNACK. Classify only the
+  refused exchange's lifecycle failure as `BrokerRejected`.
+- MQTT 5: Apply final CONNACK verification's original connection deadline only
+  to an active asynchronous authentication exchange. Slow post-CONNACK store
+  reconciliation no longer rejects ordinary, raw-AUTH, or synchronous-authenticator
+  connections. Preserve transport/handshake timeouts and async authentication deadlines.
 
 - Rust v4/v5 clients: Avoid connection deadline overflow panics for extremely
   large timeouts. Use Tokio's far-future fallback while preserving the shared

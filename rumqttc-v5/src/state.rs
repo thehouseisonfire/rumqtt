@@ -817,6 +817,11 @@ impl MqttState {
         self.async_authenticator.is_some()
     }
 
+    pub(crate) fn needs_async_connack_verification(&self) -> bool {
+        self.uses_async_authentication()
+            && self.auth.active_exchange_kind() == Some(AuthExchangeKind::InitialConnect)
+    }
+
     pub(crate) async fn begin_authentication_connect_async(
         &mut self,
         method: Option<String>,
@@ -1603,7 +1608,7 @@ impl MqttState {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn handle_outgoing_packet_with_notice_internal(
+    pub(crate) fn handle_outgoing_packet_with_notice_internal(
         &mut self,
         request: Request,
         notice: Option<TrackedNoticeTx>,

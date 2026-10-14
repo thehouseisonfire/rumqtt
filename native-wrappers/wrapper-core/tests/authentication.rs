@@ -2763,3 +2763,166 @@ fn async_failure_callback_distinguishes_broker_refusal_from_transport_loss() {
         broker.join();
     }
 }
+
+#[test]
+fn broker_refusal_preserves_authentication_failures_from_previous_attempts() {
+    struct Authority;
+    impl Authenticator for Authority {
+        fn respond(
+            &self,
+            _: AuthContext,
+            _: AuthChallenge,
+        ) -> std::result::Result<AuthAction, AuthFailure> {
+            Ok(AuthAction::Complete)
+        }
+    }
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, _: AuthContext, _: AsyncAuthChallenge) -> AuthFuture {
+            Box::pin(async { Ok(AuthAction::Complete) })
+        }
+    }
+    for asynchronous in [false, true] {
+        for transport_losses in [1, 2] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let broker = support::Broker::spawn(move || {
+                for _ in 0..transport_losses {
+                    let mut socket = support::accept(&listener);
+                    assert!(matches!(
+                        read_packet(&mut socket),
+                        rumqttc_v5::Packet::Connect(..)
+                    ));
+                    // Drop the transport before CONNACK, leaving the failed
+                    // exchange's lifecycle events queued through the next attempt.
+                }
+                let mut socket = support::accept(&listener);
+                assert!(matches!(
+                    read_packet(&mut socket),
+                    rumqttc_v5::Packet::Connect(..)
+                ));
+                socket.write_all(b"\x20\x03\x00\x87\x00").unwrap();
+                assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+            });
+            let authority = Arc::new(Authority);
+            let options = if asynchronous {
+                async_config(port, authority, Duration::from_secs(30))
+            } else {
+                config(port, authority)
+            };
+            let mut client = support::start(options).unwrap();
+            let mut events = client.take_events().unwrap();
+            for attempt in 0..=transport_losses {
+                for stage in [AuthStage::Started, AuthStage::Failed] {
+                    let event = support::until(&mut events, |event| {
+                        matches!(event, WrapperEvent::Authentication(_))
+                    });
+                    let WrapperEvent::Authentication(auth) = event else {
+                        unreachable!()
+                    };
+                    assert_eq!(auth.exchange, AuthExchange::Initial);
+                    assert_eq!(auth.method, "test");
+                    assert_eq!(auth.stage, stage);
+                    assert_eq!(
+                        auth.failure,
+                        (stage == AuthStage::Failed).then_some(if attempt < transport_losses {
+                            AuthFailure::ConnectionClosed
+                        } else {
+                            AuthFailure::BrokerRejected
+                        }),
+                        "asynchronous={asynchronous}, transport_losses={transport_losses}, attempt={attempt}"
+                    );
+                }
+            }
+            client.closer().close_now(support::DEADLINE).unwrap();
+            broker.join();
+        }
+    }
+}
+
+#[test]
+fn initial_broker_refusal_keeps_native_authentication_events_typed() {
+    struct Authority {
+        panic_on_failure: bool,
+    }
+    impl Authenticator for Authority {
+        fn respond(
+            &self,
+            _: AuthContext,
+            challenge: AuthChallenge,
+        ) -> std::result::Result<AuthAction, AuthFailure> {
+            if matches!(challenge, AuthChallenge::Failed) && self.panic_on_failure {
+                panic!("failure callback panic");
+            }
+            Ok(AuthAction::Complete)
+        }
+    }
+    impl AsyncAuthenticator for Authority {
+        fn respond(&self, _: AuthContext, _: AsyncAuthChallenge) -> AuthFuture {
+            Box::pin(async { Ok(AuthAction::Complete) })
+        }
+        fn failure(&self, _: AuthContext, failure: AuthFailure) {
+            assert_eq!(failure, AuthFailure::BrokerRejected);
+            if self.panic_on_failure {
+                panic!("failure callback panic");
+            }
+        }
+    }
+    for asynchronous in [false, true] {
+        for panic_on_failure in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let broker = support::Broker::spawn(move || {
+                let mut socket = support::accept(&listener);
+                read_packet(&mut socket);
+                socket.write_all(b"\x20\x03\x00\x87\x00").unwrap();
+            });
+            let authority = Arc::new(Authority { panic_on_failure });
+            let options = if asynchronous {
+                async_config(port, authority, Duration::from_secs(30))
+            } else {
+                config(port, authority)
+            };
+            let mut client = support::start(options).unwrap();
+            let mut events = client.take_events().unwrap();
+            let event = support::until(&mut events, |event| {
+                matches!(event, WrapperEvent::Authentication(auth) if auth.stage == AuthStage::Failed)
+                    || (panic_on_failure && matches!(event, WrapperEvent::DriverTerminated(_)))
+            });
+            match event {
+                WrapperEvent::Authentication(auth) => {
+                    assert_eq!(
+                        auth.failure,
+                        Some(if panic_on_failure {
+                            AuthFailure::Panic
+                        } else {
+                            AuthFailure::BrokerRejected
+                        }),
+                        "asynchronous={asynchronous}, panic_on_failure={panic_on_failure}"
+                    );
+                    if panic_on_failure {
+                        // A lifecycle failure can arrive before driver termination.
+                        // Observe the terminal error before joining the failed driver.
+                        let event = support::until(&mut events, |event| {
+                            matches!(event, WrapperEvent::DriverTerminated(_))
+                        });
+                        let WrapperEvent::DriverTerminated(error) = event else {
+                            unreachable!()
+                        };
+                        assert_eq!(error.auth_failure(), Some(AuthFailure::Panic));
+                    }
+                }
+                WrapperEvent::DriverTerminated(error) => {
+                    assert!(panic_on_failure);
+                    assert_eq!(error.auth_failure(), Some(AuthFailure::Panic));
+                }
+                _ => unreachable!(),
+            }
+            if panic_on_failure {
+                client.join(support::DEADLINE).unwrap();
+            } else {
+                client.closer().close_now(support::DEADLINE).unwrap();
+            }
+            broker.join();
+        }
+    }
+}

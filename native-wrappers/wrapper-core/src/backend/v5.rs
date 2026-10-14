@@ -947,6 +947,50 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 return TerminalStatus::Failed(overflow_error());
             }
         }
+        // The Rust lifecycle keeps ConnectionClosed for initial refusals so its
+        // exhaustive enum remains compatible. Map the refused exchange while
+        // the typed refusal is available, before a retry can start a new exchange.
+        // Callback failures retain their existing terminal path and precedence.
+        if matches!(
+            &polled,
+            Err(rumqttc_v5::ConnectionError::ConnectionRefused(_))
+        ) && !recovery_overtook_poll
+            && auth.snapshot().0.is_none()
+        {
+            let pending_events: Vec<_> = eventloop.state.events.drain(..).collect();
+            // mqtt_connect appends the refused initial exchange's failure last.
+            // Earlier attempts can still have lifecycle events in this queue.
+            // A CONNECT without an authentication method appends no such failure.
+            let refused_failure_index = match pending_events.last() {
+                Some(rumqttc_v5::Event::Auth(rumqttc_v5::AuthEvent::Failed {
+                    kind: rumqttc_v5::AuthExchangeKind::InitialConnect,
+                    method,
+                    reason: rumqttc_v5::AuthFailureReason::ConnectionClosed,
+                })) if eventloop.options.authentication_method().as_deref()
+                    == Some(method.as_str()) =>
+                {
+                    Some(pending_events.len() - 1)
+                }
+                _ => None,
+            };
+            for (index, event) in pending_events.into_iter().enumerate() {
+                if let Some(event) = map_v5_event(
+                    &mut eventloop,
+                    event,
+                    &shared,
+                    &mut connected,
+                    EventMappingOptions {
+                        auth_failure: (Some(index) == refused_failure_index)
+                            .then_some(crate::AuthFailure::BrokerRejected),
+                        ..mapping
+                    },
+                    &mut pending_auth,
+                ) && !deliver(&delivery, event).await
+                {
+                    return TerminalStatus::Failed(overflow_error());
+                }
+            }
+        }
         if let Some(failure) = auth.snapshot().0 {
             // Poll defers connection cleanup until these events are delivered. Preserve
             // their order, including ordinary packets consumed before the failed AUTH.
@@ -1266,8 +1310,7 @@ fn map_auth_event(
             reason,
         } => {
             let failure = auth_failure.unwrap_or(match reason {
-                rumqttc_v5::AuthFailureReason::BrokerRejected(_)
-                | rumqttc_v5::AuthFailureReason::BrokerDisconnected(_) => {
+                rumqttc_v5::AuthFailureReason::BrokerDisconnected(_) => {
                     crate::AuthFailure::BrokerRejected
                 }
                 rumqttc_v5::AuthFailureReason::OverlappingReauth => crate::AuthFailure::Overlapping,

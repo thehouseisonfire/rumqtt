@@ -532,7 +532,7 @@ impl AuthFailureReason {
     pub(crate) fn from_notice_error(error: AuthNoticeError) -> Self {
         #[cfg(not(feature = "ordered-shutdown"))]
         match error {
-            AuthNoticeError::BrokerRejected(reason) => Self::BrokerRejected(reason),
+            AuthNoticeError::BrokerRejected(_) => Self::ConnectionClosed,
             AuthNoticeError::BrokerDisconnected(reason) => Self::BrokerDisconnected(reason),
             AuthNoticeError::Recv => Self::NoticeDropped,
             AuthNoticeError::SessionReset => Self::SessionReset,
@@ -546,7 +546,7 @@ impl AuthFailureReason {
 
         #[cfg(feature = "ordered-shutdown")]
         match error {
-            AuthNoticeError::BrokerRejected(reason) => Self::BrokerRejected(reason),
+            AuthNoticeError::BrokerRejected(_) => Self::ConnectionClosed,
             AuthNoticeError::BrokerDisconnected(reason) => Self::BrokerDisconnected(reason),
             AuthNoticeError::DiscardedAfterDisconnectBarrier
             | AuthNoticeError::ShutdownInterrupted

@@ -1801,10 +1801,12 @@ impl EventLoop {
         &mut self,
         batch: ReadBatch,
     ) -> Result<ReadBatchOutcome, ConnectionError> {
-        let armed = batch.authentication.is_some();
+        if batch.authentication.is_none() {
+            return self.complete_read_batch_inner(batch).await;
+        }
         let mut guard = AuthenticationPollGuard {
             eventloop: self,
-            armed,
+            armed: true,
         };
         let result = guard.eventloop.complete_read_batch_inner(batch).await;
         guard.armed = false;
@@ -2655,6 +2657,12 @@ impl EventLoop {
         connack: &ConnAck,
         connect_deadline: Instant,
     ) -> Result<(), ConnectionError> {
+        // Session reconciliation is outside the historical transport/handshake
+        // budget. Only asynchronous authentication needs final verification to
+        // remain within that same budget before committing CONNACK success.
+        if !self.state.needs_async_connack_verification() {
+            return Ok(());
+        }
         let verification = time::timeout_at(connect_deadline, async {
             if Instant::now() >= connect_deadline {
                 std::future::pending::<()>().await;
@@ -3410,11 +3418,20 @@ impl EventLoop {
         qos0_notices: &mut Vec<PublishNoticeTx>,
         checkpoint_action: &mut SessionCheckpointAction,
     ) -> Result<BatchControl, ConnectionError> {
-        let armed =
-            matches!(envelope.request, Request::Auth(_)) && self.state.uses_async_authentication();
+        if !matches!(envelope.request, Request::Auth(_)) || !self.state.uses_async_authentication()
+        {
+            return self
+                .handle_request_internal_inner(
+                    envelope,
+                    should_flush,
+                    qos0_notices,
+                    checkpoint_action,
+                )
+                .await;
+        }
         let mut guard = AuthenticationPollGuard {
             eventloop: self,
-            armed,
+            armed: true,
         };
         let result = guard
             .eventloop
@@ -3544,10 +3561,16 @@ impl EventLoop {
                 Ok(BatchControl::Stop)
             }
             request => {
-                let (outgoing, flush_notice) = self
-                    .state
-                    .handle_outgoing_packet_with_notice_async(request, notice, replay)
-                    .await?;
+                let (outgoing, flush_notice) = if matches!(request, Request::Auth(_))
+                    && self.state.uses_async_authentication()
+                {
+                    self.state
+                        .handle_outgoing_packet_with_notice_async(request, notice, replay)
+                        .await?
+                } else {
+                    self.state
+                        .handle_outgoing_packet_with_notice_internal(request, notice, replay)?
+                };
                 if let Some(Packet::Publish(publish)) = &outgoing
                     && let Some(admission) = &self.publish_admission
                 {
@@ -3636,10 +3659,16 @@ impl EventLoop {
                 Ok(BatchControl::Stop)
             }
             request => {
-                let (outgoing, flush_notice) = self
-                    .state
-                    .handle_outgoing_packet_with_notice_async(request, notice, replay)
-                    .await?;
+                let (outgoing, flush_notice) = if matches!(request, Request::Auth(_))
+                    && self.state.uses_async_authentication()
+                {
+                    self.state
+                        .handle_outgoing_packet_with_notice_async(request, notice, replay)
+                        .await?
+                } else {
+                    self.state
+                        .handle_outgoing_packet_with_notice_internal(request, notice, replay)?
+                };
                 if let Some(Packet::Publish(publish)) = &outgoing
                     && let Some(admission) = &self.publish_admission
                 {
@@ -7093,9 +7122,7 @@ mod tests {
                 event,
                 Event::Auth(crate::AuthEvent::Failed {
                     kind: crate::AuthExchangeKind::InitialConnect,
-                    reason: crate::AuthFailureReason::BrokerRejected(
-                        ConnectReturnCode::BadAuthenticationMethod
-                    ),
+                    reason: crate::AuthFailureReason::ConnectionClosed,
                     ..
                 })
             )
