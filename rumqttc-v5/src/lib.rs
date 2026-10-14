@@ -519,6 +519,7 @@ impl From<&str> for AuthError {
 /// authority's failure callback and [`ConnectionError::ConnectionRefused`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthFailureReason {
+    /// The broker closed an active authentication exchange with DISCONNECT.
     BrokerDisconnected(DisconnectReasonCode),
     SessionReset,
     Redirected,

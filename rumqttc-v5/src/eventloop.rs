@@ -611,7 +611,7 @@ pub struct EventLoop {
     active_redirect: Option<ActiveRedirect>,
     pending_server_redirect: Option<PendingServerRedirect>,
     /// Connection error retained until queued broker and authentication events are delivered.
-    pending_connection_error: Option<ConnectionError>,
+    pending_connection_error: Option<Box<ConnectionError>>,
     pending_redirect_shutdown: bool,
     redirect_attempts: usize,
     redirect_selected_reference: Option<String>,
@@ -641,8 +641,9 @@ impl Drop for AuthenticationPollGuard<'_> {
         if self.armed {
             self.eventloop.network = None;
             self.eventloop.connack_session = None;
-            self.eventloop.pending_connection_error =
-                Some(ConnectionError::MqttState(StateError::ConnectionAborted));
+            self.eventloop.pending_connection_error = Some(Box::new(ConnectionError::MqttState(
+                StateError::ConnectionAborted,
+            )));
             self.eventloop
                 .state
                 .fail_auth_exchange_due_to_connection_closed();
@@ -690,8 +691,9 @@ impl EventLoop {
     ///
     /// This observation does not change recovery or completion behavior. At most
     /// one packet is retained; take it after each poll before starting another
-    /// connection attempt. It may duplicate an Incoming event. Authentication
-    /// data and server-supplied text must not be logged indiscriminately.
+    /// connection attempt. The backing slot is allocated only on failure and
+    /// released when the next MQTT handshake begins. It may duplicate an Incoming event.
+    /// Authentication data and server-supplied text must not be logged indiscriminately.
     pub const fn take_connection_failure_packet(&mut self) -> Option<Packet> {
         self.state.connection_failure_packet.take()
     }
@@ -1052,7 +1054,7 @@ impl EventLoop {
         };
         self.clean_with_notice_reason(reason);
         if temporary_redirect && let Err(error) = self.restore_redirect_origin() {
-            self.pending_connection_error = Some(error.into());
+            self.pending_connection_error = Some(Box::new(error.into()));
         }
     }
 
@@ -2740,7 +2742,7 @@ impl EventLoop {
             let Err(error) = result else {
                 unreachable!("deferred connection result must be an error")
             };
-            self.pending_connection_error = Some(error);
+            self.pending_connection_error = Some(Box::new(error));
             return Ok(event);
         }
 
@@ -2965,7 +2967,7 @@ impl EventLoop {
                 .pending_connection_error
                 .take()
                 .expect("pending connection error must be present");
-            return self.handle_network_result(Err(error)).await;
+            return self.handle_network_result(Err(*error)).await;
         }
 
         if self.pending_server_redirect.is_some() {
@@ -4500,7 +4502,7 @@ async fn mqtt_connect(
     state: &mut MqttState,
 ) -> Result<ConnAck, ConnectionError> {
     state.refresh_auth_client_id(&options.client_id);
-    state.connection_failure_packet = None;
+    state.connection_failure_packet.clear();
     network.set_max_outgoing_size(None);
     state.set_client_topic_alias_max(options.topic_alias_max());
     state.set_client_receive_maximum(options.receive_maximum());
@@ -4561,7 +4563,9 @@ async fn mqtt_connect_inner(
         match network.read().await? {
             Incoming::ConnAck(connack) => {
                 if connack.code != ConnectReturnCode::Success {
-                    state.connection_failure_packet = Some(Packet::ConnAck(connack.clone()));
+                    state
+                        .connection_failure_packet
+                        .retain(Packet::ConnAck(connack.clone()));
                 }
                 if let Err(err) = validate_connack_session_present_for_reason_code(&connack) {
                     send_protocol_error_disconnect(network).await;

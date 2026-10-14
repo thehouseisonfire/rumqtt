@@ -2,6 +2,13 @@
 
 ### Changed
 
+- MQTT 5: Allocate retained connection-failure packets and deferred connection
+  errors on the failure path, reducing idle client and polling-task storage.
+  Reuse the packet observation slot after taking its value and release it when
+  the next MQTT handshake begins. Preserve the const observation API, full packet
+  properties, and terminal event ordering. Construct authentication-failure
+  callback errors only while an exchange is active.
+
 - MQTT 5: Dispatch ordinary and replayed requests directly through the synchronous
   state machine, and install poll cancellation guards only for asynchronous AUTH
   transitions. Keep asynchronous enhanced authentication available to Rust and
@@ -542,7 +549,9 @@
   `take_connection_failure_packet` to observe rejected CONNACK and broker
   DISCONNECT properties after poll error/redirect handling. Add eager
   `SrvResolver::system()` construction and typed broker-disconnect failures for
-  tracked authentication exchanges.
+  tracked authentication exchanges. This also added `BrokerDisconnected` to the
+  exhaustive `AuthFailureReason` enum; callers with exhaustive matches written
+  before that addition must handle the new variant. The enum remains exhaustive.
 - Native wrapper core: Preserve protocol, connection phase/generation, and
   operation identifiers in structured errors. SRV redirects report their
   selected endpoint before connection success. JavaScript and Python decode

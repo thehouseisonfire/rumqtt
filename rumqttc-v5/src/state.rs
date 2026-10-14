@@ -416,6 +416,44 @@ impl IncomingPacketEffects {
     }
 }
 
+/// Cold storage for the latest rejected CONNACK or broker DISCONNECT.
+///
+/// Keep an optional packet inside the allocation so observation can move it out
+/// through the public const getter without deallocating the box. Reuse the slot
+/// for subsequent observations and release it when the next MQTT handshake begins.
+#[derive(Debug, Default)]
+pub(crate) struct ConnectionFailurePacketSlot {
+    packet: Option<Box<Option<Packet>>>,
+}
+
+impl ConnectionFailurePacketSlot {
+    pub(crate) fn retain(&mut self, packet: Packet) {
+        let slot = self.packet.get_or_insert_with(|| Box::new(None));
+        **slot = Some(packet);
+    }
+
+    pub(crate) const fn take(&mut self) -> Option<Packet> {
+        match self.packet.as_mut() {
+            Some(slot) => (**slot).take(),
+            None => None,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.packet = None;
+    }
+}
+
+impl Clone for ConnectionFailurePacketSlot {
+    fn clone(&self) -> Self {
+        let mut cloned = Self::default();
+        if let Some(Some(packet)) = self.packet.as_deref() {
+            cloned.retain(packet.clone());
+        }
+        cloned
+    }
+}
+
 /// State of the mqtt connection.
 // Design: Methods will just modify the state of the object without doing any network operations
 // Design: Indexed inflight storage grows on demand with packet identifiers. This is done for 2 reasons
@@ -481,7 +519,7 @@ pub struct MqttState {
     pub events: VecDeque<Event>,
     // Connection outcomes may be consumed by error/redirect handling rather than
     // yielded as Incoming events. Retain one owned packet for observation.
-    pub(crate) connection_failure_packet: Option<Packet>,
+    pub(crate) connection_failure_packet: ConnectionFailurePacketSlot,
     /// Controls how incoming publish acknowledgements are handled.
     pub ack_mode: AckMode,
     topic_aliases: TopicAliasState,
@@ -773,7 +811,7 @@ impl MqttState {
             pending_subscribe: BTreeMap::new(),
             pending_unsubscribe: BTreeMap::new(),
             events: VecDeque::with_capacity(Self::initial_events_capacity()),
-            connection_failure_packet: None,
+            connection_failure_packet: ConnectionFailurePacketSlot::default(),
             ack_mode,
             topic_aliases: TopicAliasState::new(auto_topic_alias_policy, client_topic_alias_max),
             connack_received: false,
@@ -1425,17 +1463,15 @@ impl MqttState {
     }
 
     pub(crate) fn fail_auth_exchange_due_to_session_reset(&mut self) {
-        self.fail_auth_exchange(
-            AuthNoticeError::SessionReset,
-            AuthError::Failed("authentication exchange was reset with the session".to_owned()),
-        );
+        self.fail_auth_exchange(AuthNoticeError::SessionReset, || {
+            AuthError::Failed("authentication exchange was reset with the session".to_owned())
+        });
     }
 
     pub(crate) fn fail_auth_exchange_due_to_redirect(&mut self) {
-        self.fail_auth_exchange(
-            AuthNoticeError::Redirected,
-            AuthError::Failed("authentication exchange crossed a redirect boundary".to_owned()),
-        );
+        self.fail_auth_exchange(AuthNoticeError::Redirected, || {
+            AuthError::Failed("authentication exchange crossed a redirect boundary".to_owned())
+        });
     }
 
     pub(crate) fn fail_reauth_exchange_due_to_session_reset(&mut self) {
@@ -1481,31 +1517,28 @@ impl MqttState {
     }
 
     pub(crate) fn fail_auth_exchange_due_to_connection_closed(&mut self) {
-        self.fail_auth_exchange(
-            AuthNoticeError::ConnectionClosed,
-            AuthError::Failed("connection closed before authentication completed".to_owned()),
-        );
+        self.fail_auth_exchange(AuthNoticeError::ConnectionClosed, || {
+            AuthError::Failed("connection closed before authentication completed".to_owned())
+        });
     }
 
     pub(crate) fn fail_auth_exchange_due_to_broker_rejection(&mut self, reason: ConnectReturnCode) {
-        self.fail_auth_exchange(
-            AuthNoticeError::BrokerRejected(reason),
-            AuthError::BrokerRejected(reason),
-        );
+        self.fail_auth_exchange(AuthNoticeError::BrokerRejected(reason), || {
+            AuthError::BrokerRejected(reason)
+        });
     }
 
     pub(crate) fn fail_auth_exchange_due_to_client_disconnect(&mut self) {
-        self.fail_auth_exchange(
-            AuthNoticeError::ConnectionClosed,
-            AuthError::Failed("authentication aborted by client disconnect".to_owned()),
-        );
+        self.fail_auth_exchange(AuthNoticeError::ConnectionClosed, || {
+            AuthError::Failed("authentication aborted by client disconnect".to_owned())
+        });
     }
 
     fn fail_auth_exchange_due_to_authenticator_lock_poisoned(&mut self) {
         let message = StateError::AuthenticatorLockPoisoned.to_string();
         self.fail_auth_exchange(
             AuthNoticeError::AuthenticationFailed(message.clone()),
-            AuthError::Failed(message),
+            || AuthError::Failed(message),
         );
     }
 
@@ -1588,7 +1621,7 @@ impl MqttState {
             Ok(AuthAction::Fail(message)) | Err(AuthError::Failed(message)) => {
                 self.fail_auth_exchange(
                     AuthNoticeError::AuthenticationFailed(message.clone()),
-                    AuthError::Failed(message.clone()),
+                    || AuthError::Failed(message.clone()),
                 );
                 return Err(StateError::AuthError(message));
             }
@@ -1747,7 +1780,7 @@ impl MqttState {
         mut packet: Incoming,
     ) -> Result<IncomingPacketEffects, StateError> {
         if matches!(packet, Incoming::Disconnect(_)) {
-            self.connection_failure_packet = Some(packet.clone());
+            self.connection_failure_packet.retain(packet.clone());
         }
         let events_len_before = self.events.len();
         let is_duplicate_incoming_qos2_publish = self.is_duplicate_incoming_qos2_publish(&packet);
@@ -2174,10 +2207,9 @@ impl MqttState {
                 source: crate::RedirectSource::Disconnect,
             }));
         }
-        self.fail_auth_exchange(
-            AuthNoticeError::BrokerDisconnected(reason_code),
-            AuthError::BrokerDisconnected(reason_code),
-        );
+        self.fail_auth_exchange(AuthNoticeError::BrokerDisconnected(reason_code), || {
+            AuthError::BrokerDisconnected(reason_code)
+        });
         let reason_string = disconn
             .properties
             .as_ref()
@@ -2499,10 +2531,9 @@ impl MqttState {
         let effect = match self.auth.incoming_auth(auth, &mut self.events) {
             Ok(effect) => effect,
             Err(err @ StateError::Deserialization(mqttbytes::Error::ProtocolError)) => {
-                self.fail_auth_exchange(
-                    AuthNoticeError::ProtocolError,
-                    AuthError::Failed("authentication protocol error".to_owned()),
-                );
+                self.fail_auth_exchange(AuthNoticeError::ProtocolError, || {
+                    AuthError::Failed("authentication protocol error".to_owned())
+                });
                 return Err(err);
             }
             Err(err) => return Err(err),
@@ -2562,7 +2593,7 @@ impl MqttState {
             AuthError::BrokerDisconnected(reason) => AuthNoticeError::BrokerDisconnected(*reason),
             AuthError::Failed(_) => AuthNoticeError::AuthenticationFailed(error.to_string()),
         };
-        self.fail_auth_exchange(notice_error, error.clone());
+        self.fail_auth_exchange(notice_error, || error.clone());
         StateError::AuthError(error.to_string())
     }
 
@@ -2574,26 +2605,30 @@ impl MqttState {
     pub fn abort_authentication(&mut self, error: AuthError) {
         self.fail_auth_exchange(
             AuthNoticeError::AuthenticationFailed(error.to_string()),
-            error,
+            || error,
         );
     }
 
-    fn fail_auth_exchange(&mut self, notice_error: AuthNoticeError, callback_error: AuthError) {
-        if let Some((kind, method)) = self.auth.active_exchange()
-            && let Some(authenticator) = &self.async_authenticator
-        {
+    fn fail_auth_exchange(
+        &mut self,
+        notice_error: AuthNoticeError,
+        callback_error: impl FnOnce() -> AuthError,
+    ) {
+        let Some((kind, method)) = self.auth.active_exchange() else {
+            return;
+        };
+        let callback_error = callback_error();
+        if let Some(authenticator) = &self.async_authenticator {
             authenticator.failure(
                 AsyncAuthContext {
                     client_id: self.auth_client_id.clone(),
                     kind,
-                    method,
+                    method: method.clone(),
                 },
                 callback_error.clone(),
             );
         }
-        if let Some((kind, method)) = self.auth.active_exchange()
-            && let Some(authenticator) = self.authenticator.clone()
-        {
+        if let Some(authenticator) = self.authenticator.clone() {
             match authenticator.lock() {
                 Ok(mut locked) => locked.failure(
                     AuthContext {
