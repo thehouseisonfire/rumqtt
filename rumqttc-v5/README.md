@@ -266,6 +266,25 @@ outside the library and `EventLoop` is accessible, users can
 - Stop it when required
 - Access internal state for use cases like graceful shutdown or to modify options before reconnection
 
+## TCP connection selection
+
+The default connector and `default_socket_connect` use the same shared dialer.
+After system hostname resolution completes, it alternates IPv4 and IPv6 addresses,
+preserving the resolver's first address family and the order within each family.
+It starts attempts 100 ms apart, returns the first successful TCP stream, and drops
+all losing attempts before proxy, TLS, WebSocket or MQTT negotiation. Cancelling
+the dial future also drops pending attempts.
+
+A fixed nonzero `NetworkOptions::set_bind_addr` port uses sequential resolver order
+to avoid overlapping source-port binds. An ephemeral port (`0`) allows racing.
+Custom socket connectors own their dialing policy; delegating to
+`default_socket_connect` retains the default policy and applies the supplied
+network options. The MQTT event loop enforces the overall connection deadline;
+standalone helper callers must apply their own timeout.
+
+This provides partial Happy Eyeballs support. It does not implement RFC 8305's
+independent A/AAAA resolution or start connecting before system resolution finishes.
+
 ## TLS Support
 
 rumqttc supports two TLS backends:

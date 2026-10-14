@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tokio::net::{TcpSocket, TcpStream, lookup_host};
+use tokio::net::{TcpSocket, TcpStream};
 #[cfg(feature = "use-native-tls")]
 use tokio_native_tls::native_tls::TlsConnector;
 #[cfg(feature = "use-rustls-no-provider")]
@@ -21,12 +21,14 @@ use tokio_rustls::rustls::ClientConfig;
 #[cfg(feature = "ordered-shutdown")]
 pub mod admission;
 mod connection_observation;
+mod dial;
 #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 mod proxy;
 mod scheduler;
 pub use connection_observation::{
     AttemptOutcome, ConnectionObservation, ConnectionObservationSnapshot, ConnectionRoute,
 };
+pub use dial::default_socket_connect;
 #[cfg(feature = "session-recovery")]
 #[doc(hidden)]
 pub mod session_recovery;
@@ -480,7 +482,7 @@ fn configure_tcp_socket(socket: &TcpSocket, network_options: &NetworkOptions) ->
 
 /// Connects a single resolved socket address using the provided [`NetworkOptions`].
 ///
-/// This is the per-address building block used by the default sequential dialer and by callers
+/// This is the per-address building block used by the default multi-address dialer and by callers
 /// that want to apply a custom scheduling policy across multiple resolved addresses.
 ///
 /// # Errors
@@ -494,40 +496,6 @@ pub async fn connect_socket_addr(
 
     configure_tcp_socket(&socket, &network_options)?;
     socket.connect(addr).await
-}
-
-/// Default TCP socket connection logic used by the MQTT event loop.
-///
-/// This resolves the host, applies [`NetworkOptions`] on each candidate socket,
-/// and returns the first successful connection.
-///
-/// # Errors
-///
-/// Returns any DNS lookup, socket configuration, or connect error encountered.
-/// When multiple address candidates are available, the last connect error is
-/// returned if they all fail.
-pub async fn default_socket_connect(
-    host: String,
-    network_options: NetworkOptions,
-) -> io::Result<TcpStream> {
-    let addrs = lookup_host(host).await?;
-    let mut last_err = None;
-
-    for addr in addrs {
-        match connect_socket_addr(addr, network_options.clone()).await {
-            Ok(stream) => return Ok(stream),
-            Err(err) => {
-                last_err = Some(err);
-            }
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "could not resolve to any address",
-        )
-    }))
 }
 
 #[cfg(test)]

@@ -92,6 +92,11 @@ impl Gate {
             tokio::pin!(changed);
             changed.as_mut().enable();
             if let Some(deadline) = self.snapshot().1 {
+                // Tokio timers have millisecond resolution. An already-expired
+                // fence must win even if transport work completes in this poll.
+                if Instant::now() >= deadline {
+                    return;
+                }
                 tokio::select! {
                     () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => return,
                     () = &mut changed => continue,
@@ -635,6 +640,18 @@ mod tests {
             poll(receive.as_mut()),
             Poll::Ready(Err(RecvError::Disconnected))
         ));
+    }
+
+    #[tokio::test]
+    async fn already_expired_fence_is_ready_before_polling_transport_work() {
+        let (tx, rx) = bounded(1);
+        tx.try_send(Message {
+            timeout: Some(Duration::ZERO),
+            ..Message::fence()
+        })
+        .unwrap();
+        let mut expired = Box::pin(rx.gate().expired());
+        assert!(poll(expired.as_mut()).is_ready());
     }
 
     #[tokio::test]

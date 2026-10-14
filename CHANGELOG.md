@@ -11,6 +11,16 @@
   typed broker reasons remain available through the nonexhaustive `AuthError`
   and `AuthNoticeError` APIs and connection refusal errors. Native wrappers retain
   their broker-rejection classification, including when failure callbacks panic.
+- MQTT v4/v5 and native wrappers: Interleave IPv4/IPv6 TCP candidates while
+  preserving the system resolver's preferred family and order within each family.
+  Share the 100 ms staggered dialer in `rumqttc-core`; the public
+  `default_socket_connect` helper now uses the same policy instead of sequential
+  attempts. Drop losing sockets before returning and cancel all pending attempts
+  when the dial future is dropped. Fixed nonzero local bind ports retain
+  sequential resolver order. DNS still uses the system resolver; this is partial
+  Happy Eyeballs support, not a complete RFC 8305 implementation.
+  Check already-expired ordered-disconnect deadlines immediately so fast
+  connection failures cannot take precedence over a zero-timeout shutdown.
 
 - MQTT v4/v5: Build WebSocket routing and deadline metadata only when invoking
   a request modifier. Avoid context allocations for TCP/TLS and unmodified WS/WSS

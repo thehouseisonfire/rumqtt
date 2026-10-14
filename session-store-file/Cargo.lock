@@ -790,6 +790,7 @@ name = "rumqttc-core-next"
 version = "0.34.0-alpha"
 dependencies = [
  "async-tungstenite",
+ "futures-util",
  "libc",
  "rustls-native-certs",
  "rustls-pki-types",

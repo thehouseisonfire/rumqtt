@@ -12,15 +12,11 @@ extern crate log;
 use bytes::Bytes;
 use std::fmt::{self, Debug, Formatter};
 use std::future::Future;
-use std::io;
-use std::net::SocketAddr;
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::net::{TcpStream, lookup_host};
-use tokio::task::JoinSet;
 
 #[cfg(all(feature = "url", unix))]
 use percent_encoding::percent_decode_str;
@@ -254,177 +250,10 @@ pub enum Outgoing {
 pub(crate) type SocketConnector = rumqttc_core::SocketConnector;
 pub use rumqttc_core::TerminalTransportError;
 
-const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(100);
-
-async fn first_success_with_stagger<T, I, F, Fut>(
-    items: I,
-    attempt_delay: Duration,
-    connect_fn: F,
-) -> io::Result<T>
-where
-    T: Send + 'static,
-    I: IntoIterator,
-    I::Item: Send + 'static,
-    F: Fn(I::Item) -> Fut + Send + Sync + Clone + 'static,
-    Fut: std::future::Future<Output = io::Result<T>> + Send + 'static,
-{
-    let mut join_set = JoinSet::new();
-    let mut item_count = 0usize;
-
-    for (index, item) in items.into_iter().enumerate() {
-        item_count += 1;
-        let delay = attempt_delay.saturating_mul(u32::try_from(index).unwrap_or(u32::MAX));
-        let connect_fn = connect_fn.clone();
-        join_set.spawn(async move {
-            tokio::time::sleep(delay).await;
-            connect_fn(item).await
-        });
-    }
-
-    if item_count == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "could not resolve to any address",
-        ));
-    }
-
-    let mut last_err = None;
-
-    while let Some(task_result) = join_set.join_next().await {
-        match task_result {
-            Ok(Ok(stream)) => {
-                join_set.abort_all();
-                return Ok(stream);
-            }
-            Ok(Err(err)) => {
-                last_err = Some(err);
-            }
-            Err(err) => {
-                last_err = Some(io::Error::other(format!(
-                    "concurrent connect task failed: {err}"
-                )));
-            }
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "could not resolve to any address",
-        )
-    }))
-}
-
-async fn first_success_sequential<T, I, F, Fut>(items: I, connect_fn: F) -> io::Result<T>
-where
-    I: IntoIterator,
-    F: Fn(I::Item) -> Fut,
-    Fut: std::future::Future<Output = io::Result<T>>,
-{
-    let mut item_count = 0usize;
-    let mut last_err = None;
-
-    for item in items {
-        item_count += 1;
-        match connect_fn(item).await {
-            Ok(stream) => return Ok(stream),
-            Err(err) => last_err = Some(err),
-        }
-    }
-
-    if item_count == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "could not resolve to any address",
-        ));
-    }
-
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "could not resolve to any address",
-        )
-    }))
-}
-
-fn should_stagger_connect_attempts(network_options: &NetworkOptions) -> bool {
-    network_options
-        .bind_addr()
-        .is_none_or(|bind_addr| bind_addr.port() == 0)
-}
-
-async fn connect_with_retry_mode<T, I, F, Fut>(
-    items: I,
-    network_options: NetworkOptions,
-    connect_fn: F,
-) -> io::Result<T>
-where
-    T: Send + 'static,
-    I: IntoIterator,
-    I::Item: Send + 'static,
-    F: Fn(I::Item, NetworkOptions) -> Fut + Send + Sync + Clone + 'static,
-    Fut: std::future::Future<Output = io::Result<T>> + Send + 'static,
-{
-    connect_with_retry_mode_and_delay(items, network_options, CONNECTION_ATTEMPT_DELAY, connect_fn)
-        .await
-}
-
-async fn connect_with_retry_mode_and_delay<T, I, F, Fut>(
-    items: I,
-    network_options: NetworkOptions,
-    connection_attempt_delay: Duration,
-    connect_fn: F,
-) -> io::Result<T>
-where
-    T: Send + 'static,
-    I: IntoIterator,
-    I::Item: Send + 'static,
-    F: Fn(I::Item, NetworkOptions) -> Fut + Send + Sync + Clone + 'static,
-    Fut: std::future::Future<Output = io::Result<T>> + Send + 'static,
-{
-    if should_stagger_connect_attempts(&network_options) {
-        first_success_with_stagger(items, connection_attempt_delay, move |item| {
-            let network_options = network_options.clone();
-            let connect_fn = connect_fn.clone();
-            async move { connect_fn(item, network_options).await }
-        })
-        .await
-    } else {
-        first_success_sequential(items, move |item| {
-            let network_options = network_options.clone();
-            let connect_fn = connect_fn.clone();
-            async move { connect_fn(item, network_options).await }
-        })
-        .await
-    }
-}
-
-async fn connect_resolved_addrs_staggered(
-    addrs: Vec<SocketAddr>,
-    network_options: NetworkOptions,
-) -> io::Result<TcpStream> {
-    connect_with_retry_mode(
-        addrs,
-        network_options,
-        move |addr, network_options| async move {
-            rumqttc_core::connect_socket_addr(addr, network_options).await
-        },
-    )
-    .await
-}
-
-async fn default_socket_connect_staggered(
-    host: String,
-    network_options: NetworkOptions,
-) -> io::Result<TcpStream> {
-    let addrs = lookup_host(host).await?.collect::<Vec<_>>();
-    connect_resolved_addrs_staggered(addrs, network_options).await
-}
-
 fn default_socket_connector() -> SocketConnector {
     Arc::new(|host, network_options| {
         Box::pin(async move {
-            let tcp = default_socket_connect_staggered(host, network_options).await?;
+            let tcp = default_socket_connect(host, network_options).await?;
             let stream: Box<dyn crate::framed::AsyncReadWrite> = Box::new(tcp);
             Ok(stream)
         })
@@ -1248,7 +1077,8 @@ impl MqttOptions {
     ///
     /// Once a custom connector is selected, it owns socket creation and rumqttc does not apply
     /// `network_options` after the connector returns. A connector that still uses rumqttc's TCP
-    /// dialer should pass those options unchanged to [`default_socket_connect`]. Connectors for
+    /// dialer should pass those options unchanged to [`default_socket_connect`], which uses the
+    /// same address-family interleaving and staggered attempts as the default connector. Connectors for
     /// other transports, including simulated networks such as Turmoil, decide which options apply.
     ///
     /// # Example
@@ -1287,7 +1117,8 @@ impl MqttOptions {
     ///
     /// Once a custom connector is selected, it owns socket creation and rumqttc does not apply
     /// `network_options` after the connector returns. A connector that still uses rumqttc's TCP
-    /// dialer should pass those options unchanged to [`default_socket_connect`]. Connectors for
+    /// dialer should pass those options unchanged to [`default_socket_connect`], which uses the
+    /// same address-family interleaving and staggered attempts as the default connector. Connectors for
     /// other transports, including simulated networks such as Turmoil, decide which options apply.
     ///
     /// # Example
@@ -2772,189 +2603,14 @@ impl Debug for MqttOptions {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+    use std::net::Ipv4Addr;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tokio::net::{TcpListener, TcpSocket};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::net::{TcpListener, TcpStream};
     use tokio::runtime::Builder;
-    use tokio::sync::Notify;
 
     fn runtime() -> tokio::runtime::Runtime {
         Builder::new_current_thread().enable_all().build().unwrap()
-    }
-
-    #[test]
-    fn staggered_attempts_allow_later_success_to_win() {
-        runtime().block_on(async {
-            let started = Arc::new(AtomicUsize::new(0));
-            let started_for_connect = Arc::clone(&started);
-            let begin = std::time::Instant::now();
-
-            let result = first_success_with_stagger(
-                [0_u8, 1_u8],
-                std::time::Duration::from_millis(10),
-                move |attempt| {
-                    let started = Arc::clone(&started_for_connect);
-                    async move {
-                        started.fetch_add(1, Ordering::SeqCst);
-                        if attempt == 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                            Err(std::io::Error::other("slow failure"))
-                        } else {
-                            Ok(42_u8)
-                        }
-                    }
-                },
-            )
-            .await
-            .unwrap();
-
-            assert_eq!(result, 42);
-            assert_eq!(started.load(Ordering::SeqCst), 2);
-            assert!(begin.elapsed() < std::time::Duration::from_millis(150));
-        });
-    }
-
-    #[test]
-    fn staggered_connect_returns_invalid_input_for_empty_candidates() {
-        runtime().block_on(async {
-            let err = connect_resolved_addrs_staggered(Vec::new(), NetworkOptions::new())
-                .await
-                .unwrap_err();
-
-            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-            assert_eq!(err.to_string(), "could not resolve to any address");
-        });
-    }
-
-    #[test]
-    fn staggered_connect_tries_later_candidates() {
-        runtime().block_on(async {
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-            let good_addr = listener.local_addr().unwrap();
-
-            let unused_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-            let bad_addr = unused_listener.local_addr().unwrap();
-            drop(unused_listener);
-
-            let accept_task = tokio::spawn(async move {
-                let (_stream, _) = listener.accept().await.unwrap();
-            });
-
-            let stream =
-                connect_resolved_addrs_staggered(vec![bad_addr, good_addr], NetworkOptions::new())
-                    .await
-                    .unwrap();
-            assert_eq!(stream.peer_addr().unwrap(), good_addr);
-
-            accept_task.await.unwrap();
-        });
-    }
-
-    #[test]
-    fn fixed_bind_port_retry_mode_keeps_slow_first_candidate_alive() {
-        runtime().block_on(async {
-            let reserved = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-            let bind_port = reserved.local_addr().unwrap().port();
-            drop(reserved);
-
-            let mut network_options = NetworkOptions::new();
-            network_options.set_bind_addr(SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::LOCALHOST,
-                bind_port,
-            )));
-
-            let first_attempt_started = Arc::new(Notify::new());
-            let second_attempt_started = Arc::new(AtomicBool::new(false));
-
-            let mut connect_task = tokio::spawn({
-                let first_attempt_started = Arc::clone(&first_attempt_started);
-                let second_attempt_started = Arc::clone(&second_attempt_started);
-                let network_options = network_options.clone();
-                async move {
-                    connect_with_retry_mode_and_delay(
-                        [0_u8, 1_u8],
-                        network_options,
-                        Duration::from_millis(10),
-                        move |attempt, network_options| {
-                            let first_attempt_started = Arc::clone(&first_attempt_started);
-                            let second_attempt_started = Arc::clone(&second_attempt_started);
-                            async move {
-                                if attempt == 0 {
-                                    let bind_addr = network_options.bind_addr().unwrap();
-                                    let socket = match bind_addr {
-                                        SocketAddr::V4(_) => TcpSocket::new_v4()?,
-                                        SocketAddr::V6(_) => TcpSocket::new_v6()?,
-                                    };
-                                    socket.bind(bind_addr)?;
-                                    first_attempt_started.notify_one();
-                                    std::future::pending::<io::Result<()>>().await
-                                } else {
-                                    second_attempt_started.store(true, Ordering::SeqCst);
-                                    let _ = network_options;
-                                    Ok(())
-                                }
-                            }
-                        },
-                    )
-                    .await
-                }
-            });
-
-            first_attempt_started.notified().await;
-
-            assert!(
-                tokio::time::timeout(Duration::from_millis(50), &mut connect_task)
-                    .await
-                    .is_err(),
-                "fixed-port dialing should keep the first slow candidate alive instead of capping it to the stagger delay"
-            );
-            assert!(
-                !second_attempt_started.load(Ordering::SeqCst),
-                "fixed-port dialing should not start later same-family candidates while the first is still pending"
-            );
-            connect_task.abort();
-        });
-    }
-
-    #[test]
-    fn fixed_bind_port_resolved_addrs_try_later_candidates() {
-        runtime().block_on(async {
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-            let good_addr = listener.local_addr().unwrap();
-
-            // Fail before binding the configured IPv4 source port. A refused IPv4 connection can
-            // retain that source port briefly on Windows and make the later candidate fail with
-            // WSAEADDRINUSE, which tests TCP teardown timing rather than candidate fallback.
-            let bad_addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 9, 0, 0));
-
-            let reserved = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-            let bind_port = reserved.local_addr().unwrap().port();
-            drop(reserved);
-
-            let mut network_options = NetworkOptions::new();
-            network_options.set_bind_addr(SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::LOCALHOST,
-                bind_port,
-            )));
-
-            let accept_task = tokio::spawn(async move {
-                let (stream, peer_addr) = listener.accept().await.unwrap();
-                drop(stream);
-                peer_addr
-            });
-
-            let stream =
-                connect_resolved_addrs_staggered(vec![bad_addr, good_addr], network_options)
-                    .await
-                    .unwrap();
-            assert_eq!(stream.peer_addr().unwrap(), good_addr);
-            drop(stream);
-
-            let peer_addr = accept_task.await.unwrap();
-            assert_eq!(peer_addr.port(), bind_port);
-            assert!(peer_addr.ip().is_loopback());
-        });
     }
 
     #[test]

@@ -558,11 +558,31 @@ async fn timeout_includes_time_before_fence_observation() {
 
 #[tokio::test]
 async fn zero_timeout_expires_without_opening_a_connection() {
-    let (client, mut eventloop) = AsyncClient::builder(options(1)).capacity(1).build();
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let called = Arc::new(AtomicBool::new(false));
+    let mut config = options(1);
+    config.set_socket_connector({
+        let called = Arc::clone(&called);
+        move |_, _| {
+            called.store(true, Ordering::SeqCst);
+            std::future::ready(Err::<tokio::net::TcpStream, _>(std::io::Error::other(
+                "connector must not run after the shutdown deadline",
+            )))
+        }
+    });
+    let (client, mut eventloop) = AsyncClient::builder(config).capacity(1).build();
     let notice = client
         .try_disconnect_after_queued_with_timeout(Duration::ZERO)
         .unwrap();
-    assert!(eventloop.poll().await.is_err());
+    assert!(matches!(
+        eventloop.poll().await,
+        Err(ConnectionError::OrderedDisconnect(
+            DisconnectNoticeError::DisconnectTimeout
+        ))
+    ));
+    assert!(!called.load(Ordering::SeqCst));
     assert!(matches!(
         notice.wait_async().await,
         Err(DisconnectNoticeError::DisconnectTimeout)
