@@ -50,6 +50,20 @@ fn assert_commands_not_admitted(
     mqtt5: bool,
     commands: impl IntoIterator<Item = Command>,
 ) {
+    assert_commands_not_admitted_with_policy(
+        client_id,
+        mqtt5,
+        commands,
+        rumqttc_wrapper_core::PublishAdmissionPolicy::default(),
+    );
+}
+
+fn assert_commands_not_admitted_with_policy(
+    client_id: &str,
+    mqtt5: bool,
+    commands: impl IntoIterator<Item = Command>,
+    policy: rumqttc_wrapper_core::PublishAdmissionPolicy,
+) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let broker = thread::spawn(move || {
@@ -70,11 +84,14 @@ fn assert_commands_not_admitted(
             }
         }
     });
-    let config = if mqtt5 {
+    let mut config = if mqtt5 {
         rumqttc_wrapper_core::ClientConfig::v5(client_id, "127.0.0.1", port)
     } else {
         rumqttc_wrapper_core::ClientConfig::v4(client_id, "127.0.0.1", port)
     };
+    if let rumqttc_wrapper_core::ProtocolConfig::V5(v5) = &mut config.protocol {
+        v5.publish_admission_policy = policy;
+    }
     let mut native = support::start(config).unwrap();
     let handle = native.handle();
     let mut events = native.take_events().unwrap();
@@ -92,6 +109,32 @@ fn assert_commands_not_admitted(
     handle.try_admit(Command::ImmediateDisconnect).unwrap();
     native.join(Duration::from_secs(2)).unwrap();
     broker.join().unwrap();
+}
+
+#[test]
+fn mqtt5_payload_content_is_checked_under_both_admission_policies() {
+    use rumqttc_wrapper_core::PublishAdmissionPolicy;
+
+    for policy in [
+        PublishAdmissionPolicy::RequireNegotiatedCapabilities,
+        PublishAdmissionPolicy::EventLoopValidated,
+    ] {
+        assert_commands_not_admitted_with_policy(
+            "checked-payload",
+            true,
+            [Command::Publish(PublishCommand {
+                topic: "validation/topic".into(),
+                payload: Bytes::from_static(&[0xff]),
+                qos: QoS::AtMostOnce,
+                retain: false,
+                protocol: PublishProtocolOptions::V5(V5OutgoingPublishProperties {
+                    payload_format_indicator: Some(1),
+                    ..Default::default()
+                }),
+            })],
+            policy,
+        );
+    }
 }
 
 #[test]

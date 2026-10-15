@@ -8,7 +8,15 @@
   the next MQTT handshake begins. Preserve the const observation API, full packet
   properties, and terminal event ordering. Construct authentication-failure
   callback errors only while an exchange is active.
-
+- MQTT 5: Make publish payload-content validation opt-in with
+  `PublishOptions::validate_payload(true)`. Callers declaring UTF-8 payloads must
+  supply valid UTF-8; checked publishes reject invalid bytes before admission and
+  skip redundant scans of `String`/`&str` inputs. Existing `IntoPublishPayload`
+  implementations remain supported, with an optional `is_utf8_validated` guarantee.
+  Keep Topic Name and MQTT property validation enabled independently of payload
+  checks. Remove unnecessary packet clones from ordinary and tracked publish
+  preparation. Native wrappers retain their existing pre-admission content checks
+  under both capability admission policies without a second native-client scan.
 - MQTT 5: Dispatch ordinary and replayed requests directly through the synchronous
   state machine, and install poll cancellation guards only for asynchronous AUTH
   transitions. Keep asynchronous enhanced authentication available to Rust and

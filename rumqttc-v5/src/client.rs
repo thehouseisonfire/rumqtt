@@ -285,6 +285,7 @@ impl From<SubscribeFilter> for SubscribeFilterInput {
 pub struct PublishOptions {
     qos: QoS,
     retain: bool,
+    validate_payload: bool,
     properties: Option<PublishProperties>,
 }
 
@@ -295,6 +296,7 @@ impl PublishOptions {
         Self {
             qos,
             retain: false,
+            validate_payload: false,
             properties: None,
         }
     }
@@ -338,8 +340,17 @@ impl PublishOptions {
         self
     }
 
-    fn into_parts(self) -> (QoS, bool, Option<PublishProperties>) {
-        (self.qos, self.retain, self.properties)
+    /// Selects whether to check that a UTF-8-marked payload is well-formed before enqueueing it.
+    ///
+    /// Disabled by default: callers setting Payload Format Indicator to 1 must supply valid UTF-8.
+    /// When enabled, invalid bytes return [`ClientError::InvalidRequest`] without admission.
+    /// Payloads supplied as [`String`] or `&str` already guarantee UTF-8 and are never rescanned.
+    /// Unspecified and binary payload formats do not require a content scan in either mode.
+    /// MQTT property and Topic Name validation remains enabled independently of this setting.
+    #[must_use]
+    pub const fn validate_payload(mut self, validate: bool) -> Self {
+        self.validate_payload = validate;
+        self
     }
 }
 
@@ -351,6 +362,15 @@ impl PublishOptions {
 pub trait IntoPublishPayload {
     /// Converts the payload into bytes owned by the publish packet.
     fn into_publish_payload(self) -> Bytes;
+
+    /// Reports whether the converted bytes are already known to be valid UTF-8.
+    ///
+    /// The default `false` means that validity is unknown, not that the bytes are invalid.
+    /// Return `true` only if [`Self::into_publish_payload`] is guaranteed to produce valid UTF-8.
+    /// This allows checked publishes to reuse an existing guarantee without scanning the bytes.
+    fn is_utf8_validated(&self) -> bool {
+        false
+    }
 }
 
 impl IntoPublishPayload for Bytes {
@@ -368,6 +388,10 @@ impl IntoPublishPayload for Vec<u8> {
 impl IntoPublishPayload for String {
     fn into_publish_payload(self) -> Bytes {
         Bytes::from(self)
+    }
+
+    fn is_utf8_validated(&self) -> bool {
+        true
     }
 }
 
@@ -392,6 +416,10 @@ impl<const N: usize> IntoPublishPayload for [u8; N] {
 impl IntoPublishPayload for &'_ str {
     fn into_publish_payload(self) -> Bytes {
         Bytes::copy_from_slice(self.as_bytes())
+    }
+
+    fn is_utf8_validated(&self) -> bool {
+        true
     }
 }
 
@@ -1431,18 +1459,7 @@ impl AsyncClient {
         T: Into<PublishTopic>,
         P: IntoPublishPayload,
     {
-        let (qos, retain, properties) = options.into_parts();
-        let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
-            || empty_topic_without_valid_alias(&topic, properties.as_ref());
-        let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
-        publish.retain = retain;
-        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
-        let request = Request::Publish(publish.clone());
-
-        if invalid_topic {
-            return Err(ClientError::InvalidRequest(Box::new(request)));
-        }
+        let publish = prepare_publish(topic, payload, options)?;
 
         self.send_publish_async(publish).await?;
         Ok(())
@@ -1458,18 +1475,7 @@ impl AsyncClient {
         T: Into<PublishTopic>,
         P: IntoPublishPayload,
     {
-        let (qos, retain, properties) = options.into_parts();
-        let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
-            || empty_topic_without_valid_alias(&topic, properties.as_ref());
-        let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
-        publish.retain = retain;
-        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
-        let request = Request::Publish(publish.clone());
-
-        if invalid_topic {
-            return Err(ClientError::InvalidRequest(Box::new(request)));
-        }
+        let publish = prepare_publish(topic, payload, options)?;
 
         self.send_tracked_publish_async(publish).await
     }
@@ -1526,18 +1532,7 @@ impl AsyncClient {
         T: Into<PublishTopic>,
         P: IntoPublishPayload,
     {
-        let (qos, retain, properties) = options.into_parts();
-        let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
-            || empty_topic_without_valid_alias(&topic, properties.as_ref());
-        let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
-        publish.retain = retain;
-        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
-        let request = Request::Publish(publish.clone());
-
-        if invalid_topic {
-            return Err(ClientError::InvalidRequest(Box::new(request)));
-        }
+        let publish = prepare_publish(topic, payload, options)?;
 
         self.try_send_managed_publish(publish)?;
         Ok(())
@@ -1553,18 +1548,7 @@ impl AsyncClient {
         T: Into<PublishTopic>,
         P: IntoPublishPayload,
     {
-        let (qos, retain, properties) = options.into_parts();
-        let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
-            || empty_topic_without_valid_alias(&topic, properties.as_ref());
-        let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
-        publish.retain = retain;
-        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
-        let request = Request::Publish(publish.clone());
-
-        if invalid_topic {
-            return Err(ClientError::InvalidRequest(Box::new(request)));
-        }
+        let publish = prepare_publish(topic, payload, options)?;
 
         self.try_send_tracked_publish(publish)
     }
@@ -3445,18 +3429,7 @@ impl Client {
         T: Into<PublishTopic>,
         P: IntoPublishPayload,
     {
-        let (qos, retain, properties) = options.into_parts();
-        let (topic, needs_validation) = topic.into().into_string_and_validation();
-        let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
-            || empty_topic_without_valid_alias(&topic, properties.as_ref());
-        let mut publish = Publish::new(topic, qos, payload.into_publish_payload(), properties);
-        publish.retain = retain;
-        let invalid_topic = invalid_topic || !valid_client_publish(&publish);
-        let request = Request::Publish(publish.clone());
-
-        if invalid_topic {
-            return Err(ClientError::InvalidRequest(Box::new(request)));
-        }
+        let publish = prepare_publish(topic, payload, options)?;
 
         self.client.send_managed_publish(publish)?;
         Ok(())
@@ -4668,18 +4641,51 @@ fn valid_publish_topic(topic: &str) -> bool {
     valid_topic(topic) && valid_mqtt_string_value(topic)
 }
 
+fn prepare_publish<T: Into<PublishTopic>, P: IntoPublishPayload>(
+    topic: T,
+    payload: P,
+    options: PublishOptions,
+) -> Result<Publish, ClientError> {
+    let (topic, needs_validation) = topic.into().into_string_and_validation();
+    let invalid_topic = (needs_validation && !valid_publish_topic(&topic))
+        || empty_topic_without_valid_alias(&topic, options.properties.as_ref());
+    let check_utf8 = options.validate_payload
+        && options
+            .properties
+            .as_ref()
+            .is_some_and(|properties| properties.payload_format_indicator == Some(1))
+        && !payload.is_utf8_validated();
+    let mut publish = Publish::new(
+        topic,
+        options.qos,
+        payload.into_publish_payload(),
+        options.properties,
+    );
+    publish.retain = options.retain;
+    if invalid_topic
+        || !valid_publish_properties(publish.properties.as_ref())
+        || (check_utf8 && std::str::from_utf8(&publish.payload).is_err())
+    {
+        return Err(ClientError::InvalidRequest(Box::new(Request::Publish(
+            publish,
+        ))));
+    }
+    Ok(publish)
+}
+
 #[must_use]
-fn valid_client_publish(publish: &Publish) -> bool {
-    let Some(properties) = publish.properties.as_ref() else {
+fn valid_publish_properties(properties: Option<&PublishProperties>) -> bool {
+    let Some(properties) = properties else {
         return true;
     };
     if !properties.subscription_identifiers.is_empty() {
         return false;
     }
-    match properties.payload_format_indicator {
-        None | Some(0) => {}
-        Some(1) if std::str::from_utf8(&publish.payload).is_ok() => {}
-        Some(_) => return false,
+    if properties
+        .payload_format_indicator
+        .is_some_and(|indicator| indicator > 1)
+    {
+        return false;
     }
     if properties.topic_alias == Some(0) {
         return false;

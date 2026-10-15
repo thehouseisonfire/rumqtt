@@ -150,6 +150,11 @@ Response Topic syntax, MQTT UTF-8 strings, and two-byte binary/string lengths.
 Publish Topic Names for both protocols reject U+0000 and values exceeding the
 MQTT UTF-8 string length before admission.
 
+The wrapper validates MQTT 5 UTF-8-marked payload contents before native admission
+under both publish admission policies. This check remains enabled independently
+of the Rust client's default-off `PublishOptions::validate_payload` setting; the
+native client does not rescan contents already checked by the wrapper.
+
 The wrapper builds MQTT 5 clients with
 `PublishAdmissionPolicy::RequireNegotiatedCapabilities`. `rumqttc-v5`, rather
 than this wrapper, owns the coherent negotiated Maximum QoS, Retain Available,

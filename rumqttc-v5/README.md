@@ -123,6 +123,36 @@ client.publish("state/online", "true", state).await?;
 client.publish("dynamic/topic", payload, dynamic).await?;
 ```
 
+Publish payload validation
+--------------------------
+
+Publish APIs validate Topic Names and MQTT 5 property fields before enqueueing.
+Payload contents are the application's responsibility by default: when setting
+Payload Format Indicator to 1, supply well-formed UTF-8. To reject invalid byte
+payloads before admission, enable `PublishOptions::validate_payload(true)`:
+
+```rust,no_run
+# use bytes::Bytes;
+# use rumqttc::{AsyncClient, ClientError, PublishOptions, PublishProperties};
+# async fn publish_text(client: &AsyncClient, payload_bytes: Bytes) -> Result<(), ClientError> {
+let checked_text = PublishOptions::at_most_once()
+    .properties(PublishProperties {
+        payload_format_indicator: Some(1),
+        ..Default::default()
+    })
+    .validate_payload(true);
+client.publish("telemetry/text", payload_bytes, checked_text).await?;
+# Ok(())
+# }
+```
+
+Checked publishes scan arbitrary bytes only when the payload is marked as UTF-8.
+`String` and `&str` inputs already guarantee UTF-8 and skip this scan. Existing
+`IntoPublishPayload` implementations remain supported; implementations with an
+existing validity guarantee can override `is_utf8_validated` to reuse it.
+This option is independent of negotiated-capability admission. Metadata checks,
+including NUL rejection in property strings, remain enabled in both modes.
+
 Negotiated publish admission
 ----------------------------
 
