@@ -422,7 +422,7 @@ impl IncomingPacketEffects {
 /// through the public const getter without deallocating the box. Reuse the slot
 /// for subsequent observations and release it when the next MQTT handshake begins.
 #[derive(Debug, Default)]
-pub(crate) struct ConnectionFailurePacketSlot {
+pub struct ConnectionFailurePacketSlot {
     packet: Option<Box<Option<Packet>>>,
 }
 
