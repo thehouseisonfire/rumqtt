@@ -262,8 +262,7 @@ require store administration and a new client, not this operation. Ordinary
 reconnect continues to preserve unfinished exchanges and uses its existing policy;
 explicit recovery preserves its remaining retry budget and delay, with no extra
 free attempt or new operation deadline. See the
-[operator example](examples/session_recovery.c) and
-[file-store administration scope](../../TODO39.md).
+[operator example](examples/session_recovery.c).
 
 ## Structured diagnostic snapshots
 

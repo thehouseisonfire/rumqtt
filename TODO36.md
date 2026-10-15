@@ -24,8 +24,8 @@ Add a safe native transition before exposing the C operation.
 
 Persistence failures currently terminate the wrapper driver. This operation
 does not revive terminal clients or automatically erase unreadable checkpoints.
-Those cases require explicit store repair/administration and a new client; see
-[TODO39.md](TODO39.md). Routine ACK/alias cleanup remains managed automatically.
+Those cases require explicit store repair/administration and a new client.
+Routine ACK/alias cleanup remains managed automatically.
 
 ## Implementation requirements
 
@@ -87,8 +87,7 @@ Those cases require explicit store repair/administration and a new client; see
   as an interruption with exactly-once recovery completion and retained cleanup;
   never report fresh-session success or reopen admission after shutdown wins.
 - [x] Keep automatic reconnect recovery unchanged. Document operator recovery
-  separately from normal cleanup and file-store administration in
-  [TODO39.md](TODO39.md).
+  separately from normal cleanup and file-store administration.
 
 ## Deferred scope
 
