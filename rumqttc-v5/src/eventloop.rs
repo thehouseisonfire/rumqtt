@@ -2542,29 +2542,11 @@ impl EventLoop {
             match connect(&mut self.options, &mut self.state, connect_deadline).await {
                 Ok(connection) => connection,
                 Err(failure) => {
-                    self.last_connect_failure_phase = Some(failure.phase);
-                    #[cfg(feature = "tracing")]
-                    crate::instrumentation::connection_attempt_failed(
+                    return self.handle_connect_failure(
+                        failure,
+                        #[cfg(feature = "tracing")]
                         attempt,
-                        failure.phase.as_str(),
-                        &failure.error,
                     );
-                    if let ConnectionError::Redirect(redirect) = failure.error {
-                        // Recovery pins identity/store scope; never apply a redirect profile
-                        // while its producer barrier is held, including an active candidate.
-                        #[cfg(feature = "session-recovery")]
-                        if self.recovery.requested() {
-                            return Err(ConnectionError::SessionRecoveryInvalid);
-                        }
-                        if let Some(event) = self.state.events.pop_front() {
-                            self.observe_redirect_transition();
-                            self.pending_server_redirect =
-                                Some(PendingServerRedirect::HandshakeEvents(redirect.outcome));
-                            return Ok(Some(event));
-                        }
-                        return self.handle_redirect_outcome(redirect.outcome).map(Some);
-                    }
-                    return Err(failure.error);
                 }
             };
         self.last_connect_failure_phase = Some(ConnectFailurePhase::MqttHandshake);
@@ -2633,6 +2615,36 @@ impl EventLoop {
 
         self.last_connect_failure_phase = None;
         Ok(None)
+    }
+
+    fn handle_connect_failure(
+        &mut self,
+        failure: ConnectFailure,
+        #[cfg(feature = "tracing")] attempt: crate::instrumentation::AttemptContext,
+    ) -> Result<Option<Event>, ConnectionError> {
+        self.last_connect_failure_phase = Some(failure.phase);
+        #[cfg(feature = "tracing")]
+        crate::instrumentation::connection_attempt_failed(
+            attempt,
+            failure.phase.as_str(),
+            &failure.error,
+        );
+        if let ConnectionError::Redirect(redirect) = failure.error {
+            // Recovery pins identity/store scope; never apply a redirect profile
+            // while its producer barrier is held, including an active candidate.
+            #[cfg(feature = "session-recovery")]
+            if self.recovery.requested() {
+                return Err(ConnectionError::SessionRecoveryInvalid);
+            }
+            if let Some(event) = self.state.events.pop_front() {
+                self.observe_redirect_transition();
+                self.pending_server_redirect =
+                    Some(PendingServerRedirect::HandshakeEvents(redirect.outcome));
+                return Ok(Some(event));
+            }
+            return self.handle_redirect_outcome(redirect.outcome).map(Some);
+        }
+        Err(failure.error)
     }
 
     fn record_established_redirect(&mut self) {

@@ -532,23 +532,24 @@ impl AuthFailureReason {
     pub(crate) fn from_notice_error(error: AuthNoticeError) -> Self {
         #[cfg(not(feature = "ordered-shutdown"))]
         match error {
-            AuthNoticeError::BrokerRejected(_) => Self::ConnectionClosed,
+            AuthNoticeError::BrokerRejected(_) | AuthNoticeError::ConnectionClosed => {
+                Self::ConnectionClosed
+            }
             AuthNoticeError::BrokerDisconnected(reason) => Self::BrokerDisconnected(reason),
             AuthNoticeError::Recv => Self::NoticeDropped,
             AuthNoticeError::SessionReset => Self::SessionReset,
             AuthNoticeError::Redirected => Self::Redirected,
             AuthNoticeError::ProtocolError => Self::ProtocolError,
             AuthNoticeError::AuthenticationFailed(message) => Self::AuthenticationFailed(message),
-            AuthNoticeError::ConnectionClosed => Self::ConnectionClosed,
             AuthNoticeError::OverlappingReauth => Self::OverlappingReauth,
             AuthNoticeError::MissingAuthenticationMethod => Self::MissingAuthenticationMethod,
         }
 
         #[cfg(feature = "ordered-shutdown")]
         match error {
-            AuthNoticeError::BrokerRejected(_) => Self::ConnectionClosed,
             AuthNoticeError::BrokerDisconnected(reason) => Self::BrokerDisconnected(reason),
-            AuthNoticeError::DiscardedAfterDisconnectBarrier
+            AuthNoticeError::BrokerRejected(_)
+            | AuthNoticeError::DiscardedAfterDisconnectBarrier
             | AuthNoticeError::ShutdownInterrupted
             | AuthNoticeError::ShutdownSupersededByImmediate
             | AuthNoticeError::ConnectionClosed => Self::ConnectionClosed,
