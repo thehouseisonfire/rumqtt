@@ -2850,7 +2850,10 @@ fn initial_broker_refusal_keeps_native_authentication_events_typed() {
             _: AuthContext,
             challenge: AuthChallenge,
         ) -> std::result::Result<AuthAction, AuthFailure> {
-            assert!(!(matches!(challenge, AuthChallenge::Failed) && self.panic_on_failure), "failure callback panic");
+            assert!(
+                !(matches!(challenge, AuthChallenge::Failed) && self.panic_on_failure),
+                "failure callback panic"
+            );
             Ok(AuthAction::Complete)
         }
     }
@@ -2860,7 +2863,7 @@ fn initial_broker_refusal_keeps_native_authentication_events_typed() {
         }
         fn failure(&self, _: AuthContext, failure: AuthFailure) {
             assert_eq!(failure, AuthFailure::BrokerRejected);
-            assert!(!self.panic_on_failure, "failure callback panic")
+            assert!(!self.panic_on_failure, "failure callback panic");
         }
     }
     for asynchronous in [false, true] {
