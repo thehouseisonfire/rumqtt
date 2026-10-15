@@ -170,6 +170,10 @@ Broker-backed `client throughput` TCP and TLS scenarios remain realism checks.
 Their results must be reported separately because network and broker work can
 conceal the client-side delta.
 
+The [publish-validation and reconnect-storage experiment](../docs/reconnect-overhead-2026-10-14.md)
+compares the original validation scans and recovery storage with the optimized
+implementation, retaining the client workload samples and allocation probe source.
+
 #### Negative production experiment (2026-08-10)
 
 An end-to-end provenance implementation was measured with Rust 1.96.1

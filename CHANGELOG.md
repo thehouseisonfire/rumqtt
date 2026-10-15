@@ -2,6 +2,14 @@
 
 ### Changed
 
+- MQTT v4/v5: Retain publish-topic correctness checks and the prevalidated-topic
+  fast path without adding a dependency. MQTT 5 avoids redundant Response Topic
+  wildcard checks and allocates QoS 2 recovery tracking only for replayed PUBREL flows.
+  Recovery tracking is released after active PUBREL flows drain or connection cleanup. Strict-admission clients
+  no longer retain the legacy external Topic Alias repair snapshot; unmanaged
+  and budget-only clients release it after repair, when reconnect starts, or on terminal shutdown.
+  Protocol validation and recovery behavior remain enabled without new feature flags.
+
 - MQTT 5: Allocate retained connection-failure packets and deferred connection
   errors on the failure path, reducing idle client and polling-task storage.
   Reuse the packet observation slot after taking its value and release it when

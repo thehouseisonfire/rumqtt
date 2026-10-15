@@ -15,7 +15,7 @@ use crate::mqttbytes::{
 use crate::notice::{PublishNoticeTx, SubscribeNoticeTx, UnsubscribeNoticeTx};
 use crate::{
     ConfigError, ConnectionError, Event, EventLoop, MqttOptions, PublishNotice, Request,
-    SubscribeNotice, UnsubscribeNotice, valid_filter, valid_topic,
+    SubscribeNotice, UnsubscribeNotice, valid_filter,
 };
 
 use bytes::Bytes;
@@ -2560,7 +2560,7 @@ impl Client {
 
 #[must_use]
 fn valid_publish_topic(topic: &str) -> bool {
-    !topic.is_empty() && valid_topic(topic) && valid_mqtt_string_value(topic)
+    !topic.is_empty() && crate::valid_topic(topic) && valid_mqtt_string_value(topic)
 }
 
 #[must_use]
@@ -3191,6 +3191,16 @@ mod test {
         let valid_topic = ValidatedTopic::new("hello/world").unwrap();
         let valid_topic_can_be_cloned = valid_topic.clone();
         assert_eq!(valid_topic, valid_topic_can_be_cloned);
+    }
+
+    #[test]
+    fn validated_topics_enforce_utf8_byte_length_and_reject_hash_wildcards() {
+        let limit = format!("{}a", "é".repeat(usize::from(u16::MAX) / 2));
+        assert_eq!(limit.len(), usize::from(u16::MAX));
+        assert!(ValidatedTopic::new(limit.clone()).is_ok());
+        assert!(ValidatedTopic::new(format!("{limit}a")).is_err());
+        assert!(ValidatedTopic::new("sensors/温度").is_ok());
+        assert!(ValidatedTopic::new("sensors/#").is_err());
     }
 
     #[test]

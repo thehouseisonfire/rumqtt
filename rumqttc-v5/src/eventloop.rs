@@ -562,9 +562,13 @@ pub struct EventLoop {
     queued: OutboundScheduler<RequestEnvelope>,
     /// Topic Alias mappings at the most recent connection-cleanup drain boundary.
     ///
-    /// Retained for the deprecated external reconnect-repair hook. Builder-created strict clients
-    /// instead serialize producer admission with cleanup through `publish_admission`.
-    reconnect_topic_aliases: std::collections::HashMap<u16, bytes::Bytes>,
+    /// Retained for the deprecated external reconnect-repair hook until repair or reconnect starts.
+    /// Strict admission rejects late alias publishes, so it does not need this seed.
+    #[allow(
+        clippy::box_collection,
+        reason = "keep legacy repair metadata off the idle event loop"
+    )]
+    reconnect_topic_aliases: Option<Box<std::collections::HashMap<u16, bytes::Bytes>>>,
     publish_admission: Option<std::sync::Arc<ManagedPublishAdmission>>,
     /// Network connection to the broker.
     ///
@@ -985,7 +989,7 @@ impl EventLoop {
             _immediate_disconnect_tx: retained_senders.immediate_disconnect,
             pending,
             queued: OutboundScheduler::default(),
-            reconnect_topic_aliases: std::collections::HashMap::new(),
+            reconnect_topic_aliases: None,
             publish_admission,
             network: None,
             keepalive_timeout: None,
@@ -1108,12 +1112,19 @@ impl EventLoop {
     ///
     /// This is an instantaneous drain, not a producer lock: callers are responsible for
     /// synchronizing publish producers across the surrounding connection transition.
+    /// Call after cleanup and before polling to reconnect; the saved mappings are released when
+    /// the next connection attempt starts. Strict-admission clients repair publishes during cleanup and
+    /// do not retain mappings for this hook.
     #[deprecated(
         since = "0.34.0-alpha",
         note = "builder-created clients now synchronize publish admission and reconnect repair internally"
     )]
     pub fn prepare_pending_topic_aliases_for_reconnect(&mut self) {
-        let mut topic_aliases = std::mem::take(&mut self.reconnect_topic_aliases);
+        let mut topic_aliases = self
+            .reconnect_topic_aliases
+            .take()
+            .map(|aliases| *aliases)
+            .unwrap_or_default();
         let pending = std::mem::take(&mut self.pending);
         for envelope in pending {
             self.push_replay_envelope(envelope, &mut topic_aliases);
@@ -1201,7 +1212,19 @@ impl EventLoop {
         // enqueue an alias-only publish and then a rebinding before the connection owner can take
         // its admission gate. The late repair must resolve the former against this boundary map,
         // then apply the latter in queue order.
-        self.reconnect_topic_aliases = replay_topic_aliases;
+        #[cfg(not(feature = "bounded-publish"))]
+        let external_alias_repair = self.publish_admission.is_none();
+        #[cfg(feature = "bounded-publish")]
+        let external_alias_repair = self
+            .publish_admission
+            .as_ref()
+            .is_none_or(|admission| !admission.requires_negotiated_capabilities());
+        self.reconnect_topic_aliases = if external_alias_repair && !replay_topic_aliases.is_empty()
+        {
+            Some(Box::new(replay_topic_aliases))
+        } else {
+            None
+        };
         #[cfg(feature = "ordered-shutdown")]
         self.restore_ordered_fence_after_cleanup();
 
@@ -1465,6 +1488,7 @@ impl EventLoop {
     }
 
     fn drop_unprocessed_requests(&mut self) {
+        self.reconnect_topic_aliases = None;
         #[cfg(feature = "ordered-shutdown")]
         self.requests_rx.gate().terminate();
 
@@ -1506,6 +1530,7 @@ impl EventLoop {
     }
 
     fn reset_session_state_for_redirect(&mut self) {
+        self.reconnect_topic_aliases = None;
         self.connack_session = None;
         self.drain_pending_as_failed(NoticeFailureReason::Redirected);
         self.drain_request_channels_as_failed(NoticeFailureReason::Redirected);
@@ -1519,6 +1544,7 @@ impl EventLoop {
     }
 
     fn reset_session_state_internal(&mut self, store_reset: SessionStoreResetAction) {
+        self.reconnect_topic_aliases = None;
         #[cfg(feature = "ordered-shutdown")]
         if self.requests_rx.gate().has_fence()
             && (!self.pending.is_empty() || self.ordered_packet.is_some())
@@ -2463,6 +2489,8 @@ impl EventLoop {
     }
 
     async fn establish_connection(&mut self) -> Result<Option<Event>, ConnectionError> {
+        // External repair belongs between cleanup and reconnect, never to the new connection.
+        self.reconnect_topic_aliases = None;
         self.resolve_active_srv().await?;
         loop {
             let result = self.establish_connection_attempt().await;
@@ -2956,10 +2984,11 @@ impl EventLoop {
     /// Panics if a pending server redirect is expected but missing.
     async fn poll_inner(&mut self) -> Result<Event, ConnectionError> {
         let result = self.poll_once().await;
-        if matches!(result, Err(ConnectionError::RequestsDone))
-            && let Some(admission) = &self.publish_admission
-        {
-            admission.close();
+        if matches!(result, Err(ConnectionError::RequestsDone)) {
+            self.reconnect_topic_aliases = None;
+            if let Some(admission) = &self.publish_admission {
+                admission.close();
+            }
         }
         result
     }
@@ -8478,6 +8507,170 @@ mod tests {
     }
 
     #[test]
+    fn strict_cleanup_repairs_aliases_without_retaining_external_snapshot() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (_client, mut eventloop) = crate::AsyncClient::builder(options)
+            .publish_admission_policy(crate::PublishAdmissionPolicy::RequireNegotiatedCapabilities)
+            .build();
+        eventloop.state.set_broker_topic_alias_max(1);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish_with_alias(
+                "previous/topic",
+                QoS::AtMostOnce,
+                1,
+            )))
+            .unwrap();
+        eventloop
+            .queued
+            .push_back(RequestEnvelope::plain(Request::Publish(
+                publish_with_alias("", QoS::AtLeastOnce, 1),
+            )));
+
+        eventloop.clean();
+
+        assert!(eventloop.reconnect_topic_aliases.is_none());
+        assert!(
+            matches!(pending_front_request(&eventloop), Some(Request::Publish(publish))
+            if publish.topic == Bytes::from_static(b"previous/topic")
+                && publish.properties.as_ref().unwrap().topic_alias.is_none())
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "bounded-publish")]
+    #[allow(deprecated)]
+    async fn budget_only_admission_preserves_external_alias_repair() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (client, mut eventloop) = crate::AsyncClient::builder(options)
+            .publish_budget(crate::PublishBudgetLimits {
+                max_outstanding: 4,
+                max_bytes: 128 * 1024,
+            })
+            .build();
+        eventloop.state.set_broker_topic_alias_max(1);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish_with_alias(
+                "previous/topic",
+                QoS::AtMostOnce,
+                1,
+            )))
+            .unwrap();
+        eventloop.clean();
+        assert!(eventloop.reconnect_topic_aliases.is_some());
+
+        let notice = client
+            .try_publish_tracked(
+                "",
+                Vec::<u8>::new(),
+                crate::PublishOptions::new(QoS::AtLeastOnce).properties(PublishProperties {
+                    topic_alias: Some(1),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        eventloop.prepare_pending_topic_aliases_for_reconnect();
+
+        assert!(eventloop.reconnect_topic_aliases.is_none());
+        assert!(
+            matches!(pending_front_request(&eventloop), Some(Request::Publish(publish))
+            if publish.topic == Bytes::from_static(b"previous/topic")
+                && publish.properties.as_ref().unwrap().topic_alias.is_none())
+        );
+        let envelope = eventloop.pending.pop_front().unwrap();
+        let (packet, flush_notice) = eventloop
+            .state
+            .handle_outgoing_packet_with_notice(envelope.request, envelope.notice)
+            .unwrap();
+        assert!(flush_notice.is_none());
+        let Some(Packet::Publish(publish)) = packet else {
+            panic!("expected repaired publish")
+        };
+        eventloop
+            .state
+            .handle_incoming_packet(Incoming::PubAck(PubAck::new(publish.pkid, None)))
+            .unwrap();
+        assert_eq!(notice.wait_completion_async().await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn external_alias_snapshot_is_released_on_terminal_shutdown() {
+        let options = MqttOptions::new("test-client", "localhost");
+        let (client, mut eventloop) = crate::AsyncClient::builder(options).build();
+        eventloop.state.set_broker_topic_alias_max(1);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish_with_alias(
+                "previous/topic",
+                QoS::AtMostOnce,
+                1,
+            )))
+            .unwrap();
+        eventloop.clean();
+        assert!(eventloop.reconnect_topic_aliases.is_some());
+
+        client.try_disconnect_now().unwrap();
+        assert!(matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::RequestsDone)
+        ));
+
+        assert!(eventloop.reconnect_topic_aliases.is_none());
+    }
+
+    #[tokio::test]
+    async fn external_alias_snapshot_is_released_when_reconnect_is_cancelled() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_socket_connector(|_, _| {
+            std::future::pending::<std::io::Result<tokio::net::TcpStream>>()
+        });
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.state.set_broker_topic_alias_max(1);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish_with_alias(
+                "previous/topic",
+                QoS::AtMostOnce,
+                1,
+            )))
+            .unwrap();
+        eventloop.clean();
+        assert!(eventloop.reconnect_topic_aliases.is_some());
+
+        let mut reconnect = Box::pin(eventloop.poll());
+        assert!(futures_util::FutureExt::now_or_never(reconnect.as_mut()).is_none());
+        drop(reconnect);
+
+        assert!(eventloop.reconnect_topic_aliases.is_none());
+        assert!(eventloop.network.is_none());
+    }
+
+    #[tokio::test]
+    async fn external_alias_snapshot_is_released_when_reconnect_fails() {
+        let mut options = MqttOptions::new("test-client", "localhost");
+        options.set_socket_connector(|_, _| async {
+            Err::<tokio::net::TcpStream, _>(std::io::Error::other("connection failed"))
+        });
+        let (mut eventloop, _request_tx) = EventLoop::new_for_async_client(options, 1);
+        eventloop.state.set_broker_topic_alias_max(1);
+        eventloop
+            .state
+            .handle_outgoing_packet(Request::Publish(publish_with_alias(
+                "previous/topic",
+                QoS::AtMostOnce,
+                1,
+            )))
+            .unwrap();
+        eventloop.clean();
+        assert!(eventloop.reconnect_topic_aliases.is_some());
+
+        assert!(eventloop.poll().await.is_err());
+
+        assert!(eventloop.reconnect_topic_aliases.is_none());
+    }
+
+    #[test]
     #[allow(deprecated)]
     fn reconnect_boundary_repairs_topic_aliases_admitted_after_cleanup() {
         let options = MqttOptions::new("test-client", "localhost");
@@ -8516,6 +8709,7 @@ mod tests {
 
         eventloop.prepare_pending_topic_aliases_for_reconnect();
 
+        assert!(eventloop.reconnect_topic_aliases.is_none());
         assert_eq!(eventloop.pending_len(), 5);
         match eventloop
             .pending

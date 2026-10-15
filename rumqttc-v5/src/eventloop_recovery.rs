@@ -71,7 +71,6 @@ impl EventLoop {
                 .map(|admission| admission.begin_connection_cleanup());
             self.reset_session_state();
         }
-        self.reconnect_topic_aliases.clear();
         self.pending_server_redirect = None;
         self.pending_connection_error = None;
         self.pending_redirect_shutdown = false;

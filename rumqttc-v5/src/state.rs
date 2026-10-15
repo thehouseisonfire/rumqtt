@@ -484,6 +484,7 @@ pub struct MqttState {
     /// Packet identifiers of active outgoing `PUBREL` flows in receipt order.
     outgoing_rel_order: VecDeque<u16>,
     /// Active `PUBREL` flows that were replayed during recovery on this connection.
+    /// Allocated only when replaying a PUBREL, independently of ordinary packet-id tracking.
     outgoing_rel_recovery: FixedBitSet,
     /// Packet ids of released `QoS` 2 publishes queued for replay after clean
     pub(crate) outgoing_rel_replay: FixedBitSet,
@@ -794,7 +795,7 @@ impl MqttState {
             outgoing_pub_notice: Self::new_notice_slots_with_len(tracking_len),
             outgoing_rel: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel_order: VecDeque::new(),
-            outgoing_rel_recovery: FixedBitSet::with_capacity(tracking_len),
+            outgoing_rel_recovery: FixedBitSet::new(),
             outgoing_rel_replay: FixedBitSet::with_capacity(tracking_len),
             outgoing_rel_replay_order: VecDeque::new(),
             outgoing_rel_notice: Self::new_notice_slots_with_len(tracking_len),
@@ -997,10 +998,6 @@ impl MqttState {
             self.outgoing_rel.grow(target_len);
         }
 
-        if self.outgoing_rel_recovery.len() < target_len {
-            self.outgoing_rel_recovery.grow(target_len);
-        }
-
         if self.outgoing_rel_replay.len() < target_len {
             self.outgoing_rel_replay.grow(target_len);
         }
@@ -1057,7 +1054,7 @@ impl MqttState {
         self.outgoing_rel_notice.truncate(target_len);
         self.outgoing_rel = FixedBitSet::with_capacity(target_len);
         self.outgoing_rel_order.clear();
-        self.outgoing_rel_recovery = FixedBitSet::with_capacity(target_len);
+        self.outgoing_rel_recovery = FixedBitSet::new();
         self.outgoing_rel_replay = FixedBitSet::with_capacity(target_len);
         self.outgoing_rel_replay_order.clear();
         // Ensure future packet id reuse starts from the beginning of the new range.
@@ -1214,7 +1211,7 @@ impl MqttState {
             }
         }
         self.outgoing_rel.clear();
-        self.outgoing_rel_recovery.clear();
+        self.outgoing_rel_recovery = FixedBitSet::new();
 
         for (pkid, mut pending_subscribe) in std::mem::take(&mut self.pending_subscribe) {
             pending_subscribe.subscribe.pkid = pkid;
@@ -2436,9 +2433,14 @@ impl MqttState {
         let recovered = self
             .outgoing_rel_recovery
             .contains(usize::from(pubcomp.pkid));
-        self.outgoing_rel_recovery
-            .set(usize::from(pubcomp.pkid), false);
+        if recovered {
+            self.outgoing_rel_recovery
+                .set(usize::from(pubcomp.pkid), false);
+        }
         remove_ordered_pkid(&mut self.outgoing_rel_order, pubcomp.pkid);
+        if self.outgoing_rel_order.is_empty() {
+            self.outgoing_rel_recovery = FixedBitSet::new();
+        }
         let notice = self.outgoing_rel_notice[usize::from(pubcomp.pkid)].take();
         self.release_outbound_pkid(pubcomp.pkid);
         self.release_outgoing_publish_quota(pubcomp.pkid);
@@ -3213,7 +3215,7 @@ impl MqttState {
             remove_ordered_pkid(&mut self.outgoing_rel_replay_order, pubrel.pkid);
             self.outgoing_rel.insert(pkid_index);
             self.outgoing_rel_order.push_back(pubrel.pkid);
-            self.outgoing_rel_recovery.insert(pkid_index);
+            self.outgoing_rel_recovery.grow_and_insert(pkid_index);
         }
         if notice.is_some() || self.outgoing_rel_notice[pkid_index].is_none() {
             self.outgoing_rel_notice[pkid_index] = notice;
@@ -9653,6 +9655,105 @@ mod test {
         );
         assert_eq!(mqtt.inflight, 0);
         assert!(!mqtt.outgoing_rel.contains(1));
+    }
+
+    #[test]
+    fn ordinary_publish_flows_do_not_allocate_recovery_tracking() {
+        for qos in [QoS::AtMostOnce, QoS::AtLeastOnce, QoS::ExactlyOnce] {
+            let mut mqtt = build_mqttstate();
+            let mut publish = build_outgoing_publish(qos);
+            publish.pkid = if qos == QoS::AtMostOnce { 0 } else { 60_000 };
+            mqtt.outgoing_publish(publish).unwrap();
+            assert!(mqtt.outgoing_rel_recovery.is_empty());
+            match qos {
+                QoS::AtMostOnce => {}
+                QoS::AtLeastOnce => {
+                    mqtt.handle_incoming_puback(&PubAck::new(60_000, None))
+                        .unwrap();
+                }
+                QoS::ExactlyOnce => {
+                    mqtt.handle_incoming_pubrec(&PubRec::new(60_000, None))
+                        .unwrap();
+                    assert!(mqtt.outgoing_rel_recovery.is_empty());
+                    mqtt.handle_incoming_pubcomp(&PubComp::new(60_000, None))
+                        .unwrap();
+                }
+            }
+            assert!(mqtt.outgoing_rel_recovery.is_empty());
+            assert!(mqtt.clone().outgoing_rel_recovery.is_empty());
+        }
+    }
+
+    #[test]
+    fn recovery_tracking_preserves_mixed_flows_and_packet_identifier_reuse() {
+        let mut mqtt = build_mqttstate();
+        let notices: Vec<_> = [1, 60_000]
+            .into_iter()
+            .map(|pkid| {
+                let mut publish = build_outgoing_publish(QoS::ExactlyOnce);
+                publish.pkid = pkid;
+                let notice = queue_publish_with_notice(&mut mqtt, publish);
+                mqtt.handle_incoming_pubrec(&PubRec::new(pkid, None))
+                    .unwrap();
+                notice
+            })
+            .collect();
+        let replay = mqtt.clean_with_notices_for_reconnect();
+        assert!(mqtt.outgoing_rel_recovery.is_empty());
+        for envelope in replay {
+            mqtt.handle_replayed_outgoing_packet_with_notice(envelope.request, envelope.notice)
+                .unwrap();
+        }
+        assert_eq!(mqtt.outgoing_rel_recovery.len(), 60_001);
+        let mut cloned = mqtt.clone();
+        assert!(cloned.outgoing_rel_recovery.contains(1));
+        assert!(cloned.outgoing_rel_recovery.contains(60_000));
+        cloned.clean();
+        assert!(cloned.outgoing_rel_recovery.is_empty());
+
+        // An ordinary exchange above the recovery bitset must neither grow it nor be recovered.
+        let mut publish = build_outgoing_publish(QoS::ExactlyOnce);
+        publish.pkid = 60_001;
+        let ordinary = queue_publish_with_notice(&mut mqtt, publish);
+        mqtt.handle_incoming_pubrec(&PubRec::new(60_001, None))
+            .unwrap();
+        assert_eq!(mqtt.outgoing_rel_recovery.len(), 60_001);
+        let mut rejected = PubComp::new(60_001, None);
+        rejected.reason = PubCompReason::PacketIdentifierNotFound;
+        mqtt.handle_incoming_packet(Incoming::PubComp(rejected))
+            .unwrap();
+        assert_eq!(
+            ordinary.wait_completion(),
+            Err(PublishNoticeError::V5PubComp(
+                PubCompReason::PacketIdentifierNotFound
+            ))
+        );
+
+        for (pkid, notice) in [1, 60_000].into_iter().zip(notices) {
+            let mut pubcomp = PubComp::new(pkid, None);
+            pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
+            mqtt.handle_incoming_packet(Incoming::PubComp(pubcomp.clone()))
+                .unwrap();
+            assert_eq!(notice.wait(), Ok(PublishResult::Qos2Recovered(pubcomp)));
+        }
+        assert!(mqtt.outgoing_rel_recovery.is_empty());
+
+        let mut publish = build_outgoing_publish(QoS::ExactlyOnce);
+        publish.pkid = 60_000;
+        let reused = queue_publish_with_notice(&mut mqtt, publish);
+        mqtt.handle_incoming_pubrec(&PubRec::new(60_000, None))
+            .unwrap();
+        let mut pubcomp = PubComp::new(60_000, None);
+        pubcomp.reason = PubCompReason::PacketIdentifierNotFound;
+        mqtt.handle_incoming_packet(Incoming::PubComp(pubcomp))
+            .unwrap();
+        assert_eq!(
+            reused.wait_completion(),
+            Err(PublishNoticeError::V5PubComp(
+                PubCompReason::PacketIdentifierNotFound
+            ))
+        );
+        assert!(mqtt.outgoing_rel_recovery.is_empty());
     }
 
     #[test]

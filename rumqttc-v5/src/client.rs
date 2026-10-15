@@ -25,7 +25,7 @@ use crate::notice::{AuthNoticeTx, PublishNoticeTx, SubscribeNoticeTx, Unsubscrib
 use crate::publish_admission::{AdmissionFailure, ManagedPublishAdmission};
 use crate::{
     AuthNotice, PublishAdmissionError, PublishAdmissionPolicy, PublishAdmissionWaiter,
-    PublishNotice, SubscribeNotice, UnsubscribeNotice, valid_filter, valid_topic,
+    PublishNotice, SubscribeNotice, UnsubscribeNotice, valid_filter,
 };
 
 use bytes::Bytes;
@@ -4638,7 +4638,7 @@ fn valid_mqtt_string_value(value: &str) -> bool {
 
 #[must_use]
 fn valid_publish_topic(topic: &str) -> bool {
-    valid_topic(topic) && valid_mqtt_string_value(topic)
+    crate::valid_topic(topic) && valid_mqtt_string_value(topic)
 }
 
 fn prepare_publish<T: Into<PublishTopic>, P: IntoPublishPayload>(
@@ -4691,9 +4691,7 @@ fn valid_publish_properties(properties: Option<&PublishProperties>) -> bool {
         return false;
     }
     if let Some(response_topic) = &properties.response_topic
-        && (response_topic.is_empty()
-            || response_topic.contains(['+', '#'])
-            || !valid_publish_topic(response_topic))
+        && (response_topic.is_empty() || !valid_publish_topic(response_topic))
     {
         return false;
     }
@@ -5765,6 +5763,16 @@ mod test {
         let valid_topic_can_be_cloned = valid_topic.clone();
         // ValidatedTopic can be compared
         assert_eq!(valid_topic, valid_topic_can_be_cloned);
+    }
+
+    #[test]
+    fn validated_topics_enforce_utf8_byte_length_and_reject_hash_wildcards() {
+        let limit = format!("{}a", "é".repeat(usize::from(u16::MAX) / 2));
+        assert_eq!(limit.len(), usize::from(u16::MAX));
+        assert!(ValidatedTopic::new(limit.clone()).is_ok());
+        assert!(ValidatedTopic::new(format!("{limit}a")).is_err());
+        assert!(ValidatedTopic::new("sensors/温度").is_ok());
+        assert!(ValidatedTopic::new("sensors/#").is_err());
     }
 
     #[test]

@@ -237,6 +237,16 @@ impl Drop for ConnectionCleanupGuard<'_> {
 }
 
 impl ManagedPublishAdmission {
+    /// Strict admission rejects connection-scoped aliases after cleanup invalidates capabilities.
+    /// Budget-only admission still permits offline queueing and needs the legacy repair seed.
+    #[cfg(feature = "bounded-publish")]
+    pub(crate) const fn requires_negotiated_capabilities(&self) -> bool {
+        matches!(
+            self.policy,
+            PublishAdmissionPolicy::RequireNegotiatedCapabilities
+        )
+    }
+
     /// Close recovery admission after any producer transaction already in progress.
     /// The lock is released before invoking or awaiting the session store.
     #[cfg(feature = "bounded-publish")]
