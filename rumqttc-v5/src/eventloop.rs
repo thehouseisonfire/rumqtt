@@ -2159,7 +2159,7 @@ impl EventLoop {
             RedirectSession::Reuse { store_scope } => {
                 self.options.set_session_store_scope(store_scope.clone());
                 if let Some(store) = &profile.session_store {
-                    self.options.set_session_store_arc(store.clone());
+                    self.options.set_session_store_arc(Arc::clone(store));
                 }
             }
         }
