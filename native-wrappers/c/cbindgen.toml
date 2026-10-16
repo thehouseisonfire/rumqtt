@@ -105,6 +105,7 @@ include = [
     "rumqttc_client",
     "rumqttc_completion",
     "rumqttc_event",
+    "rumqttc_ack_token",
     "rumqttc_error",
 ]
 
@@ -115,6 +116,7 @@ include = [
 "rumqttc_client" = "rumqttc_client_t"
 "rumqttc_completion" = "rumqttc_completion_t"
 "rumqttc_event" = "rumqttc_event_t"
+"rumqttc_ack_token" = "rumqttc_ack_token_t"
 "rumqttc_error" = "rumqttc_error_t"
 "rumqttc_store_registration" = "rumqttc_store_registration_t"
 "rumqttc_callback_completion" = "rumqttc_callback_completion_t"

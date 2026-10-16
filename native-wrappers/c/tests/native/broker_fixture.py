@@ -527,6 +527,12 @@ class Broker:
                 if read_frame(stream) != (4 if qos == 1 else 5, 0, expected):
                     raise AssertionError("manual acknowledgement reason/properties changed")
                 if qos == 2:
+                    if reason == 0 and b"tokens" in client_id:
+                        # Application authority is consumed, but native QoS 2 must still
+                        # answer a retransmitted PUBLISH with another PUBREC.
+                        stream.sendall(frame(3, (qos << 1) | 8, publication))
+                        if read_frame(stream) != (5, 0, expected):
+                            raise AssertionError("detached ACK suppressed native PUBREC retransmission")
                     # A late PUBREL after rejection must not produce successful QoS2 completion.
                     stream.sendall(frame(6, 2, packet_id))
                     expected_comp = packet_id + (b"\x92\x00" if reason >= 0x80 else b"")

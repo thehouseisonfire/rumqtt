@@ -364,6 +364,14 @@ add_test(NAME rumqttc-native-acknowledgement-options
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-acknowledgement-options>)
 set_tests_properties(rumqttc-native-acknowledgement-options PROPERTIES LABELS "native;wire;ownership" TIMEOUT 30)
 
+rumqttc_native_target(rumqttc-native-ack-tokens native_ack_tokens.c)
+if(MSVC)
+    target_compile_options(rumqttc-native-ack-tokens PRIVATE /experimental:c11atomics)
+endif()
+add_test(NAME rumqttc-native-ack-tokens
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-ack-tokens>)
+set_tests_properties(rumqttc-native-ack-tokens PROPERTIES LABELS "native;wire;ownership" TIMEOUT 30)
+
 rumqttc_native_target(rumqttc-native-acknowledgement-results native_acknowledgement_results.c)
 add_test(NAME rumqttc-native-acknowledgement-results
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-acknowledgement-results>)

@@ -37,6 +37,12 @@ _Static_assert(offsetof(rumqttc_v5_publish_properties_t, user_properties) == 80,
 #endif
 
 int main(void) {
+  rumqttc_ack_token_t *token = NULL;
+  assert(rumqttc_event_take_ack_token(NULL, &token, NULL) == RUMQTTC_INVALID_ARGUMENT);
+  assert(token == NULL);
+  assert(rumqttc_ack_token_retain(NULL, &token, NULL) == RUMQTTC_INVALID_ARGUMENT);
+  rumqttc_ack_token_release(token);
+
   rumqttc_v5_acknowledgement_options_t ack_content = RUMQTTC_V5_ACKNOWLEDGEMENT_OPTIONS_INIT;
   rumqttc_acknowledgement_options_t ack_options = RUMQTTC_ACKNOWLEDGEMENT_OPTIONS_INIT;
   rumqttc_user_property_t user_property = RUMQTTC_USER_PROPERTY_INIT;

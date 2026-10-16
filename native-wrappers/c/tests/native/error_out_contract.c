@@ -1175,7 +1175,7 @@ void native_test_error_out_contract(void) {
 
   {
     unsigned tracked;
-    for (tracked = 0; tracked < 4; ++tracked) {
+    for (tracked = 0; tracked < 8; ++tracked) {
       rumqttc_subscription_t subscription =
           native_subscription("rumqttc/native/incoming", RUMQTTC_QOS_1);
       rumqttc_completion_t *completion = NULL;
@@ -1225,6 +1225,50 @@ void native_test_error_out_contract(void) {
         /* ERROR_OUT_FAILURE: rumqttc_client_acknowledge_with_options_tracked */
         EXPECT_FAILURE(rumqttc_client_acknowledge_with_options_tracked(client, incoming, NULL, &completion, NULL));
         REQUIRE(completion == NULL);
+      }
+      if (tracked >= 4) {
+        rumqttc_ack_token_t *token = NULL;
+        rumqttc_ack_token_t *alias = NULL;
+        /* ERROR_OUT_FAILURE: rumqttc_event_take_ack_token */
+        EXPECT_FAILURE(rumqttc_event_take_ack_token(incoming, NULL, NULL));
+        /* ERROR_OUT_SUCCESS: rumqttc_event_take_ack_token */
+        CHECK(rumqttc_event_take_ack_token(incoming, &token, NULL));
+        /* ERROR_OUT_FAILURE: rumqttc_ack_token_retain */
+        EXPECT_FAILURE(rumqttc_ack_token_retain(NULL, &alias, NULL));
+        /* ERROR_OUT_SUCCESS: rumqttc_ack_token_retain */
+        CHECK(rumqttc_ack_token_retain(token, &alias, NULL));
+        rumqttc_event_destroy(incoming);
+        incoming = NULL;
+        completion = NULL;
+        if (tracked == 4) {
+          /* ERROR_OUT_SUCCESS: rumqttc_client_try_acknowledge_token */
+          CHECK(rumqttc_client_try_acknowledge_token(client, token, &operation, NULL));
+          /* ERROR_OUT_FAILURE: rumqttc_client_try_acknowledge_token */
+          EXPECT_FAILURE(rumqttc_client_try_acknowledge_token(client, alias, &operation, NULL));
+        } else if (tracked == 5) {
+          /* ERROR_OUT_SUCCESS: rumqttc_client_acknowledge_token_tracked */
+          CHECK(rumqttc_client_acknowledge_token_tracked(client, token, &completion, NULL));
+          native_wait_completion(completion, RUMQTTC_COMPLETION_ACKNOWLEDGED);
+          rumqttc_completion_destroy(completion);
+          /* ERROR_OUT_FAILURE: rumqttc_client_acknowledge_token_tracked */
+          EXPECT_FAILURE(rumqttc_client_acknowledge_token_tracked(client, alias, &completion, NULL));
+          REQUIRE(completion == NULL);
+        } else if (tracked == 6) {
+          /* ERROR_OUT_SUCCESS: rumqttc_client_try_acknowledge_token_with_options */
+          CHECK(rumqttc_client_try_acknowledge_token_with_options(client, token, NULL, &operation, NULL));
+          /* ERROR_OUT_FAILURE: rumqttc_client_try_acknowledge_token_with_options */
+          EXPECT_FAILURE(rumqttc_client_try_acknowledge_token_with_options(client, alias, NULL, &operation, NULL));
+        } else {
+          /* ERROR_OUT_SUCCESS: rumqttc_client_acknowledge_token_with_options_tracked */
+          CHECK(rumqttc_client_acknowledge_token_with_options_tracked(client, token, NULL, &completion, NULL));
+          native_wait_completion(completion, RUMQTTC_COMPLETION_ACKNOWLEDGED);
+          rumqttc_completion_destroy(completion);
+          /* ERROR_OUT_FAILURE: rumqttc_client_acknowledge_token_with_options_tracked */
+          EXPECT_FAILURE(rumqttc_client_acknowledge_token_with_options_tracked(client, alias, NULL, &completion, NULL));
+          REQUIRE(completion == NULL);
+        }
+        rumqttc_ack_token_release(token);
+        rumqttc_ack_token_release(alias);
       }
       rumqttc_event_destroy(incoming);
       if (tracked % 2 == 0) {

@@ -230,6 +230,14 @@ token. Reconnect processing advances the token generation and drains any late
 connection-scoped ACK request under the same admission gate, preventing an ACK
 that raced connection-loss cleanup from entering the replacement connection.
 
+C can transfer the event's token into an independently retained opaque handle,
+then destroy the event before acknowledging deferred work. This uses the same
+core coordinator and admission gate; token copies cannot create a second
+successful ACK admission. Detached handles retain no publication data, client,
+callback owners or execution. They remain safe to release after teardown but
+provide no authority across reconnects. See the
+[C manual-ACK example](../c/examples/manual_acknowledgement.c).
+
 `Command::AcknowledgeWithOptions` accepts
 `AcknowledgementProtocolOptions::V5(V5AcknowledgementOptions)` to choose legal
 client-originated reason codes, an optional Reason String, and ordered duplicate

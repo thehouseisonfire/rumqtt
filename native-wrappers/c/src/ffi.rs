@@ -39,6 +39,10 @@ pub use transport::*;
 mod acknowledgement;
 pub use acknowledgement::*;
 
+#[path = "ack_token.rs"]
+mod ack_token;
+pub use ack_token::*;
+
 #[path = "reconnect.rs"]
 mod reconnect;
 pub use reconnect::*;
@@ -4481,9 +4485,15 @@ unsafe fn parse_acknowledgement_options(
     }
 }
 
+#[derive(Clone, Copy)]
+enum AcknowledgementSource {
+    Event(*mut rumqttc_event),
+    Token(*mut rumqttc_ack_token),
+}
+
 fn acknowledge_impl(
     client: *mut rumqttc_client,
-    event: *mut rumqttc_event,
+    source: AcknowledgementSource,
     options: *const rumqttc_acknowledgement_options_t,
     operation_id_out: *mut u64,
     completion_out: *mut *mut rumqttc_completion,
@@ -4500,28 +4510,27 @@ fn acknowledge_impl(
             return Err(ErrorHandle::argument("operation output is NULL"));
         }
         let _client = unsafe { client_ref(client) }?;
-        let event = unsafe { event_ref(event) }?;
+        let (slot, owner) = match source {
+            AcknowledgementSource::Event(event) => (&unsafe { event_ref(event) }?.ack, "event"),
+            AcknowledgementSource::Token(token) => {
+                (unsafe { ack_token::token_ref(token) }?, "token")
+            }
+        };
         let protocol = unsafe { parse_acknowledgement_options(options) }?;
-        let mut token = event
-            .ack
-            .lock()
-            .map_err(|_| ErrorHandle::internal("event acknowledgement lock is poisoned"))?;
-        let ack = token
-            .take()
-            .ok_or_else(|| ErrorHandle::state("event has no available acknowledgement"))?;
-        let admission = match admit(
+        let mut token = slot.lock().map_err(|_| {
+            ErrorHandle::internal(format!("{owner} acknowledgement lock is poisoned"))
+        })?;
+        let ack = token.as_ref().copied().ok_or_else(|| {
+            ErrorHandle::state(format!("{owner} has no available acknowledgement"))
+        })?;
+        let admission = admit(
             client,
             Command::AcknowledgeWithOptions {
                 token: ack,
                 protocol,
             },
-        ) {
-            Ok(admission) => admission,
-            Err(error) => {
-                *token = Some(ack);
-                return Err(error);
-            }
-        };
+        )?;
+        *token = None;
         drop(token);
         write_admission(admission, operation_id_out, completion_out);
         Ok(())
@@ -4537,7 +4546,7 @@ pub unsafe extern "C" fn rumqttc_client_try_acknowledge(
 ) -> u32 {
     acknowledge_impl(
         client,
-        event,
+        AcknowledgementSource::Event(event),
         ptr::null(),
         operation_id_out,
         ptr::null_mut(),
@@ -4554,7 +4563,7 @@ pub unsafe extern "C" fn rumqttc_client_acknowledge_tracked(
 ) -> u32 {
     acknowledge_impl(
         client,
-        event,
+        AcknowledgementSource::Event(event),
         ptr::null(),
         ptr::null_mut(),
         completion_out,
@@ -4572,7 +4581,7 @@ pub unsafe extern "C" fn rumqttc_client_try_acknowledge_with_options(
 ) -> u32 {
     acknowledge_impl(
         client,
-        event,
+        AcknowledgementSource::Event(event),
         options,
         operation_id_out,
         ptr::null_mut(),
@@ -4590,7 +4599,7 @@ pub unsafe extern "C" fn rumqttc_client_acknowledge_with_options_tracked(
 ) -> u32 {
     acknowledge_impl(
         client,
-        event,
+        AcknowledgementSource::Event(event),
         options,
         ptr::null_mut(),
         completion_out,

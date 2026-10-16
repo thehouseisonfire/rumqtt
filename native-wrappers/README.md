@@ -26,6 +26,12 @@ cargo test --manifest-path native-wrappers/Cargo.toml --workspace
 Wrapper-specific build, packaging, and runtime checks are documented in each
 crate's README.
 
+C manual-ACK callers can transfer event authority into a small owned token and
+release publication data before deferred application work finishes. Retained
+tokens share single-use authority, retain no client/runtime, and expire on
+reconnect. See the [C ownership contract](c/README.md) and
+[manual-ACK example](c/examples/manual_acknowledgement.c).
+
 ## Session Present compatibility
 
 The MQTT 3.1.1 default rejects a successful clean-session CONNACK with invalid

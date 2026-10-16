@@ -27,11 +27,23 @@ static int acknowledge_next_publish(rumqttc_client_t *client) {
   rumqttc_event_t *event =
       example_next_event(client, RUMQTTC_EVENT_INCOMING_PUBLISH);
   rumqttc_completion_t *completion = NULL;
+  rumqttc_ack_token_t *token = NULL;
   rumqttc_error_t *error = NULL;
   int failed;
 
   if (event == NULL)
     return 1;
+
+  /* Finish reading or persisting borrowed publication data before destroying
+   * the event. Only the small token needs to follow deferred application work.
+   */
+  failed = example_report(rumqttc_event_take_ack_token(event, &token, &error),
+                          &error, "take acknowledgement token");
+  rumqttc_event_destroy(event);
+  if (failed) {
+    rumqttc_error_destroy(error);
+    return failed;
+  }
 
   rumqttc_v5_acknowledgement_options_t content =
       RUMQTTC_V5_ACKNOWLEDGEMENT_OPTIONS_INIT;
@@ -47,14 +59,14 @@ static int acknowledge_next_publish(rumqttc_client_t *client) {
   options.protocol_options = RUMQTTC_PROTOCOL_OPTIONS_V5;
   options.v5_options = &content;
 
-  failed = example_report(rumqttc_client_acknowledge_with_options_tracked(
-                              client, event, &options, &completion, &error),
+  failed = example_report(rumqttc_client_acknowledge_token_with_options_tracked(
+                              client, token, &options, &completion, &error),
                           &error, "acknowledge");
   if (!failed)
     failed = example_wait(completion, RUMQTTC_COMPLETION_ACKNOWLEDGED);
 
   rumqttc_completion_destroy(completion);
-  rumqttc_event_destroy(event);
+  rumqttc_ack_token_release(token);
   rumqttc_error_destroy(error);
   return failed;
 }

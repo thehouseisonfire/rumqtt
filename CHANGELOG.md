@@ -80,6 +80,13 @@
 
 ### Added
 
+- C wrapper: Add owned detached manual-ACK tokens with transfer extraction,
+  retain/release, and immediate/tracked acknowledgement APIs including MQTT 5
+  reason/properties options. Applications can release incoming publication data
+  before deferred work finishes. Tokens share existing single-use, client-bound
+  and connection-generation authority without retaining clients or runtimes;
+  successful admission consumes all aliases independently of local flush outcome.
+
 - Native wrappers: Add optional audited structured C logging with explicit retained
   contexts, immutable sink filters, configuration/live placement, opaque client
   identities, typed bounded records and independent copies. Deliver on a bounded

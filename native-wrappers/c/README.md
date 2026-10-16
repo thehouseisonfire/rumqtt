@@ -1243,6 +1243,39 @@ full past its configured delivery timeout, the driver terminates visibly rather
 than silently dropping incoming publishes. Manual acknowledgement consumes an
 event-bound token; reuse and cross-client acknowledgement are rejected.
 
+Use `rumqttc_event_take_ack_token()` to transfer that event's manual ACK token
+into an owned `rumqttc_ack_token_t`. After success, the event has no available
+token: repeated extraction and event-based ACK fail, while publication data
+remains readable until event destruction. Failed extraction leaves it unchanged.
+Extraction itself does not validate connection freshness. Once publication data
+has been read or persisted, destroy the event and carry only the detached token
+through deferred application work. Borrowed event views become invalid when the
+event is destroyed.
+
+`rumqttc_ack_token_retain()` supplies an independently owned reference;
+`rumqttc_ack_token_release()` releases one and accepts NULL. Retained references
+share single-use authority, including with tokens/events from retransmissions.
+They may compete concurrently, but each handle must remain live for every call
+using it; never race destruction with use of that same handle. Tokens retain no
+publication data, client, callbacks, or runtime, and can be retained/released
+after client destruction, including when stale or consumed. Releasing an
+unconsumed token sends no ACK.
+
+`rumqttc_client_try_acknowledge_token()` and
+`rumqttc_client_acknowledge_token_tracked()` accept a detached token; their
+`_with_options` and `_with_options_tracked` variants use the same MQTT 5 options
+described below. Both forms perform immediate admission through the same gate
+as event-based calls. Failed admission leaves otherwise-valid authority in the
+token for retry, without returning it to the event. Successful admission consumes
+all aliases immediately, including while flush is pending and if it later fails.
+Destroying a completion or token cannot cancel the admitted ACK. Tracked success
+means local PUBACK/PUBREC flush, not broker receipt or the whole QoS 2 exchange.
+ACK calls require a live originating client; reconnect invalidates old authority.
+Retaining tokens provides no durable/offline ACK capability and never permits
+using a destroyed client pointer. Missing local authority reports `INVALID_STATE`;
+core validation rejects foreign, stale, or consumed retransmission aliases using
+existing admission errors. Supplied outputs initialize to NULL/zero on failure.
+
 `rumqttc_client_try_acknowledge_with_options` and
 `rumqttc_client_acknowledge_with_options_tracked` add MQTT 5 ACK content using
 `rumqttc_acknowledgement_options_t` and `rumqttc_v5_acknowledgement_options_t`.
@@ -1521,9 +1554,10 @@ Keep these distinctions in mind when adapting the examples:
 For multithreaded producers, share the client handle but keep destruction
 synchronized after every producer and the single event consumer have stopped.
 Each producer may use nonblocking `rumqttc_client_try_*` operations or its own
-tracked completion. In manual-ACK mode, retain the incoming event until
-`rumqttc_client_try_acknowledge` or `rumqttc_client_acknowledge_tracked` has
-successfully consumed its event-bound token.
+tracked completion. In manual-ACK mode, retain the incoming event until event-based
+ACK admission, or transfer its token with `rumqttc_event_take_ack_token()` and
+destroy the event once its data is no longer needed. Keep the detached token until
+ACK admission or application abandonment; release every retained handle.
 
 ## Native verification
 

@@ -474,6 +474,7 @@ typedef struct rumqttc_tls_verifier_registration_t rumqttc_tls_verifier_registra
 typedef struct rumqttc_tls_identity_registration_t rumqttc_tls_identity_registration_t;
 typedef struct rumqttc_client_t rumqttc_client_t;
 typedef struct rumqttc_event_t rumqttc_event_t;
+typedef struct rumqttc_ack_token_t rumqttc_ack_token_t;
 typedef struct rumqttc_completion_t rumqttc_completion_t;
 typedef struct rumqttc_error_t rumqttc_error_t;
 typedef struct rumqttc_store_registration_t rumqttc_store_registration_t;
@@ -492,7 +493,7 @@ typedef struct rumqttc_transport_stream_t rumqttc_transport_stream_t;
  * destroyed and must not be used concurrently with that owner.
  *
  * Every handle returned through **out is owned by the caller and must be
- * released with its matching rumqttc_*_destroy function. Destroy functions
+ * released with its matching rumqttc_*_destroy or rumqttc_*_release function. These functions
  * accept NULL. Client destruction consumes the handle only on success; after
  * a timeout the handle remains valid for retry. rumqttc_client_abandon is the
  * explicit non-waiting escape hatch. Every optional error_out is initialized
@@ -1785,6 +1786,32 @@ RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_tracked(rumqttc_client_t
  * The event remains readable after acknowledgement. */
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_acknowledge_with_options(rumqttc_client_t *client, rumqttc_event_t *event, const rumqttc_acknowledgement_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_with_options_tracked(rumqttc_client_t *client, rumqttc_event_t *event, const rumqttc_acknowledgement_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+/* Atomically transfers the event's manual ACK token. On success ack_available becomes zero;
+ * further extraction/event-based ACK fails, but publication views remain valid until event
+ * destruction. Failure leaves the event unchanged. QoS 0, automatic ACK, wrong event kinds,
+ * and events whose token was already taken/consumed have no available token.
+ * Extraction requires no client and does not validate connection freshness. */
+RUMQTTC_API rumqttc_status_t rumqttc_event_take_ack_token(rumqttc_event_t *event, rumqttc_ack_token_t **out, rumqttc_error_t **error_out);
+/* Each retain returns an independently owned handle sharing single-use ACK authority.
+ * Retain/release is safe after client destruction and for stale/consumed tokens. Release accepts
+ * NULL, never acknowledges, and never cancels an admitted ACK. Tokens retain no publication
+ * data, client, callbacks, or runtime. Keep each handle live throughout calls using it;
+ * destruction must not race use of that same handle. Retained handles may be used concurrently. */
+RUMQTTC_API rumqttc_status_t rumqttc_ack_token_retain(const rumqttc_ack_token_t *token, rumqttc_ack_token_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_ack_token_release(rumqttc_ack_token_t *token);
+/* Token ACK calls require a live originating client. All forms admit without waiting for capacity;
+ * tracked completion observes local PUBACK/PUBREC flush, not broker receipt or the whole QoS 2
+ * exchange. Options follow the event-based contract above. Failed admission preserves otherwise
+ * valid authority in the detached token, not its source event. Successful admission consumes all
+ * aliases even if flushing later fails or its completion is destroyed. Reconnect invalidates
+ * old authority; retaining tokens provides no durable/offline acknowledgement capability.
+ * NULL required arguments report INVALID_ARGUMENT; missing local authority reports INVALID_STATE.
+ * Core rejects foreign/stale/consumed retransmission aliases using existing admission errors.
+ * Every supplied output initializes to NULL/zero before validation. */
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_acknowledge_token(rumqttc_client_t *client, rumqttc_ack_token_t *token, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_token_tracked(rumqttc_client_t *client, rumqttc_ack_token_t *token, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_acknowledge_token_with_options(rumqttc_client_t *client, rumqttc_ack_token_t *token, const rumqttc_acknowledgement_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_token_with_options_tracked(rumqttc_client_t *client, rumqttc_ack_token_t *token, const rumqttc_acknowledgement_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_diagnostics_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_try_recover_session(rumqttc_client_t *client, uint64_t *operation_id_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_client_recover_session_tracked(rumqttc_client_t *client, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
