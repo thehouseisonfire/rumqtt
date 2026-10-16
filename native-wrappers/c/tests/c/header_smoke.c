@@ -37,6 +37,9 @@ _Static_assert(offsetof(rumqttc_v5_publish_properties_t, user_properties) == 80,
 #endif
 
 int main(void) {
+  rumqttc_pending_admission_limits_t pending_limits = RUMQTTC_PENDING_ADMISSION_LIMITS_INIT;
+  assert(pending_limits.struct_size == sizeof(pending_limits));
+  rumqttc_pending_admission_release(NULL);
   rumqttc_ack_token_t *token = NULL;
   assert(rumqttc_event_take_ack_token(NULL, &token, NULL) == RUMQTTC_INVALID_ARGUMENT);
   assert(token == NULL);

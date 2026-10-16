@@ -9,6 +9,7 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_pending_admission", "rumqttc_pending_admission_limits_t",
     "rumqttc_logging_context",
     "rumqttc_logging_registration",
     "rumqttc_logging_flush",
@@ -110,6 +111,7 @@ include = [
 ]
 
 [export.rename]
+"rumqttc_pending_admission" = "rumqttc_pending_admission_t"
 "rumqttc_execution_context" = "rumqttc_execution_context_t"
 "rumqttc_tls_profile" = "rumqttc_tls_profile_t"
 "rumqttc_config" = "rumqttc_config_t"

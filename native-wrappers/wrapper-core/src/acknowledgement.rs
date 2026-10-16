@@ -240,7 +240,7 @@ impl AcknowledgementCoordinator {
             let ack = state.by_token.remove(&token).ok_or_else(|| {
                 option_error("acknowledgement token is unknown, reserved, or already consumed")
             })?;
-            state.by_key.remove(&ack.key());
+            // Keep the key mapped while reserved: retransmissions share this authority.
             drop(state);
             (ack, prepared)
         };
@@ -324,12 +324,25 @@ pub struct AckReservation {
 }
 
 impl AckReservation {
+    pub(crate) fn is_current(&self) -> bool {
+        self.token.generation == self.coordinator.generation.load(Ordering::Acquire)
+    }
+
     pub(crate) const fn ack(&self) -> &PreparedAck {
         &self.prepared
     }
 
     pub(crate) fn commit(mut self) {
-        self.ack = None;
+        if let Some(ack) = self.ack.take() {
+            let mut state = self
+                .coordinator
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.by_key.get(&ack.key()) == Some(&self.token) {
+                state.by_key.remove(&ack.key());
+            }
+        }
     }
 }
 
@@ -610,6 +623,34 @@ mod tests {
         assert!(
             coordinator
                 .reserve(retransmission, &AcknowledgementProtocolOptions::default())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn reservation_keeps_retransmission_aliases_on_one_authority() {
+        let (operations, _) = OperationRegistry::new(1);
+        let coordinator = AcknowledgementCoordinator::new(7, operations);
+        coordinator.begin_connection(None);
+        let token = coordinator.insert(v4_puback(3)).unwrap();
+        let reservation = coordinator
+            .reserve(token, &AcknowledgementProtocolOptions::default())
+            .unwrap();
+        let alias = coordinator.insert(v4_puback(3)).unwrap();
+        assert_eq!(alias, token);
+        assert!(
+            coordinator
+                .reserve(alias, &AcknowledgementProtocolOptions::default())
+                .is_err()
+        );
+        drop(reservation);
+        coordinator
+            .reserve(alias, &AcknowledgementProtocolOptions::default())
+            .unwrap()
+            .commit();
+        assert!(
+            coordinator
+                .reserve(token, &AcknowledgementProtocolOptions::default())
                 .is_err()
         );
     }

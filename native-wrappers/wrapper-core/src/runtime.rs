@@ -189,6 +189,7 @@ impl DriverTerminal {
             &unresolved,
             recovery_interrupted || matches!(terminal, TerminalStatus::Closed { .. }),
         );
+        self.shared.pending.close(unresolved.clone());
         self.shared.fail_all_operations(&unresolved);
         self.shared.terminate_diagnostics();
         #[cfg(feature = "tracing")]
@@ -693,6 +694,8 @@ impl NativeClient {
         config.validate()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
+            .on_thread_start(|| crate::execution::set_managed_thread(true))
+            .on_thread_stop(|| crate::execution::set_managed_thread(false))
             .build()
             .map_err(|error| {
                 Error::sourced(ErrorKind::Internal, DeliveryStatus::NotApplicable, error)
@@ -710,14 +713,16 @@ impl NativeClient {
         let join = thread::Builder::new()
             .name(format!("rumqtt-wrapper-{identity}"))
             .spawn(move || {
-                let runtime = runtime.into_runtime();
-                runtime.block_on(async {
-                    driver.await;
-                    work.wait().await;
+                crate::execution::with_managed_thread(|| {
+                    let runtime = runtime.into_runtime();
+                    runtime.block_on(async {
+                        driver.await;
+                        work.wait().await;
+                    });
+                    // Joining dedicated execution includes blocking work and runtime teardown.
+                    drop(runtime);
+                    drop(done);
                 });
-                // Joining dedicated execution includes blocking work and runtime teardown.
-                drop(runtime);
-                drop(done);
             })
             .map_err(|error| {
                 Error::sourced(ErrorKind::Internal, DeliveryStatus::NotApplicable, error)
@@ -817,6 +822,7 @@ impl NativeClient {
         let event_capacity = config.common.event_buffer_capacity;
         let delivery_timeout = config.common.event_delivery_timeout;
         let request_capacity = config.common.request_channel_capacity;
+        let pending_limits = config.common.pending_admission_limits;
         let emit_outgoing = config.common.emit_outgoing_events;
         let manual_ack = config.common.ack_mode == AckMode::Manual;
         let session_expiry_zero = match &config.protocol {
@@ -844,7 +850,7 @@ impl NativeClient {
         let acknowledgements = AcknowledgementCoordinator::new(client_identity, operations.clone());
         let shutdown = ShutdownCoordinator::new(operations.clone(), immediate_shutdown_tx);
         let connection = ConnectionHandle::new();
-        let shared = Shared::new(
+        let mut shared = Shared::new(
             (client, driver.recovery_gate()),
             acknowledgements,
             connection,
@@ -853,6 +859,9 @@ impl NativeClient {
             panic_tx,
             reconnect,
         );
+        Arc::get_mut(&mut shared)
+            .expect("unpublished client")
+            .set_pending_limits(pending_limits);
         shared
             .logging_identity
             .store(client_identity, Ordering::Relaxed);
@@ -882,16 +891,20 @@ impl NativeClient {
             shared: shared.clone(),
             sender: Some(terminal_tx),
         };
+        let admissions = crate::pending_admission::Registry::runner(shared.clone());
         let task_work = work.clone();
         let driver = Box::pin(logging.future(async move {
-            let mut terminal = terminal;
-            let outcome = DRIVER_WORK
-                .scope(
-                    task_work,
-                    AssertUnwindSafe(run_driver(driver, context)).catch_unwind(),
-                )
-                .await;
-            terminal.finish(outcome.unwrap_or_else(|_| driver_panic()));
+            let mqtt = async move {
+                let mut terminal = terminal;
+                let outcome = DRIVER_WORK
+                    .scope(
+                        task_work,
+                        AssertUnwindSafe(run_driver(driver, context)).catch_unwind(),
+                    )
+                    .await;
+                terminal.finish(outcome.unwrap_or_else(|_| driver_panic()));
+            };
+            tokio::join!(mqtt, admissions.run());
         }));
         Ok(PreparedClient {
             identity: client_identity,

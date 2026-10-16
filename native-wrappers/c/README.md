@@ -1639,3 +1639,89 @@ completion using separate presence, raw flag, effective resume, and diagnostic
 outputs. Diagnostic codes are 0=none, 1=v4 accepted as clean, and 2=v5 broker-only
 resume. Optional outputs are zeroed on error; at least one output is required.
 Existing public event and diagnostics records and the ABI line are unchanged.
+
+
+## Deferred command admission
+
+`RUMQTTC_CAP_DEFERRED_ADMISSION` is available in every build. The additive
+`rumqttc_client_publish_deferred`, `subscribe_deferred`, `unsubscribe_deferred`,
+and `acknowledge_token_deferred` calls create an owned `rumqttc_pending_admission_t`.
+They copy command inputs during creation after reserving pending capacity.
+Creation success accepts a process-local admission attempt; it does not allocate
+an MQTT operation ID or prove admission, transmission, broker acceptance, or durability.
+Existing `try_*` and `*_tracked` calls continue to admit immediately or return an error.
+
+Use `rumqttc_pending_admission_poll` or `wait_timeout_ms` with a required state output:
+
+| State | Observation status | Operation outputs |
+| --- | --- | --- |
+| `RUMQTTC_ADMISSION_WAITING` | `WOULD_BLOCK`, or `TIMEOUT` when a wait expires | Zero ID, NULL completion |
+| `RUMQTTC_ADMISSION_CANCEL_REQUESTED` | Same nonterminal statuses | Zero ID, NULL completion |
+| `RUMQTTC_ADMISSION_ADMITTED` | `OK` | Existing operation ID and independently owned completion, when requested |
+| `RUMQTTC_ADMISSION_CANCELLED` | `OK` | Zero ID, NULL completion; proves non-admission |
+| `RUMQTTC_ADMISSION_FAILED` | Cached admission/terminal error | Zero ID, NULL completion |
+
+Operation-ID and completion outputs are optional; all supplied outputs initialize
+before validation. Repeated/concurrent terminal observations return the same outcome.
+Destroy each returned completion independently with `rumqttc_completion_destroy`;
+all observe the same MQTT operation. MQTT completion still distinguishes local
+QoS 0/ACK flush, QoS 1 acknowledgement, and QoS 2 completion.
+
+`rumqttc_pending_admission_cancel` requests cancellation without blocking and is
+idempotent. `OK` acknowledges the request only. Observe `CANCELLED` to prove no
+admission; a successful native admission or failure that already won is preserved.
+An admitted operation cannot be cancelled through this API. A timed observation
+never cancels work or becomes its terminal result. Its timeout error makes no
+delivery claim; admission may race the deadline, so do not resubmit on timeout.
+
+`retain` creates an independent external owner. Releasing one owner leaves the
+others active; releasing the last requests cancellation while waiting. If native
+admission wins, MQTT work continues. Release never blocks for arbitration. Keep
+each handle live during calls and do not race its release with access through that
+same handle. Terminal handles and returned completions remain readable after client
+and execution destruction, without retaining live execution or transport owners.
+Client shutdown closes registration and settles pending attempts; successful client
+join includes their task-owned input cleanup.
+
+Configure nonzero per-client bounds using `rumqttc_config_set_pending_admission_limits`
+and `rumqttc_pending_admission_limits_t`, initialized with
+`RUMQTTC_PENDING_ADMISSION_LIMITS_INIT`. Defaults are **1,024 pending attempts and
+16 MiB charged command data**, shared by all producers. The resetter restores these
+values for future clients; live limits are immutable. `rumqttc_client_pending_admission_snapshot`
+returns coherent usage and limits. Temporary count/byte exhaustion returns retryable
+`BACKPRESSURE`; a request individually exceeding the pending limit returns
+nonretryable `INVALID_ARGUMENT`. Intrinsically invalid requests and publishes larger
+than their individual native byte limit fail during creation.
+
+Charges cover payload/topic/property lengths and variable filter/property collection
+metadata, including empty entries. Deferred ACK options are charged twice for the
+owned command and prepared ACK. Fixed bookkeeping is bounded by pending count.
+Reservations are released after covered command storage is released. These are logical
+storage bounds, not an RSS limit: allocator overhead/spare capacity, transient native
+attempt/encoding copies, caller-owned inputs/observer handles (including retained
+aliases), and retained terminal results are separate.
+Native publish budgets are acquired independently at successful admission; waiting
+storage cannot bypass them. Offline waiting adds no persistence guarantee.
+
+Deferred ACKs require a detached token from `rumqttc_event_take_ack_token`; release
+the event before waiting. NULL ACK options select default success. Creation reserves
+the coordinator's single-use authority across retained and retransmission aliases.
+Cancellation/failure before admission restores availability through surviving token
+aliases if the connection generation remains valid. It never transfers authority
+back into the source event. Reconnect invalidates old authority. Successful admission
+consumes every alias, regardless of later local flush failure or observer release.
+
+Ordinary reconnect and checkpoint loading retain existing asynchronous admission
+rules. Explicit session recovery rejects new pending creation while active and
+invalidates earlier waiting attempts, including when recovery completes before a
+waiter next runs. A committed ordered fence excludes all requests still waiting;
+those attempts fail without admission. Creation order does not guarantee admission
+order. Independent waits allow eligible ACK/control work and shared-runtime peers to
+progress; there is no FIFO, starvation-freedom, or hard latency guarantee.
+
+**Continue draining events during admission waits.** Waiting does not consume events
+or relax event-backpressure termination. Nonzero observation waits are forbidden on
+managed execution threads and inside host callbacks; polling/zero-time observation
+and cancellation remain available. See the complete bounded producer and independent
+event-consumer example in [deferred_admission.c](examples/deferred_admission.c).
+Host reactor readiness notifications are separate future work (TODO42).

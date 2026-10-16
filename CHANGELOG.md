@@ -86,6 +86,19 @@
 
 ### Added
 
+- C wrapper: Add bounded deferred admission for publish, subscribe, unsubscribe,
+  and detached-token acknowledgements. Owned pending handles support repeatable
+  polling/timed observation, cancellation arbitration, and independently owned MQTT
+  completions after admission. Per-client defaults bound pending work to 1,024
+  requests and 16 MiB charged data, independently of native queues/publish budgets.
+  Final observer release requests cancellation; observer timeout never cancels work.
+  Dedicated/shared client joining includes pending cleanup. Explicit recovery and
+  ordered fences exclude requests still waiting at their admission boundary.
+  Existing immediate/tracked admission calls retain their behavior. Apply existing
+  blocking-wait restrictions to dedicated execution and its blocking workers. See the
+  [deferred admission contract](native-wrappers/c/README.md#deferred-command-admission)
+  and [producer example](native-wrappers/c/examples/deferred_admission.c).
+
 - C wrapper: Add owned detached manual-ACK tokens with transfer extraction,
   retain/release, and immediate/tracked acknowledgement APIs including MQTT 5
   reason/properties options. Applications can release incoming publication data

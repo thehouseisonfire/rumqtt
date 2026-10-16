@@ -38,6 +38,7 @@ set(RUMQTTC_C_EXAMPLES
     logging
     multithreaded_publishing
     tracked_completion
+    deferred_admission
     offline_publishing
     manual_acknowledgement
     session_store
@@ -65,7 +66,7 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
         if(example STREQUAL "tls_profile" OR example STREQUAL "configuration_rotation")
             target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
         endif()
-        if(example STREQUAL "multithreaded_publishing" OR example STREQUAL "authenticator"
+        if(example STREQUAL "deferred_admission" OR example STREQUAL "multithreaded_publishing" OR example STREQUAL "authenticator"
                 OR example STREQUAL "session_store" OR example STREQUAL "websocket_tokens")
             target_compile_options(${target} PRIVATE /experimental:c11atomics)
         endif()

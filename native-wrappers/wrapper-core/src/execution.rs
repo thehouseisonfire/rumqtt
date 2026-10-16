@@ -27,6 +27,22 @@ pub fn blocking_wait_allowed() -> bool {
     !MANAGED_THREAD.get() && !crate::runtime::in_host_callback()
 }
 
+pub fn set_managed_thread(managed: bool) {
+    MANAGED_THREAD.set(managed);
+}
+
+/// Dedicated current-thread runtimes have no Tokio worker-start hook.
+pub fn with_managed_thread<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MANAGED_THREAD.set(self.0);
+        }
+    }
+    let _restore = Restore(MANAGED_THREAD.replace(true));
+    run()
+}
+
 pub fn check_wait(timeout: Duration) -> Result<()> {
     if !timeout.is_zero() && !blocking_wait_allowed() {
         return Err(state_error(
@@ -460,6 +476,34 @@ pub fn register_blocking_work() -> Option<BlockingWork> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedicated_blocking_workers_reject_native_progress_waits() {
+        struct Probe(std::sync::mpsc::Sender<bool>);
+        impl crate::TransportConnector for Probe {
+            fn connect(&self, _: crate::TransportRequest) -> crate::TransportFuture {
+                let send = self.0.clone();
+                Box::pin(async move {
+                    let allowed = tokio::task::spawn_blocking(blocking_wait_allowed)
+                        .await
+                        .unwrap();
+                    let _ = send.send(allowed);
+                    Err(crate::TransportFailure::Connect)
+                })
+            }
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        let mut config = crate::ClientConfig::v4("worker-probe", "script.invalid", 1883);
+        config.common.connector = Some(crate::TransportConnectorConfig {
+            connector: Arc::new(Probe(send)),
+            mode: crate::TransportMode::Base,
+        });
+        let client = crate::NativeClient::start(config).unwrap();
+        assert!(!receive.recv_timeout(Duration::from_secs(3)).unwrap());
+        client.closer().close_now(Duration::from_secs(3)).unwrap();
+        client.join(Duration::from_secs(3)).unwrap();
+        assert!(blocking_wait_allowed());
+    }
 
     #[test]
     fn shutdown_waits_for_startup_reservations_and_timeout_is_retryable() {

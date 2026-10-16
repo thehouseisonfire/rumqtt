@@ -36,6 +36,10 @@ impl TransportIo for MemoryIo {
 struct Connector(tokio::sync::mpsc::UnboundedSender<DuplexStream>);
 impl TransportConnector for Connector {
     fn connect(&self, _: TransportRequest) -> TransportFuture {
+        assert!(
+            !blocking_wait_allowed(),
+            "connector ran outside managed execution"
+        );
         let (client, server) = tokio::io::duplex(16384);
         self.0.send(server).unwrap();
         let (read, write) = tokio::io::split(client);
@@ -144,6 +148,241 @@ fn finish(client: NativeClient) {
     client.closer().close_now(DEADLINE).unwrap();
     client.join(DEADLINE).unwrap();
     drop(client);
+}
+
+async fn pending_outcome(pending: &PendingAdmissionHandle) -> PendingAdmissionOutcome {
+    tokio::time::timeout(DEADLINE, pending.wait_async())
+        .await
+        .unwrap()
+}
+
+fn deferred(handle: &ClientHandle, command: Command) -> PendingAdmissionHandle {
+    handle
+        .defer_admission(handle.reserve_pending_admission(5).unwrap(), command)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn deferred_publish_budgets_allow_control_and_shared_peer_progress() {
+    for (count, bytes) in [(1, 32), (2, 9)] {
+        let execution = ExecutionContext::new(ExecutionOptions {
+            worker_threads: 1,
+            ..ExecutionOptions::default()
+        })
+        .unwrap();
+        let (config, mut rx) =
+            configuration(PublishAdmissionPolicy::EventLoopValidated, count, bytes);
+        let mut client = NativeClient::start_in(config, &execution).unwrap();
+        let mut events = client.take_events().unwrap();
+        let mut stream = server(&mut rx).await;
+        stream.write_all(&[0x20, 3, 0, 0, 0]).await.unwrap();
+        connected(&mut events).await;
+        let handle = client.handle();
+        let original = handle.try_admit(publish(QoS::AtLeastOnce, false)).unwrap();
+        let packet = frame(&mut stream).await;
+        let waiting = deferred(&handle, publish(QoS::AtLeastOnce, false));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), pending_outcome(&waiting))
+                .await
+                .is_err()
+        );
+        assert_eq!(handle.pending_admission_snapshot().pending, 1);
+        let command = Command::Unsubscribe(UnsubscribeCommand {
+            filters: vec!["a".into()],
+            protocol: UnsubscribeProtocolOptions::VersionNeutral,
+        });
+        let control = handle
+            .defer_admission(
+                handle
+                    .reserve_pending_admission(1 + size_of::<String>())
+                    .unwrap(),
+                command,
+            )
+            .unwrap();
+        let PendingAdmissionOutcome::Admitted(control) = pending_outcome(&control).await else {
+            panic!()
+        };
+        let unsubscribe = frame(&mut stream).await;
+        assert_eq!(unsubscribe[0], 0xa2);
+        stream
+            .write_all(&[0xb0, 4, unsubscribe[2], unsubscribe[3], 0, 0])
+            .await
+            .unwrap();
+        assert!(result(&control).await.is_ok());
+        let (peer_config, mut peer_rx) =
+            configuration(PublishAdmissionPolicy::EventLoopValidated, 1, 32);
+        let mut peer = NativeClient::start_in(peer_config, &execution).unwrap();
+        let mut peer_events = peer.take_events().unwrap();
+        let mut peer_stream = server(&mut peer_rx).await;
+        peer_stream.write_all(&[0x20, 3, 0, 0, 0]).await.unwrap();
+        connected(&mut peer_events).await;
+        let peer_publish = deferred(&peer.handle(), publish(QoS::AtMostOnce, false));
+        let PendingAdmissionOutcome::Admitted(peer_publish) = pending_outcome(&peer_publish).await
+        else {
+            panic!()
+        };
+        assert_eq!(frame(&mut peer_stream).await[0], 0x30);
+        assert!(result(&peer_publish).await.is_ok());
+        finish(peer);
+        stream
+            .write_all(&[0x40, 2, packet[5], packet[6]])
+            .await
+            .unwrap();
+        assert!(result(&original).await.is_ok());
+        let PendingAdmissionOutcome::Admitted(admitted) = pending_outcome(&waiting).await else {
+            panic!()
+        };
+        let packet = frame(&mut stream).await;
+        stream
+            .write_all(&[0x40, 2, packet[5], packet[6]])
+            .await
+            .unwrap();
+        assert!(result(&admitted).await.is_ok());
+        assert_eq!(handle.pending_admission_snapshot().retained_bytes, 0);
+        finish(client);
+        execution.request_shutdown();
+        execution.join(DEADLINE).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn deferred_publish_waits_for_checkpoint_loading_before_admission() {
+    let (saved, _saved_rx) = tokio::sync::mpsc::unbounded_channel();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let store = Arc::new(MemoryStore {
+        checkpoint: std::sync::Mutex::new(None),
+        gate: std::sync::Mutex::new(Some(gate.clone())),
+        entered: tokio::sync::Notify::new(),
+        saved,
+    });
+    let (config, mut rx) = with_store(5, store.clone());
+    let mut client = NativeClient::start(config).unwrap();
+    let mut events = client.take_events().unwrap();
+    store.entered.notified().await;
+    let handle = client.handle();
+    let waiting = deferred(&handle, publish(QoS::AtLeastOnce, false));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), pending_outcome(&waiting))
+            .await
+            .is_err()
+    );
+    assert!(rx.is_empty());
+    assert_eq!(handle.publish_budget_snapshot().unwrap().outstanding, 0);
+    gate.notify_one();
+    let mut stream = server(&mut rx).await;
+    stream.write_all(&[0x20, 3, 0, 0, 0]).await.unwrap();
+    connected(&mut events).await;
+    let PendingAdmissionOutcome::Admitted(admitted) = pending_outcome(&waiting).await else {
+        panic!()
+    };
+    let packet = frame(&mut stream).await;
+    stream
+        .write_all(&[0x40, 2, packet[5], packet[6]])
+        .await
+        .unwrap();
+    assert!(result(&admitted).await.is_ok());
+    finish(client);
+}
+
+#[tokio::test]
+async fn deferred_publish_larger_than_native_limit_fails_during_creation() {
+    let (client, _rx) = start(PublishAdmissionPolicy::RequireNegotiatedCapabilities, 1, 4);
+    let handle = client.handle();
+    let error = handle
+        .defer_admission(
+            handle.reserve_pending_admission(5).unwrap(),
+            publish(QoS::AtLeastOnce, false),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), ErrorCode::PublishTooLarge);
+    assert_eq!(error.publish_failure(), Some(PublishFailure::TooLarge));
+    assert_eq!(error.delivery_status(), DeliveryStatus::NotAdmitted);
+    assert_eq!(handle.pending_admission_snapshot().pending, 0);
+    finish(client);
+}
+
+#[tokio::test]
+async fn deferred_registration_racing_client_join_leaves_only_terminal_observers() {
+    for shared in [false, true] {
+        let execution = shared.then(|| ExecutionContext::new(ExecutionOptions::default()).unwrap());
+        let (config, mut rx) = configuration(
+            PublishAdmissionPolicy::RequireNegotiatedCapabilities,
+            128,
+            1024,
+        );
+        let client = match execution.as_ref() {
+            Some(context) => NativeClient::start_in(config, context).unwrap(),
+            None => NativeClient::start(config).unwrap(),
+        };
+        let _stream = server(&mut rx).await;
+        let handle = client.handle();
+        let first = deferred(&handle, publish(QoS::AtLeastOnce, false));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let producer_barrier = barrier.clone();
+        let producer_handle = handle.clone();
+        let producer = std::thread::spawn(move || {
+            producer_barrier.wait();
+            let mut pending = Vec::new();
+            for _ in 0..128 {
+                let Ok(reservation) = producer_handle.reserve_pending_admission(5) else {
+                    break;
+                };
+                if let Ok(operation) =
+                    producer_handle.defer_admission(reservation, publish(QoS::AtLeastOnce, false))
+                {
+                    pending.push(operation);
+                }
+            }
+            pending
+        });
+        barrier.wait();
+        client.closer().close_now(DEADLINE).unwrap();
+        client.join(DEADLINE).unwrap();
+        drop(client);
+        let pending = producer.join().unwrap();
+        if let Some(context) = execution {
+            context.request_shutdown();
+            context.join(DEADLINE).unwrap();
+            assert_eq!(context.state(), ExecutionState::Quiescent);
+        }
+        assert_eq!(handle.pending_admission_snapshot().pending, 0);
+        for operation in std::iter::once(first).chain(pending) {
+            assert!(matches!(
+                operation.poll(),
+                Some(PendingAdmissionOutcome::Failed(_))
+            ));
+        }
+    }
+}
+
+#[cfg(feature = "ordered-shutdown")]
+#[tokio::test]
+async fn ordered_fence_excludes_publish_still_waiting_for_capabilities() {
+    let (mut client, mut rx) = start(PublishAdmissionPolicy::RequireNegotiatedCapabilities, 4, 32);
+    let mut events = client.take_events().unwrap();
+    let handle = client.handle();
+    let mut stream = server(&mut rx).await;
+    let waiting = deferred(&handle, publish(QoS::AtLeastOnce, false));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), pending_outcome(&waiting))
+            .await
+            .is_err()
+    );
+    let fence = handle
+        .try_admit(Command::OrderedDisconnect {
+            timeout: Some(DEADLINE),
+        })
+        .unwrap();
+    assert!(matches!(
+        pending_outcome(&waiting).await,
+        PendingAdmissionOutcome::Failed(_)
+    ));
+    stream.write_all(&[0x20, 3, 0, 0, 0]).await.unwrap();
+    connected(&mut events).await;
+    assert_eq!(frame(&mut stream).await[0], 0xe0);
+    assert!(result(&fence).await.is_ok());
+    client.join(DEADLINE).unwrap();
 }
 
 #[tokio::test]

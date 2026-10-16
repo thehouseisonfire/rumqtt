@@ -421,3 +421,11 @@ set_tests_properties(rumqttc-native-publish-admission-offline PROPERTIES LABELS 
 add_test(NAME rumqttc-native-session-recovery
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-session-recovery>)
 set_tests_properties(rumqttc-native-session-recovery PROPERTIES LABELS "native;recovery" TIMEOUT 30)
+
+rumqttc_native_target(rumqttc-native-deferred-admission native_deferred_admission.c)
+if(MSVC)
+    target_compile_options(rumqttc-native-deferred-admission PRIVATE /experimental:c11atomics)
+endif()
+add_test(NAME rumqttc-native-deferred-admission
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-deferred-admission>)
+set_tests_properties(rumqttc-native-deferred-admission PROPERTIES LABELS "native;admission;ownership;concurrency" TIMEOUT 30)

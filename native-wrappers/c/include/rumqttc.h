@@ -2565,6 +2565,52 @@ RUMQTTC_API uint32_t rumqttc_logging_context_try_join(const struct rumqttc_loggi
 RUMQTTC_API uint32_t rumqttc_logging_flush_poll(const struct rumqttc_logging_flush_t *value,
                                     struct rumqttc_error_t **error_out);
 
+/* Deferred admission accepts process-local work; it does not prove MQTT admission.
+ * Continue draining events independently while observing admission. */
+typedef struct rumqttc_pending_admission_t rumqttc_pending_admission_t;
+typedef struct rumqttc_pending_admission_limits_t {
+  uint32_t struct_size;
+  uint32_t reserved;
+  size_t max_pending;
+  size_t max_bytes;
+} rumqttc_pending_admission_limits_t;
+#define RUMQTTC_PENDING_ADMISSION_LIMITS_INIT { sizeof(rumqttc_pending_admission_limits_t), 0, 1024, 16 * 1024 * 1024 }
+#define RUMQTTC_CAP_DEFERRED_ADMISSION (UINT64_C(1) << 19)
+#define RUMQTTC_ADMISSION_WAITING 0u
+#define RUMQTTC_ADMISSION_CANCEL_REQUESTED 1u
+#define RUMQTTC_ADMISSION_ADMITTED 2u
+#define RUMQTTC_ADMISSION_CANCELLED 3u
+#define RUMQTTC_ADMISSION_FAILED 4u
+
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_pending_admission_limits(rumqttc_config_t *config, const rumqttc_pending_admission_limits_t *limits, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_config_reset_pending_admission_limits(rumqttc_config_t *config, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_pending_admission_snapshot(const rumqttc_client_t *client, size_t *pending_out, size_t *retained_bytes_out, size_t *max_pending_out, size_t *max_bytes_out, rumqttc_error_t **error_out);
+/* Creation copies inputs after reserving finite per-client pending capacity. Failure
+ * leaves out=NULL and ACK authority available. ACKs require a detached token from
+ * rumqttc_event_take_ack_token; options=NULL selects default success. While an ACK
+ * waits, its authority is reserved across all token and retransmission aliases. */
+RUMQTTC_API rumqttc_status_t rumqttc_client_publish_deferred(rumqttc_client_t *client, rumqttc_string_view_t topic, rumqttc_bytes_view_t payload, const rumqttc_publish_options_t *options, rumqttc_pending_admission_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_subscribe_deferred(rumqttc_client_t *client, const rumqttc_subscription_t *values, size_t count, const rumqttc_subscribe_options_t *options, rumqttc_pending_admission_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_unsubscribe_deferred(rumqttc_client_t *client, const rumqttc_string_view_t *values, size_t count, const rumqttc_unsubscribe_options_t *options, rumqttc_pending_admission_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_acknowledge_token_deferred(rumqttc_client_t *client, const rumqttc_ack_token_t *token, const rumqttc_acknowledgement_options_t *options, rumqttc_pending_admission_t **out, rumqttc_error_t **error_out);
+/* Retain creates an independent observer handle. Release accepts NULL and must not
+ * race access through that same handle. Final external release requests cancellation
+ * while waiting; if admission wins, MQTT work continues. Terminal results survive
+ * client destruction and retain no live execution. Creation order is not FIFO. */
+RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_retain(const rumqttc_pending_admission_t *handle, rumqttc_pending_admission_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_pending_admission_release(rumqttc_pending_admission_t *handle);
+/* Cancellation is idempotent and nonblocking. OK acknowledges the request only;
+ * observe CANCELLED to prove non-admission. An existing admission/failure wins. */
+RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_cancel(const rumqttc_pending_admission_t *handle, rumqttc_error_t **error_out);
+/* state_out is required; operation/completion outputs are optional. Outputs initialize
+ * to WAITING/0/NULL. WAITING/CANCEL_REQUESTED poll returns WOULD_BLOCK; a wait deadline
+ * returns TIMEOUT without changing the operation. ADMITTED/CANCELLED returns OK;
+ * FAILED returns the cached error. Only ADMITTED supplies an operation ID/completion.
+ * Each returned completion is independently owned and observes the same operation.
+ * Nonzero waits are forbidden on execution workers and inside host callbacks. */
+RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_poll(const rumqttc_pending_admission_t *handle, uint32_t *state_out, uint64_t *operation_id_out, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_wait_timeout_ms(const rumqttc_pending_admission_t *handle, uint64_t timeout_ms, uint32_t *state_out, uint64_t *operation_id_out, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+
 #ifdef __cplusplus
 }
 #endif

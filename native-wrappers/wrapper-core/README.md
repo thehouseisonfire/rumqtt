@@ -727,3 +727,33 @@ Wrapper-core enables the MQTT 5 client's `bounded-publish` feature automatically
 including builds without wrapper default features. Direct Rust client users opt in
 to this feature for publish budgets and detailed transmission outcomes; wrapper
 admission defaults and capacity reclamation are unchanged.
+
+
+## Owned deferred admission
+
+`ClientHandle::reserve_pending_admission(bytes)` reserves a per-client count/data
+budget before a foreign wrapper copies its command. Pass that reservation and an
+owned supported command to `defer_admission`; mismatched/undersized reservations
+and invalid requests are rejected transactionally. `CommonConfig::pending_admission_limits`
+defaults to 1,024 requests and 16 MiB. `pending_admission_snapshot` reports coherent
+usage independently of the native publish budget. This facility is additive to
+`try_admit` and caller-owned `admit_async` futures.
+
+A `PendingAdmissionHandle` supports clone, poll, async/timed observation and nonblocking
+cancellation requests. Terminal outcomes are `Admitted(Admission)`, `Cancelled`, or
+`Failed(Error)`; polling returns `None` while waiting. Timed observation makes no
+delivery claim and never cancels work. Final external handle drop requests cancellation.
+Admission and result publication remain owned together so a cancellation race cannot
+lose an admitted operation's completion. Terminal handles retain no client/runtime.
+
+A per-client supervisor is composed alongside the pinned MQTT driver in dedicated
+and shared execution. It owns bounded registrations and independently polled waiting
+jobs, limits admission attempts per scheduler poll, and yields cooperatively. Joining
+includes pending cleanup; terminal reconciliation covers unpolled/cancelled execution.
+Immediate and deferred attempts share native admission helpers and the producer gate.
+An epoch invalidates waiting attempts across explicit recovery. Ordered fences exclude
+unadmitted waiters. Deferred ACK reservations preserve retransmission deduplication,
+roll back only within a valid generation, and commit authority at native admission.
+
+See the [C contract](../c/README.md#deferred-command-admission) for accounting,
+ordering, observer ownership, event draining, and the staged admission/completion API.

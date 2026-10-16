@@ -224,6 +224,7 @@ impl std::fmt::Debug for BrokerTarget {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct CommonConfig {
+    pub pending_admission_limits: crate::PendingAdmissionLimits,
     pub broker: BrokerTarget,
     pub client_id: String,
     pub transport: TransportConfig,
@@ -264,6 +265,7 @@ impl std::fmt::Debug for CommonConfig {
             .field("username", &self.username.as_ref().map(|_| "[REDACTED]"))
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
             .field("request_channel_capacity", &self.request_channel_capacity)
+            .field("pending_admission_limits", &self.pending_admission_limits)
             .field("event_buffer_capacity", &self.event_buffer_capacity)
             .field("ack_mode", &self.ack_mode)
             .field(
@@ -287,6 +289,7 @@ impl CommonConfig {
     #[must_use]
     pub fn new(client_id: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
         Self {
+            pending_admission_limits: crate::PendingAdmissionLimits::default(),
             broker: BrokerTarget::Tcp {
                 host: host.into(),
                 port,
@@ -318,6 +321,13 @@ impl CommonConfig {
 
     pub(crate) fn validate(&self) -> Result<()> {
         self.validate_endpoint()?;
+        if self.pending_admission_limits.max_pending == 0
+            || self.pending_admission_limits.max_bytes == 0
+        {
+            return Err(Error::configuration(
+                "pending admission limits must be nonzero",
+            ));
+        }
         if let crate::ReconnectPolicy::Classified(config) = &self.reconnect {
             config.validate()?;
         }

@@ -45,7 +45,7 @@ branches, including disabled ones, so API additions require an explicit review.
 | v4, v5 | operation | unsubscribe, unsubscribe_many, unsubscribe_tracked, unsubscribe_many_tracked, try_unsubscribe, try_unsubscribe_many, try_unsubscribe_tracked, try_unsubscribe_many_tracked | supported | UnsubscribeCommand owns one or more filters and tracked result | protocol_parity |
 | v5 | operation | subscribe_with_properties, subscribe_many_with_properties, subscribe_with_properties_tracked, subscribe_many_with_properties_tracked, try_subscribe_with_properties, try_subscribe_many_with_properties, try_subscribe_with_properties_tracked, try_subscribe_many_with_properties_tracked | supported | Explicit packet and per-filter v5 options | protocol_parity |
 | v5 | operation | unsubscribe_with_properties, unsubscribe_many_with_properties, unsubscribe_with_properties_tracked, unsubscribe_many_with_properties_tracked, try_unsubscribe_with_properties, try_unsubscribe_many_with_properties, try_unsubscribe_with_properties_tracked, try_unsubscribe_many_with_properties_tracked | supported | Explicit v5 unsubscribe properties | protocol_parity |
-| v4, v5 | operation | ack, try_ack, manual_ack, try_manual_ack, prepare_ack | supported | Generation/client-bound AckToken; ACK timing on both protocols and legal client-originated MQTT 5 reason/properties in wrapper-core/C; Python/JavaScript expose default timing; local ACK flush completion; C transfer-extracted retained tokens release event data before ACK | protocol_parity, manual_ack, acknowledgement unit tests, handle::acknowledgement_tests, C ack_token tests, native_acknowledgement_options, native_ack_tokens |
+| v4, v5 | operation | ack, try_ack, manual_ack, try_manual_ack, prepare_ack | supported | Generation/client-bound AckToken; ACK timing on both protocols and legal client-originated MQTT 5 reason/properties in wrapper-core/C; Python/JavaScript expose default timing; local ACK flush completion; C transfer-extracted retained tokens release event data before ACK; bounded deferred ACK admission reserves the same authority and rolls back cancellation before admission | protocol_parity, manual_ack, acknowledgement unit tests, handle::acknowledgement_tests, C ack_token tests, native_acknowledgement_options, native_ack_tokens |
 | v4, v5 | operation | disconnect, try_disconnect, disconnect_with_timeout, try_disconnect_with_timeout, disconnect_now, try_disconnect_now | supported | Existing graceful/immediate commands and coalescing closer | shutdown, lifecycle |
 | v4, v5 | operation | disconnect_with, try_disconnect_with (DisconnectOptions) | supported | Graceful/immediate policy; WC-10 first-admitted payload; exact MQTT 5 reason/properties | config_wire, close_races::mqtt5_disconnect_options_on_v4_do_not_admit_or_close, close_races::close_callers_keep_independent_deadlines_and_escalation_preserves_payload |
 | v5 | operation | reauth, try_reauth, reauth_tracked, try_reauth_tracked | supported | WC-05 tracked Reauthenticate command | authentication::overlapping_reauthentication_is_rejected_before_the_active_exchange_closes, authentication::rejected_overlap_preserves_success_and_releases_admission_for_the_next_exchange, authentication::authentication_reconnect_and_pending_challenge_shutdown_release_exchange |
@@ -503,3 +503,13 @@ added and public records were identical. Historical comparison reported no
 published `0.1.0-alpha` baseline. macOS/Windows execution remains unverified.
 Clippy completed with the pre-existing `double_must_use` warning in
 `completion.rs:124`; strict `-D warnings` remains blocked by that warning.
+
+## Deferred C admission
+
+C publish/subscribe/unsubscribe and detached-token ACKs additionally support owned,
+bounded deferred admission, independently observed from MQTT completion. Immediate
+and deferred operations share native admission helpers, shutdown/recovery gates, and
+publish budgets. Tests: `handle::pending_tests`, `publish_admission::deferred_*`,
+C `pending_admission_tests`, and `native_deferred_admission` cover cancellation
+arbitration, pending limits, restoration, ACK/control/shared-peer progress, observer
+lifetimes and teardown. Reactor notifications remain TODO42.

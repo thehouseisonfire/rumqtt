@@ -7,6 +7,9 @@ static_assert(std::is_same_v<rumqttc_status_t, uint32_t>);
 static_assert(RUMQTTC_ABI_VERSION == 0x00000001u);
 
 int main() {
+  rumqttc_pending_admission_limits_t pending_limits = RUMQTTC_PENDING_ADMISSION_LIMITS_INIT;
+  assert(pending_limits.struct_size == sizeof(pending_limits));
+  rumqttc_pending_admission_release(nullptr);
   rumqttc_ack_token_t *token = NULL;
   assert(rumqttc_event_take_ack_token(NULL, &token, NULL) == RUMQTTC_INVALID_ARGUMENT);
   assert(token == NULL);

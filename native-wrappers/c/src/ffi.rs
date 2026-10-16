@@ -39,6 +39,10 @@ pub use transport::*;
 mod acknowledgement;
 pub use acknowledgement::*;
 
+#[path = "pending_admission.rs"]
+mod pending_admission;
+pub use pending_admission::*;
+
 #[path = "ack_token.rs"]
 mod ack_token;
 pub use ack_token::*;
@@ -120,6 +124,7 @@ const CAP_ORDERED_SHUTDOWN: u64 = 1 << 15;
 const CAP_SHARED_EXECUTION: u64 = 1 << 16;
 const CAP_RUNTIME_CONFIGURATION: u64 = 1 << 17;
 const CAP_LOGGING_SINK: u64 = 1 << 18;
+const CAP_DEFERRED_ADMISSION: u64 = 1 << 19;
 const MAX_CHECKPOINT_SIZE: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
@@ -1266,6 +1271,7 @@ pub extern "C" fn rumqttc_library_version() -> *const c_char {
 #[unsafe(no_mangle)]
 pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
     CAP_V4
+        | CAP_DEFERRED_ADMISSION
         | CAP_SHARED_EXECUTION
         | CAP_RUNTIME_CONFIGURATION
         | if cfg!(feature = "ordered-shutdown") {

@@ -184,6 +184,16 @@ struct Client {
 
 impl Client {
     fn new(protocol: u32, shared: bool, manual: bool) -> Self {
+        Self::configured(protocol, shared, manual, true, |_| {})
+    }
+
+    fn configured(
+        protocol: u32,
+        shared: bool,
+        manual: bool,
+        handshake: bool,
+        configure: impl FnOnce(&mut wc::ClientConfig),
+    ) -> Self {
         let (io, peer) = Peer::new();
         let dropped = Arc::new(AtomicUsize::new(0));
         let connector = Arc::new(Connector {
@@ -207,6 +217,7 @@ impl Client {
             connector: connector.clone(),
             mode: wc::TransportMode::Established,
         });
+        configure(&mut config);
         let context =
             shared.then(|| wc::ExecutionContext::new(wc::ExecutionOptions::default()).unwrap());
         let raw = Box::into_raw(Box::new(rumqttc_client {
@@ -220,7 +231,9 @@ impl Client {
             dropped,
             protocol,
         };
-        client.handshake();
+        if handshake {
+            client.handshake();
+        }
         client
     }
 
@@ -1118,3 +1131,6 @@ fn releasing_unconsumed_tokens_does_not_acknowledge() {
     }
     assert_eq!(client.peer.frame(), (0x40, vec![0, 8]));
 }
+
+#[path = "../pending_admission/tests.rs"]
+mod pending_admission_tests;

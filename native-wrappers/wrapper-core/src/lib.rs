@@ -43,6 +43,11 @@ pub use logging::{
 };
 mod handle;
 mod operations;
+mod pending_admission;
+pub use pending_admission::{
+    PendingAdmissionHandle, PendingAdmissionLimits, PendingAdmissionOutcome,
+    PendingAdmissionReservation, PendingAdmissionSnapshot,
+};
 mod ordered;
 pub use ordered::{OrderedDisconnectFailure, OrderedShutdownDiagnostics, OrderedShutdownPhase};
 mod protocol;

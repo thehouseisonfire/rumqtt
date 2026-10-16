@@ -69,6 +69,8 @@ pub struct Shared {
     recovery_operation: Mutex<Option<crate::OperationId>>,
     handle_count: AtomicUsize,
     admission_gate: AdmissionGate,
+    pub(crate) pending: crate::pending_admission::Registry,
+    admission_epoch: AtomicU64,
     acknowledgements: Arc<AcknowledgementCoordinator>,
     connection: ConnectionHandle,
     operations: OperationRegistry,
@@ -80,6 +82,87 @@ pub struct Shared {
 }
 
 impl Shared {
+    pub(crate) fn try_deferred(
+        &self,
+        epoch: u64,
+        command: &Command,
+        ack: &mut Option<AckReservation>,
+    ) -> Result<Admission> {
+        let _guard = self.admission_gate.lock();
+        self.check_deferred_epoch(epoch)?;
+        let result = match command {
+            Command::Publish(command) => self.publish_locked(command.clone()),
+            Command::Subscribe(command) => self.subscribe_locked(command.clone()),
+            Command::Unsubscribe(command) => self.unsubscribe_locked(command.clone()),
+            Command::Acknowledge(_) | Command::AcknowledgeWithOptions { .. } => {
+                let reservation = ack.as_ref().expect("deferred ACK owns authority");
+                if !reservation.is_current() {
+                    return Err(protocol_option_error("acknowledgement token is stale"));
+                }
+                let admission = self.enqueue_ack_locked(reservation.ack())?;
+                ack.take().unwrap().commit();
+                Ok(admission)
+            }
+            _ => Err(protocol_option_error(
+                "command does not support deferred admission",
+            )),
+        };
+        result.map_err(|error| self.contextualize(error))
+    }
+
+    // All callers hold admission_gate through native admission and completion registration.
+    fn publish_locked(&self, command: PublishCommand) -> Result<Admission> {
+        self.require_mqtt_admission()?;
+        validate_mqtt_utf8_string(&command.topic, "publish topic")?;
+        self.admission(self.backend.try_publish(command)?)
+    }
+
+    fn subscribe_locked(&self, command: SubscribeCommand) -> Result<Admission> {
+        self.require_mqtt_admission()?;
+        if command.filters.is_empty() {
+            return Err(protocol_option_error(
+                "subscribe requires at least one filter",
+            ));
+        }
+        self.admission(self.backend.try_subscribe(command)?)
+    }
+
+    fn unsubscribe_locked(&self, command: UnsubscribeCommand) -> Result<Admission> {
+        self.require_mqtt_admission()?;
+        if command.filters.is_empty() {
+            return Err(protocol_option_error(
+                "unsubscribe requires at least one filter",
+            ));
+        }
+        self.admission(self.backend.try_unsubscribe(command)?)
+    }
+
+    fn enqueue_ack_locked(&self, ack: &PreparedAck) -> Result<Admission> {
+        let key = ack.key();
+        let admission = self.acknowledgements.track(key)?;
+        if let Err(error) = self.backend.try_manual_ack(ack) {
+            self.acknowledgements
+                .rollback_tracking(key, admission.operation_id);
+            return Err(error);
+        }
+        Ok(admission)
+    }
+
+    fn check_deferred_epoch(&self, epoch: u64) -> Result<()> {
+        self.require_mqtt_admission()?;
+        if self.admission_epoch.load(Ordering::Acquire) != epoch {
+            return Err(
+                protocol_option_error("session recovery invalidated pending admission")
+                    .with_recovery_failure(crate::RecoveryFailure::InProgress),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_pending_limits(&mut self, limits: crate::PendingAdmissionLimits) {
+        self.pending.set_limits(limits);
+    }
+
     pub(crate) fn client_logging(&self) -> &crate::logging::ClientLogging {
         self.logging
             .get_or_init(crate::logging::ClientLogging::default)
@@ -164,6 +247,8 @@ impl Shared {
             recovery_operation: Mutex::new(None),
             handle_count: AtomicUsize::new(1),
             admission_gate: AdmissionGate::default(),
+            pending: crate::pending_admission::Registry::new(),
+            admission_epoch: AtomicU64::new(0),
             acknowledgements,
             connection,
             operations,
@@ -568,6 +653,59 @@ impl Drop for ClientHandle {
 }
 
 impl ClientHandle {
+    /// Reserves shared pending capacity before a foreign caller copies its command.
+    /// # Errors
+    /// Rejects overload, oversize, shutdown and explicit recovery.
+    pub fn reserve_pending_admission(
+        &self,
+        bytes: usize,
+    ) -> Result<crate::PendingAdmissionReservation> {
+        let _guard = self.shared.admission_gate.lock();
+        self.shared.require_mqtt_admission()?;
+        self.shared
+            .pending
+            .reserve(bytes, self.shared.admission_epoch.load(Ordering::Acquire))
+    }
+
+    #[must_use]
+    pub fn pending_admission_snapshot(&self) -> crate::PendingAdmissionSnapshot {
+        self.shared.pending.snapshot()
+    }
+
+    /// Registers an owned attempt using capacity reserved before input construction.
+    /// # Errors
+    /// Rejects invalid commands, mismatched reservations, shutdown and recovery races.
+    pub fn defer_admission(
+        &self,
+        reservation: crate::PendingAdmissionReservation,
+        command: Command,
+    ) -> Result<crate::PendingAdmissionHandle> {
+        self.shared
+            .pending
+            .validate_reservation(&reservation, &command)?;
+        crate::pending_admission::validate_command(&command, &self.shared.backend)?;
+        let _guard = self.shared.admission_gate.lock();
+        self.shared.check_deferred_epoch(reservation.epoch)?;
+        let ack = match &command {
+            Command::Acknowledge(token) => Some(
+                self.shared
+                    .acknowledgements
+                    .reserve(*token, &crate::AcknowledgementProtocolOptions::default())?,
+            ),
+            Command::AcknowledgeWithOptions { token, protocol } => {
+                Some(self.shared.acknowledgements.reserve(*token, protocol)?)
+            }
+            _ => None,
+        };
+        self.shared
+            .pending
+            .register(crate::pending_admission::Job::new(
+                command,
+                ack,
+                reservation,
+            ))
+    }
+
     /// Replace logging placement; MQTT state and active logging scopes are unchanged.
     /// # Errors
     /// Returns invalid-state errors for failed registrations or closing logging contexts.
@@ -844,10 +982,7 @@ impl ClientHandle {
 
     fn try_publish(&self, command: PublishCommand) -> Result<Admission> {
         let _admission_guard = self.shared.admission_gate.lock();
-        self.shared.require_mqtt_admission()?;
-        validate_mqtt_utf8_string(&command.topic, "publish topic")?;
-        let completion = self.shared.backend.try_publish(command)?;
-        self.shared.admission(completion)
+        self.shared.publish_locked(command)
     }
 
     fn try_reauthenticate(&self, properties: Option<&crate::AuthProperties>) -> Result<Admission> {
@@ -917,14 +1052,7 @@ impl ClientHandle {
 
     fn try_subscribe(&self, command: SubscribeCommand) -> Result<Admission> {
         let _admission_guard = self.shared.admission_gate.lock();
-        self.shared.require_mqtt_admission()?;
-        if command.filters.is_empty() {
-            return Err(protocol_option_error(
-                "subscribe requires at least one filter",
-            ));
-        }
-        let completion = self.shared.backend.try_subscribe(command)?;
-        self.shared.admission(completion)
+        self.shared.subscribe_locked(command)
     }
 
     async fn subscribe(&self, command: SubscribeCommand) -> Result<Admission> {
@@ -934,14 +1062,7 @@ impl ClientHandle {
 
     fn try_unsubscribe(&self, command: UnsubscribeCommand) -> Result<Admission> {
         let _admission_guard = self.shared.admission_gate.lock();
-        self.shared.require_mqtt_admission()?;
-        if command.filters.is_empty() {
-            return Err(protocol_option_error(
-                "unsubscribe requires at least one filter",
-            ));
-        }
-        let completion = self.shared.backend.try_unsubscribe(command)?;
-        self.shared.admission(completion)
+        self.shared.unsubscribe_locked(command)
     }
 
     async fn unsubscribe(&self, command: UnsubscribeCommand) -> Result<Admission> {
@@ -959,17 +1080,7 @@ impl ClientHandle {
     }
 
     fn try_enqueue_ack(&self, ack: &PreparedAck) -> Result<Admission> {
-        let key = ack.key();
-        let admission = self.shared.acknowledgements.track(key)?;
-        let operation_id = admission.operation_id;
-        let result = self.shared.backend.try_manual_ack(ack);
-        if result.is_err() {
-            self.shared
-                .acknowledgements
-                .rollback_tracking(key, operation_id);
-        }
-        result?;
-        Ok(admission)
+        self.shared.enqueue_ack_locked(ack)
     }
 
     fn try_acknowledge(
@@ -1164,6 +1275,7 @@ impl ClientHandle {
             return Err(rejected());
         };
         admission.completion.observe_recovery(observation);
+        self.shared.admission_epoch.fetch_add(1, Ordering::AcqRel);
         *self.shared.recovery_operation.lock().unwrap() = Some(admission.operation_id);
         self.shared.notify_progress();
         Ok(admission)
@@ -1213,7 +1325,7 @@ mod acknowledgement_tests {
         (ClientHandle::new(shared), rx)
     }
 
-    fn client() -> (ClientHandle, flume::Receiver<rumqttc_v5::Request>) {
+    pub(super) fn client() -> (ClientHandle, flume::Receiver<rumqttc_v5::Request>) {
         let (handle, rx) = pending_client();
         handle
             .shared
@@ -1237,7 +1349,7 @@ mod acknowledgement_tests {
         assert_eq!(shared.connection_generation(), Some(2));
     }
 
-    fn ack_token(handle: &ClientHandle, id: u16) -> AckToken {
+    pub(super) fn ack_token(handle: &ClientHandle, id: u16) -> AckToken {
         handle
             .shared
             .prepare_ack(PreparedAck::V5(rumqttc_v5::ManualAck::PubAck(
@@ -1337,3 +1449,7 @@ mod acknowledgement_tests {
 #[cfg(test)]
 #[path = "backend/diagnostics_tests.rs"]
 mod diagnostics_tests;
+
+#[cfg(test)]
+#[path = "pending_admission/core_tests.rs"]
+mod pending_tests;
