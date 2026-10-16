@@ -979,14 +979,15 @@ async fn run_v5_client(
             .expect("queue initial v5 publish");
         if scenario == Some(V5Scenario::DisconnectZeroGraceful) {
             client
-                .disconnect_with_properties(
-                    rumqttc_v5::DisconnectReasonCode::NormalDisconnection,
-                    rumqttc_v5::DisconnectProperties {
-                        session_expiry_interval: Some(0),
-                        reason_string: None,
-                        user_properties: Vec::new(),
-                        server_reference: None,
-                    },
+                .disconnect_with(
+                    rumqttc_v5::DisconnectOptions::graceful()
+                        .reason(rumqttc_v5::DisconnectReasonCode::NormalDisconnection)
+                        .properties(rumqttc_v5::DisconnectProperties {
+                            session_expiry_interval: Some(0),
+                            reason_string: None,
+                            user_properties: Vec::new(),
+                            server_reference: None,
+                        }),
                 )
                 .await
                 .expect("queue zero-expiry graceful disconnect");

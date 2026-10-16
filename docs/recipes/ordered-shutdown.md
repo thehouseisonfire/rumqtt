@@ -11,8 +11,19 @@ Choose the boundary that your application needs:
 All three retain their distinct policies. Ordered shutdown also has
 `disconnect_after_queued_with_timeout`, `try_disconnect_after_queued`, and
 `try_disconnect_after_queued_with_timeout` forms on async and blocking clients.
-MQTT 5 additionally offers `_with_properties` and `_with_properties_timeout`
-forms (including `try_*`) preserving the caller's reason code and properties.
+Enable the opt-in `ordered-shutdown` Cargo feature to use ordered methods and notices.
+For configured calls, both protocols provide
+`disconnect_after_queued_with(OrderedDisconnectOptions)` and
+`try_disconnect_after_queued_with(OrderedDisconnectOptions)`.
+`OrderedDisconnectOptions::new().timeout(duration)` sets the total deadline.
+MQTT 5 additionally supports independent `.reason(reason)` and `.properties(properties)`
+setters. The old properties-specific methods have been removed; see the
+[migration table](../../MIGRATION.md#disconnect-configuration).
+
+Ordinary configured shutdown uses `disconnect_with(DisconnectOptions)` and its `try_`
+form. Choose `DisconnectOptions::graceful()`, `graceful_with_timeout(duration)`, or
+`immediate()`. MQTT 5 supports the same reason and properties setters on these options.
+These methods return admission confirmation only; they do not return an ordered notice.
 
 ## Burst followed by shutdown
 

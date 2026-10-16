@@ -351,15 +351,13 @@ impl BackendClient {
             Self::V5(client) => {
                 let notice = if let crate::DisconnectProtocolOptions::V5(options) = protocol {
                     let (reason, properties) = v5::disconnect_properties(options)?;
-                    match timeout {
-                        Some(timeout) => client
-                            .try_disconnect_after_queued_with_properties_timeout(
-                                reason, properties, timeout,
-                            ),
-                        None => {
-                            client.try_disconnect_after_queued_with_properties(reason, properties)
-                        }
+                    let mut options = rumqttc_v5::OrderedDisconnectOptions::new()
+                        .reason(reason)
+                        .properties(properties);
+                    if let Some(timeout) = timeout {
+                        options = options.timeout(timeout);
                     }
+                    client.try_disconnect_after_queued_with(options)
                 } else {
                     timeout.map_or_else(
                         || client.try_disconnect_after_queued(),
@@ -392,13 +390,13 @@ impl BackendClient {
                 ));
             };
             let (reason, properties) = v5::disconnect_properties(properties)?;
-            return match timeout {
-                Some(timeout) => {
-                    client.try_disconnect_with_properties_timeout(reason, properties, timeout)
-                }
-                None => client.try_disconnect_with_properties(reason, properties),
-            }
-            .map_err(|error| v5::map_client_error(&error));
+            let options = match timeout {
+                Some(timeout) => rumqttc_v5::DisconnectOptions::graceful_with_timeout(timeout),
+                None => rumqttc_v5::DisconnectOptions::graceful(),
+            };
+            return client
+                .try_disconnect_with(options.reason(reason).properties(properties))
+                .map_err(|error| v5::map_client_error(&error));
         }
         match self {
             Self::V4(client) => timeout
@@ -428,7 +426,11 @@ impl BackendClient {
             };
             let (reason, properties) = v5::disconnect_properties(properties)?;
             return client
-                .try_disconnect_now_with_properties(reason, properties)
+                .try_disconnect_with(
+                    rumqttc_v5::DisconnectOptions::immediate()
+                        .reason(reason)
+                        .properties(properties),
+                )
                 .map_err(|error| v5::map_client_error(&error));
         }
         match self {

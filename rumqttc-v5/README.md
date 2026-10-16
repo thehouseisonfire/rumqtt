@@ -296,6 +296,38 @@ outside the library and `EventLoop` is accessible, users can
 - Stop it when required
 - Access internal state for use cases like graceful shutdown or to modify options before reconnection
 
+## Disconnect configuration
+
+Use `disconnect()`, `disconnect_with_timeout(timeout)`, or `disconnect_now()` for
+ordinary shutdown. Configured calls use `disconnect_with(DisconnectOptions)` and
+`try_disconnect_with(DisconnectOptions)` on both async and blocking clients:
+
+```rust,no_run
+use rumqttc::{AsyncClient, ClientError, DisconnectOptions};
+use std::time::Duration;
+
+# async fn shutdown(client: &AsyncClient) -> Result<(), ClientError> {
+client.disconnect_with(
+    DisconnectOptions::graceful_with_timeout(Duration::from_secs(5)),
+).await?;
+# Ok(())
+# }
+```
+
+`DisconnectOptions::default()` is graceful; `DisconnectOptions::immediate()` skips
+outstanding publish handshakes. Method success confirms admission only.
+
+MQTT 5 adds independent `.reason(reason)` and `.properties(properties)` setters.
+The former properties-specific disconnect methods are replaced by these configured
+calls; the normal reason and absent properties remain the defaults.
+
+With the opt-in `ordered-shutdown` feature, `disconnect_after_queued()` and its
+configured form `disconnect_after_queued_with(OrderedDisconnectOptions)` return
+a separate completion notice. `OrderedDisconnectOptions::new().timeout(duration)`
+sets a deadline starting at successful admission. Keep driving the event loop while
+waiting for the notice. See the [shutdown recipe](https://github.com/thehouseisonfire/rumqtt/blob/main/docs/recipes/ordered-shutdown.md)
+and [migration guide](https://github.com/thehouseisonfire/rumqtt/blob/main/MIGRATION.md#disconnect-configuration).
+
 ## TCP connection selection
 
 The default connector and `default_socket_connect` use the same shared dialer.

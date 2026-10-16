@@ -2147,15 +2147,15 @@ async fn assert_graceful_disconnect_overtakes_flow_controlled_publish(
             .unwrap();
         if with_properties_timeout {
             client
-                .disconnect_with_properties_timeout(
-                    DisconnectReasonCode::NormalDisconnection,
-                    DisconnectProperties {
-                        session_expiry_interval: Some(0),
-                        reason_string: None,
-                        user_properties: Vec::new(),
-                        server_reference: None,
-                    },
-                    Duration::from_secs(2),
+                .disconnect_with(
+                    rumqttc::DisconnectOptions::graceful_with_timeout(Duration::from_secs(2))
+                        .reason(DisconnectReasonCode::NormalDisconnection)
+                        .properties(DisconnectProperties {
+                            session_expiry_interval: Some(0),
+                            reason_string: None,
+                            user_properties: Vec::new(),
+                            server_reference: None,
+                        }),
                 )
                 .await
                 .unwrap();
@@ -2378,15 +2378,15 @@ async fn graceful_disconnect_with_properties_drains_mixed_qos_before_disconnect(
             .await
             .unwrap();
         client
-            .disconnect_with_properties_timeout(
-                DisconnectReasonCode::NormalDisconnection,
-                DisconnectProperties {
-                    session_expiry_interval: Some(0),
-                    reason_string: None,
-                    user_properties: Vec::new(),
-                    server_reference: None,
-                },
-                Duration::from_secs(2),
+            .disconnect_with(
+                rumqttc::DisconnectOptions::graceful_with_timeout(Duration::from_secs(2))
+                    .reason(DisconnectReasonCode::NormalDisconnection)
+                    .properties(DisconnectProperties {
+                        session_expiry_interval: Some(0),
+                        reason_string: None,
+                        user_properties: Vec::new(),
+                        server_reference: None,
+                    }),
             )
             .await
             .unwrap();

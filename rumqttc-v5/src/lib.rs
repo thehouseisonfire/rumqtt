@@ -29,6 +29,10 @@ use std::future::IntoFuture;
 
 mod auth;
 mod client;
+mod disconnect_options;
+pub use disconnect_options::DisconnectOptions;
+#[cfg(feature = "ordered-shutdown")]
+pub use disconnect_options::OrderedDisconnectOptions;
 mod eventloop;
 mod framed;
 #[cfg(feature = "tracing")]

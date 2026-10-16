@@ -2,6 +2,19 @@
 
 ### Changed
 
+- **Breaking — MQTT v4/v5 disconnect configuration:** Add `DisconnectOptions`
+  and `disconnect_with`/`try_disconnect_with` for configured graceful, timed graceful,
+  and immediate disconnects. With `ordered-shutdown`, use `OrderedDisconnectOptions`
+  and `disconnect_after_queued_with`/`try_disconnect_after_queued_with` for a separately
+  awaited `DisconnectNotice`. MQTT v5 options accept independent reason and properties
+  setters. Remove all v5 properties-specific disconnect methods; migrate, for example,
+  `disconnect_with_properties(reason, properties)` to
+  `disconnect_with(DisconnectOptions::graceful().reason(reason).properties(properties))`.
+  Timed graceful calls use `graceful_with_timeout(timeout)`; immediate calls use
+  `immediate()`; ordered calls use `OrderedDisconnectOptions::new().timeout(timeout)`.
+  Existing non-properties shortcuts, admission semantics, timeout boundaries, wire behavior,
+  and native-wrapper public APIs are preserved. See [disconnect migration](MIGRATION.md#disconnect-configuration).
+
 - MQTT v4/v5: Retain publish-topic correctness checks and the prevalidated-topic
   fast path without adding a dependency. MQTT 5 avoids redundant Response Topic
   wildcard checks and allocates QoS 2 recovery tracking only for replayed PUBREL flows.

@@ -490,6 +490,35 @@ let mut options = MqttOptions::new("stable-v5-client", "localhost");
 options.set_broker_session_resume_policy(BrokerSessionResumePolicy::AllowBrokerOnly);
 ```
 
+## Disconnect configuration
+
+Ordinary `disconnect()`, `disconnect_with_timeout(timeout)`, and `disconnect_now()`
+remain unchanged, including their blocking and `try_` forms. Configured calls use
+`DisconnectOptions` on both MQTT versions. Reason codes and properties are MQTT 5-only.
+
+The v5 properties-specific methods have been removed. Map their behavior as follows:
+
+| Previous method family (including `try_`) | Replacement options and entry point |
+| --- | --- |
+| `disconnect_with_properties(reason, properties)` | `disconnect_with(DisconnectOptions::graceful().reason(reason).properties(properties))` |
+| `disconnect_with_properties_timeout(reason, properties, timeout)` | `disconnect_with(DisconnectOptions::graceful_with_timeout(timeout).reason(reason).properties(properties))` |
+| `disconnect_now_with_properties(reason, properties)` | `disconnect_with(DisconnectOptions::immediate().reason(reason).properties(properties))` |
+| `disconnect_after_queued_with_properties(reason, properties)` | `disconnect_after_queued_with(OrderedDisconnectOptions::new().reason(reason).properties(properties))` |
+| `disconnect_after_queued_with_properties_timeout(reason, properties, timeout)` | `disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(timeout).reason(reason).properties(properties))` |
+
+Use `try_disconnect_with` or `try_disconnect_after_queued_with` for nonblocking
+admission. Async clients await admission; blocking clients return a `Result` directly.
+Reason and properties setters are independent: setting only a reason leaves properties
+absent, and setting only properties preserves the normal-disconnection reason.
+Immediate options do not expose a drain-timeout setter.
+
+Ordinary configured disconnects return admission confirmation only. Their graceful
+timeouts begin when the event loop observes the request. Ordered configuration and
+entry points require the opt-in `ordered-shutdown` Cargo feature. They return a
+`DisconnectNotice`; await `wait_async()` or call `wait()` separately while another
+task/thread drives the event loop. Ordered deadlines start at successful admission.
+See the [shutdown recipe](docs/recipes/ordered-shutdown.md) for completion guarantees.
+
 ## Removed or renamed APIs
 
 | Upstream-style API or pattern | Fork replacement |

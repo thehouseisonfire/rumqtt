@@ -10,12 +10,12 @@ use std::time::Duration;
 use crate::eventloop::{RequestChannelCapacity, RequestEnvelope};
 use crate::mqttbytes::{
     QoS,
-    v4::{Disconnect, PubAck, PubRec, Publish, Subscribe, SubscribeFilter, Unsubscribe},
+    v4::{PubAck, PubRec, Publish, Subscribe, SubscribeFilter, Unsubscribe},
 };
 use crate::notice::{PublishNoticeTx, SubscribeNoticeTx, UnsubscribeNoticeTx};
 use crate::{
-    ConfigError, ConnectionError, Event, EventLoop, MqttOptions, PublishNotice, Request,
-    SubscribeNotice, UnsubscribeNotice, valid_filter,
+    ConfigError, ConnectionError, DisconnectOptions, Event, EventLoop, MqttOptions, PublishNotice,
+    Request, SubscribeNotice, UnsubscribeNotice, valid_filter,
 };
 
 use bytes::Bytes;
@@ -1596,6 +1596,42 @@ impl AsyncClient {
         self.try_send_tracked_unsubscribe(unsubscribe)
     }
 
+    /// Queues a configured graceful or immediate disconnect.
+    ///
+    /// Graceful requests drain protocol-admitted work and may overtake queued publishes.
+    /// Their drain timeout starts when the event loop observes the request.
+    /// Immediate requests use the priority shutdown channel and skip the handshake drain.
+    /// Priority applies at event-loop scheduling points, not during work already executing.
+    /// External-sender clients use their single supplied channel without priority.
+    /// Success confirms admission only. Keep driving the event loop to send DISCONNECT.
+    ///
+    /// # Errors
+    /// Returns the existing admission error if the request cannot be queued.
+    pub async fn disconnect_with(&self, options: DisconnectOptions) -> Result<(), ClientError> {
+        let request = options.into_request();
+        if matches!(request, Request::DisconnectNow(_)) {
+            self.send_immediate_disconnect_async(request).await
+        } else {
+            self.send_request_async(request).await
+        }
+    }
+
+    /// Attempts to queue a configured disconnect without waiting for channel capacity.
+    ///
+    /// Uses the same policy and routing as [`Self::disconnect_with`].
+    /// Success confirms admission only, not DISCONNECT flush.
+    ///
+    /// # Errors
+    /// Returns the existing admission error, including a full or closed request channel.
+    pub fn try_disconnect_with(&self, options: DisconnectOptions) -> Result<(), ClientError> {
+        let request = options.into_request();
+        if matches!(request, Request::DisconnectNow(_)) {
+            self.try_send_immediate_disconnect(request)
+        } else {
+            self.try_send_request(request)
+        }
+    }
+
     #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier.
     ///
@@ -1619,9 +1655,7 @@ impl AsyncClient {
     /// Returns an error if the disconnect request cannot be queued on the
     /// client's request channel.
     pub async fn disconnect(&self) -> Result<(), ClientError> {
-        let request = Request::Disconnect(Disconnect);
-        self.send_request_async(request).await?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::graceful()).await
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -1652,9 +1686,7 @@ impl AsyncClient {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub async fn disconnect(&self) -> Result<(), ClientError> {
-        let request = Request::Disconnect(Disconnect);
-        self.send_request_async(request).await?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::graceful()).await
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -1683,9 +1715,8 @@ impl AsyncClient {
     /// Returns an error if the disconnect request cannot be queued on the
     /// client's request channel.
     pub async fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
-        let request = Request::DisconnectWithTimeout(Disconnect, timeout);
-        self.send_request_async(request).await?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::graceful_with_timeout(timeout))
+            .await
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -1719,9 +1750,8 @@ impl AsyncClient {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub async fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
-        let request = Request::DisconnectWithTimeout(Disconnect, timeout);
-        self.send_request_async(request).await?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::graceful_with_timeout(timeout))
+            .await
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -1739,9 +1769,7 @@ impl AsyncClient {
     /// Returns an error if the disconnect request cannot be queued on the
     /// client's request channel.
     pub async fn disconnect_now(&self) -> Result<(), ClientError> {
-        let request = Request::DisconnectNow(Disconnect);
-        self.send_immediate_disconnect_async(request).await?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::immediate()).await
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -1764,9 +1792,7 @@ impl AsyncClient {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub async fn disconnect_now(&self) -> Result<(), ClientError> {
-        let request = Request::DisconnectNow(Disconnect);
-        self.send_immediate_disconnect_async(request).await?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::immediate()).await
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -1790,9 +1816,7 @@ impl AsyncClient {
     /// Returns an error if the disconnect request cannot be queued
     /// immediately through this client.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
-        let request = Request::Disconnect(Disconnect);
-        self.try_send_request(request)?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::graceful())
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -1821,9 +1845,7 @@ impl AsyncClient {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
-        let request = Request::Disconnect(Disconnect);
-        self.try_send_request(request)?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::graceful())
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -1852,9 +1874,7 @@ impl AsyncClient {
     /// Returns an error if the disconnect request cannot be queued
     /// immediately through this client.
     pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
-        let request = Request::DisconnectWithTimeout(Disconnect, timeout);
-        self.try_send_request(request)?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::graceful_with_timeout(timeout))
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -1888,9 +1908,7 @@ impl AsyncClient {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
-        let request = Request::DisconnectWithTimeout(Disconnect, timeout);
-        self.try_send_request(request)?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::graceful_with_timeout(timeout))
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -1908,9 +1926,7 @@ impl AsyncClient {
     /// Returns an error if the disconnect request cannot be queued
     /// immediately through this client.
     pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
-        let request = Request::DisconnectNow(Disconnect);
-        self.try_send_immediate_disconnect(request)?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::immediate())
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -1933,9 +1949,7 @@ impl AsyncClient {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
-        let request = Request::DisconnectNow(Disconnect);
-        self.try_send_immediate_disconnect(request)?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::immediate())
     }
 }
 
@@ -2225,6 +2239,37 @@ impl Client {
         Ok(())
     }
 
+    /// Queues a configured graceful or immediate disconnect.
+    ///
+    /// Graceful requests drain protocol-admitted work and may overtake queued publishes.
+    /// Their drain timeout starts when the event loop observes the request.
+    /// Immediate requests use the priority shutdown channel and skip the handshake drain.
+    /// Priority applies at event-loop scheduling points, not during work already executing.
+    /// External-sender clients use their single supplied channel without priority.
+    /// Success confirms admission only. Keep driving the event loop to send DISCONNECT.
+    ///
+    /// # Errors
+    /// Returns the existing admission error if the request cannot be queued.
+    pub fn disconnect_with(&self, options: DisconnectOptions) -> Result<(), ClientError> {
+        let request = options.into_request();
+        if matches!(request, Request::DisconnectNow(_)) {
+            self.client.send_immediate_disconnect(request)
+        } else {
+            self.client.send_request(request)
+        }
+    }
+
+    /// Attempts to queue a configured disconnect without waiting for channel capacity.
+    ///
+    /// Uses the same policy and routing as [`Self::disconnect_with`].
+    /// Success confirms admission only, not DISCONNECT flush.
+    ///
+    /// # Errors
+    /// Returns the existing admission error, including a full or closed request channel.
+    pub fn try_disconnect_with(&self, options: DisconnectOptions) -> Result<(), ClientError> {
+        self.client.try_disconnect_with(options)
+    }
+
     #[cfg(not(feature = "ordered-shutdown"))]
     /// Queues a graceful MQTT disconnect barrier.
     ///
@@ -2246,9 +2291,7 @@ impl Client {
     /// Returns an error if the disconnect request cannot be queued on the
     /// client's request channel.
     pub fn disconnect(&self) -> Result<(), ClientError> {
-        let request = Request::Disconnect(Disconnect);
-        self.client.send_request(request)?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::graceful())
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -2277,9 +2320,7 @@ impl Client {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn disconnect(&self) -> Result<(), ClientError> {
-        let request = Request::Disconnect(Disconnect);
-        self.client.send_request(request)?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::graceful())
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -2308,9 +2349,7 @@ impl Client {
     /// Returns an error if the disconnect request cannot be queued on the
     /// client's request channel.
     pub fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
-        let request = Request::DisconnectWithTimeout(Disconnect, timeout);
-        self.client.send_request(request)?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::graceful_with_timeout(timeout))
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -2344,9 +2383,7 @@ impl Client {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
-        let request = Request::DisconnectWithTimeout(Disconnect, timeout);
-        self.client.send_request(request)?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::graceful_with_timeout(timeout))
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -2364,9 +2401,7 @@ impl Client {
     /// Returns an error if the disconnect request cannot be queued on the
     /// client's request channel.
     pub fn disconnect_now(&self) -> Result<(), ClientError> {
-        let request = Request::DisconnectNow(Disconnect);
-        self.client.send_immediate_disconnect(request)?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::immediate())
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -2389,9 +2424,7 @@ impl Client {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn disconnect_now(&self) -> Result<(), ClientError> {
-        let request = Request::DisconnectNow(Disconnect);
-        self.client.send_immediate_disconnect(request)?;
-        Ok(())
+        self.disconnect_with(DisconnectOptions::immediate())
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -2415,8 +2448,7 @@ impl Client {
     /// Returns an error if the disconnect request cannot be queued
     /// immediately through this client.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
-        self.client.try_disconnect()?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::graceful())
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -2445,8 +2477,7 @@ impl Client {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn try_disconnect(&self) -> Result<(), ClientError> {
-        self.client.try_disconnect()?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::graceful())
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -2475,8 +2506,7 @@ impl Client {
     /// Returns an error if the disconnect request cannot be queued
     /// immediately through this client.
     pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
-        self.client.try_disconnect_with_timeout(timeout)?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::graceful_with_timeout(timeout))
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -2510,8 +2540,7 @@ impl Client {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn try_disconnect_with_timeout(&self, timeout: Duration) -> Result<(), ClientError> {
-        self.client.try_disconnect_with_timeout(timeout)?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::graceful_with_timeout(timeout))
     }
 
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -2529,8 +2558,7 @@ impl Client {
     /// Returns an error if the disconnect request cannot be queued
     /// immediately through this client.
     pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
-        self.client.try_disconnect_now()?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::immediate())
     }
 
     #[cfg(feature = "ordered-shutdown")]
@@ -2553,8 +2581,7 @@ impl Client {
     /// `disconnect_now()` skips the handshake drain. This method confirms
     /// admission only; an ordered `DisconnectNotice` separately confirms flush.
     pub fn try_disconnect_now(&self) -> Result<(), ClientError> {
-        self.client.try_disconnect_now()?;
-        Ok(())
+        self.try_disconnect_with(DisconnectOptions::immediate())
     }
 }
 
@@ -2752,7 +2779,6 @@ impl Iterator for Iter<'_> {
         self.connection.recv().ok()
     }
 }
-
 #[cfg(test)]
 mod test {
     use super::*;

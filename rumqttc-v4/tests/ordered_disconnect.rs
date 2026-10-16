@@ -42,10 +42,12 @@ fn blocking_and_try_apis_return_independent_notices() {
         let (client, connection) = Client::builder(options(1)).capacity(1).build();
         let notice = if trying {
             client
-                .try_disconnect_after_queued_with_timeout(LIMIT)
+                .try_disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
                 .unwrap()
         } else {
-            client.disconnect_after_queued_with_timeout(LIMIT).unwrap()
+            client
+                .disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
+                .unwrap()
         };
         assert!(matches!(
             client.try_disconnect_after_queued(),
@@ -63,7 +65,9 @@ fn blocking_and_try_apis_return_independent_notices() {
 async fn overflowing_timeout_does_not_close_admission() {
     let (client, eventloop) = AsyncClient::builder(options(1)).capacity(1).build();
     assert!(matches!(
-        client.try_disconnect_after_queued_with_timeout(Duration::MAX),
+        client.try_disconnect_after_queued_with(
+            OrderedDisconnectOptions::new().timeout(Duration::MAX)
+        ),
         Err(ClientError::InvalidDisconnectTimeout)
     ));
     client
@@ -87,7 +91,7 @@ async fn reconnect_case(resume: bool) {
             .unwrap();
     }
     let notice = client
-        .try_disconnect_after_queued_with_timeout(LIMIT)
+        .try_disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
         .unwrap();
     let (lost_tx, lost_rx) = tokio::sync::oneshot::channel();
     let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
@@ -236,7 +240,7 @@ async fn ordered_fence_drains_mixed_qos_backlog_beyond_channel_and_inflight_capa
                 .unwrap();
         }
         let notice = client
-            .disconnect_after_queued_with_timeout(LIMIT)
+            .disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
             .await
             .unwrap();
         assert!(matches!(

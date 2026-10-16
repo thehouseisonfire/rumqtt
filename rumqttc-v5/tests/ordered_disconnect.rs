@@ -12,7 +12,7 @@ async fn broker_redirect_fails_ordered_notice_without_following_redirect() {
         .try_publish("redirect", "payload", PublishOptions::new(QoS::AtLeastOnce))
         .unwrap();
     let notice = client
-        .try_disconnect_after_queued_with_timeout(LIMIT)
+        .try_disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
         .unwrap();
     let driver = tokio::spawn(drive(eventloop));
     let mut broker = broker(listener).await;
@@ -92,39 +92,58 @@ fn cloned_producers_and_fence_have_one_admission_order() {
 }
 #[tokio::test]
 async fn ordered_disconnect_preserves_mqtt5_reason_and_properties() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let (client, eventloop) = AsyncClient::builder(options(port)).capacity(1).build();
-    let properties = DisconnectProperties {
-        session_expiry_interval: Some(0),
-        reason_string: Some("shutdown complete".into()),
-        user_properties: vec![("source".into(), "ordered-test".into())],
-        server_reference: None,
-    };
-    let reason = DisconnectReasonCode::DisconnectWithWillMessage;
-    let notice = client
-        .try_disconnect_after_queued_with_properties_timeout(reason, properties.clone(), LIMIT)
-        .unwrap();
-    let driver = tokio::spawn(drive(eventloop));
-    let mut broker = broker(listener).await;
-    let Some(Packet::Disconnect(disconnect)) = broker.read_packet_with_timeout(LIMIT).await else {
-        panic!("expected disconnect");
-    };
-    assert_eq!(disconnect.reason_code, reason);
-    assert_eq!(disconnect.properties, Some(properties));
-    notice.wait_async().await.unwrap();
-    driver.await.unwrap().unwrap();
+    for customization in 0..4 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (client, eventloop) = AsyncClient::builder(options(port)).capacity(1).build();
+        let properties = (customization & 2 != 0).then(|| DisconnectProperties {
+            session_expiry_interval: Some(0),
+            reason_string: Some("shutdown complete".into()),
+            user_properties: vec![("source".into(), "ordered-test".into())],
+            server_reference: None,
+        });
+        let reason = if customization & 1 != 0 {
+            DisconnectReasonCode::DisconnectWithWillMessage
+        } else {
+            DisconnectReasonCode::NormalDisconnection
+        };
+        let mut configured = OrderedDisconnectOptions::new().timeout(LIMIT);
+        if customization & 1 != 0 {
+            configured = configured.reason(reason);
+        }
+        if let Some(properties) = &properties {
+            configured = configured.properties(properties.clone());
+        }
+        let notice = client.try_disconnect_after_queued_with(configured).unwrap();
+        let driver = tokio::spawn(drive(eventloop));
+        let mut broker = tokio::time::timeout(LIMIT, broker(listener)).await.unwrap();
+        let Some(Packet::Disconnect(disconnect)) = broker.read_packet_with_timeout(LIMIT).await
+        else {
+            panic!("expected disconnect");
+        };
+        assert_eq!(disconnect.reason_code, reason);
+        assert_eq!(disconnect.properties, properties);
+        notice.wait_async().await.unwrap();
+        tokio::time::timeout(LIMIT, driver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
 }
+
 #[test]
 fn blocking_and_try_apis_return_independent_notices() {
     for trying in [false, true] {
         let (client, connection) = Client::builder(options(1)).capacity(1).build();
         let notice = if trying {
             client
-                .try_disconnect_after_queued_with_timeout(LIMIT)
+                .try_disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
                 .unwrap()
         } else {
-            client.disconnect_after_queued_with_timeout(LIMIT).unwrap()
+            client
+                .disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
+                .unwrap()
         };
         assert!(matches!(
             client.try_disconnect_after_queued(),
@@ -142,7 +161,9 @@ fn blocking_and_try_apis_return_independent_notices() {
 async fn overflowing_timeout_does_not_close_admission() {
     let (client, eventloop) = AsyncClient::builder(options(1)).capacity(1).build();
     assert!(matches!(
-        client.try_disconnect_after_queued_with_timeout(Duration::MAX),
+        client.try_disconnect_after_queued_with(
+            OrderedDisconnectOptions::new().timeout(Duration::MAX)
+        ),
         Err(ClientError::InvalidDisconnectTimeout)
     ));
     client
@@ -188,7 +209,9 @@ async fn replay_cleanup_rejection_fails_ordered_notice_after_session_resume() {
             };
             let notice = fence_before_cleanup.then(|| {
                 client
-                    .try_disconnect_after_queued_with_timeout(LIMIT)
+                    .try_disconnect_after_queued_with(
+                        OrderedDisconnectOptions::new().timeout(LIMIT),
+                    )
                     .unwrap()
             });
             // Lose the connection before polling the accepted publish out of the channel.
@@ -203,7 +226,9 @@ async fn replay_cleanup_rejection_fails_ordered_notice_after_session_resume() {
             }
             let notice = notice.unwrap_or_else(|| {
                 client
-                    .try_disconnect_after_queued_with_timeout(LIMIT)
+                    .try_disconnect_after_queued_with(
+                        OrderedDisconnectOptions::new().timeout(LIMIT),
+                    )
                     .unwrap()
             });
             let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
@@ -253,7 +278,7 @@ async fn reconnect_case(resume: bool) {
             .unwrap();
     }
     let notice = client
-        .try_disconnect_after_queued_with_timeout(LIMIT)
+        .try_disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
         .unwrap();
     let (lost_tx, lost_rx) = tokio::sync::oneshot::channel();
     let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
@@ -385,7 +410,7 @@ async fn negative_acknowledgements_fail_the_collective_notice() {
             .await
             .unwrap();
         let notice = client
-            .disconnect_after_queued_with_timeout(LIMIT)
+            .disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
             .await
             .unwrap();
         let driver = tokio::spawn(drive(eventloop));
@@ -476,7 +501,7 @@ async fn ordered_fence_drains_mixed_qos_backlog_beyond_channel_and_inflight_capa
                 .unwrap();
         }
         let notice = client
-            .disconnect_after_queued_with_timeout(LIMIT)
+            .disconnect_after_queued_with(OrderedDisconnectOptions::new().timeout(LIMIT))
             .await
             .unwrap();
         assert!(matches!(

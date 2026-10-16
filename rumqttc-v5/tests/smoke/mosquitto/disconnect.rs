@@ -466,7 +466,11 @@ async fn assert_subscribed_publisher_graceful_disconnect_suppresses_will(
 
     #[cfg(not(feature = "ordered-shutdown"))]
     client
-        .disconnect_with_properties_timeout(reason, properties, Duration::from_secs(2))
+        .disconnect_with(
+            rumqttc::DisconnectOptions::graceful_with_timeout(Duration::from_secs(2))
+                .reason(reason)
+                .properties(properties),
+        )
         .await
         .unwrap();
 
@@ -507,7 +511,11 @@ async fn assert_subscribed_publisher_graceful_disconnect_suppresses_will(
     } else {
         let (reason, properties) = normal_disconnect_properties();
         client
-            .disconnect_with_properties_timeout(reason, properties, Duration::from_secs(2))
+            .disconnect_with(
+                rumqttc::DisconnectOptions::graceful_with_timeout(Duration::from_secs(2))
+                    .reason(reason)
+                    .properties(properties),
+            )
             .await
             .unwrap();
     }
@@ -620,7 +628,11 @@ async fn mixed_qos_graceful_disconnect_suppresses_will() {
         .unwrap();
     let (reason, properties) = normal_disconnect_properties();
     client
-        .disconnect_with_properties_timeout(reason, properties, Duration::from_secs(2))
+        .disconnect_with(
+            rumqttc::DisconnectOptions::graceful_with_timeout(Duration::from_secs(2))
+                .reason(reason)
+                .properties(properties),
+        )
         .await
         .unwrap();
 
@@ -697,7 +709,11 @@ async fn graceful_disconnect_with_unsent_backlog_suppresses_will() {
         .unwrap();
     let (reason, properties) = normal_disconnect_properties();
     client
-        .disconnect_with_properties_timeout(reason, properties, Duration::from_secs(2))
+        .disconnect_with(
+            rumqttc::DisconnectOptions::graceful_with_timeout(Duration::from_secs(2))
+                .reason(reason)
+                .properties(properties),
+        )
         .await
         .unwrap();
 

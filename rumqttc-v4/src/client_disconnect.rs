@@ -83,7 +83,8 @@ impl AsyncClient {
     ///
     /// Returns `ClientError` when tracking is unavailable, the timeout is invalid, or the request cannot be admitted.
     pub async fn disconnect_after_queued(&self) -> Result<crate::DisconnectNotice, ClientError> {
-        self.async_send_ordered(crate::Disconnect, None).await
+        self.disconnect_after_queued_with(crate::OrderedDisconnectOptions::new())
+            .await
     }
     /// Enqueue a publish-only shutdown fence and return its completion notice.
     ///
@@ -102,7 +103,7 @@ impl AsyncClient {
         &self,
         timeout: Duration,
     ) -> Result<crate::DisconnectNotice, ClientError> {
-        self.async_send_ordered(crate::Disconnect, Some(timeout))
+        self.disconnect_after_queued_with(crate::OrderedDisconnectOptions::new().timeout(timeout))
             .await
     }
     /// Enqueue a publish-only shutdown fence and return its completion notice.
@@ -119,7 +120,7 @@ impl AsyncClient {
     ///
     /// Returns `ClientError` when tracking is unavailable, the timeout is invalid, or the request cannot be admitted.
     pub fn try_disconnect_after_queued(&self) -> Result<crate::DisconnectNotice, ClientError> {
-        self.try_send_ordered(crate::Disconnect, None)
+        self.try_disconnect_after_queued_with(crate::OrderedDisconnectOptions::new())
     }
     /// Enqueue a publish-only shutdown fence and return its completion notice.
     ///
@@ -138,7 +139,9 @@ impl AsyncClient {
         &self,
         timeout: Duration,
     ) -> Result<crate::DisconnectNotice, ClientError> {
-        self.try_send_ordered(crate::Disconnect, Some(timeout))
+        self.try_disconnect_after_queued_with(
+            crate::OrderedDisconnectOptions::new().timeout(timeout),
+        )
     }
 }
 impl Client {
@@ -156,7 +159,7 @@ impl Client {
     ///
     /// Returns `ClientError` when tracking is unavailable, the timeout is invalid, or the request cannot be admitted.
     pub fn disconnect_after_queued(&self) -> Result<crate::DisconnectNotice, ClientError> {
-        self.client.blocking_send_ordered(crate::Disconnect, None)
+        self.disconnect_after_queued_with(crate::OrderedDisconnectOptions::new())
     }
     /// Enqueue a publish-only shutdown fence and return its completion notice.
     ///
@@ -175,8 +178,7 @@ impl Client {
         &self,
         timeout: Duration,
     ) -> Result<crate::DisconnectNotice, ClientError> {
-        self.client
-            .blocking_send_ordered(crate::Disconnect, Some(timeout))
+        self.disconnect_after_queued_with(crate::OrderedDisconnectOptions::new().timeout(timeout))
     }
     /// Enqueue a publish-only shutdown fence and return its completion notice.
     ///
@@ -192,7 +194,7 @@ impl Client {
     ///
     /// Returns `ClientError` when tracking is unavailable, the timeout is invalid, or the request cannot be admitted.
     pub fn try_disconnect_after_queued(&self) -> Result<crate::DisconnectNotice, ClientError> {
-        self.client.try_send_ordered(crate::Disconnect, None)
+        self.try_disconnect_after_queued_with(crate::OrderedDisconnectOptions::new())
     }
     /// Enqueue a publish-only shutdown fence and return its completion notice.
     ///
@@ -211,7 +213,79 @@ impl Client {
         &self,
         timeout: Duration,
     ) -> Result<crate::DisconnectNotice, ClientError> {
-        self.client
-            .try_send_ordered(crate::Disconnect, Some(timeout))
+        self.try_disconnect_after_queued_with(
+            crate::OrderedDisconnectOptions::new().timeout(timeout),
+        )
+    }
+}
+
+impl AsyncClient {
+    /// Queues a configured publish-only shutdown fence and returns its completion notice.
+    ///
+    /// Includes preceding queued/replayed publishes through their `QoS` milestones.
+    /// Later operations on managed clones are rejected with `ClientError::Closing`.
+    /// The total timeout begins at successful admission and excludes capacity waits.
+    /// Success confirms admission; await the notice separately for DISCONNECT flush
+    /// and required persistence. Dropping the notice does not cancel shutdown.
+    /// Keep driving the event loop while waiting. External senders cannot provide tracking.
+    ///
+    /// # Errors
+    /// Returns an error if tracking is unavailable, the timeout overflows, or admission fails.
+    pub async fn disconnect_after_queued_with(
+        &self,
+        options: crate::OrderedDisconnectOptions,
+    ) -> Result<crate::DisconnectNotice, ClientError> {
+        let (packet, timeout) = options.into_parts();
+        self.async_send_ordered(packet, timeout).await
+    }
+
+    /// Attempts to admit a configured ordered fence without waiting for channel capacity.
+    ///
+    /// Has the completion and deadline contract of [`Self::disconnect_after_queued_with`].
+    /// Failed admission leaves the client open; dropping an admitted notice does not cancel shutdown.
+    ///
+    /// # Errors
+    /// Returns an error if tracking is unavailable, the timeout overflows, or admission fails.
+    pub fn try_disconnect_after_queued_with(
+        &self,
+        options: crate::OrderedDisconnectOptions,
+    ) -> Result<crate::DisconnectNotice, ClientError> {
+        let (packet, timeout) = options.into_parts();
+        self.try_send_ordered(packet, timeout)
+    }
+}
+
+impl Client {
+    /// Queues a configured publish-only shutdown fence and returns its completion notice.
+    ///
+    /// Includes preceding queued/replayed publishes through their `QoS` milestones.
+    /// Later operations on managed clones are rejected with `ClientError::Closing`.
+    /// The total timeout begins at successful admission and excludes capacity waits.
+    /// Success confirms admission; await the notice separately for DISCONNECT flush
+    /// and required persistence. Dropping the notice does not cancel shutdown.
+    /// Keep driving the event loop while waiting. External senders cannot provide tracking.
+    ///
+    /// # Errors
+    /// Returns an error if tracking is unavailable, the timeout overflows, or admission fails.
+    pub fn disconnect_after_queued_with(
+        &self,
+        options: crate::OrderedDisconnectOptions,
+    ) -> Result<crate::DisconnectNotice, ClientError> {
+        let (packet, timeout) = options.into_parts();
+        self.client.blocking_send_ordered(packet, timeout)
+    }
+
+    /// Attempts to admit a configured ordered fence without waiting for channel capacity.
+    ///
+    /// Has the completion and deadline contract of [`Self::disconnect_after_queued_with`].
+    /// Failed admission leaves the client open; dropping an admitted notice does not cancel shutdown.
+    ///
+    /// # Errors
+    /// Returns an error if tracking is unavailable, the timeout overflows, or admission fails.
+    pub fn try_disconnect_after_queued_with(
+        &self,
+        options: crate::OrderedDisconnectOptions,
+    ) -> Result<crate::DisconnectNotice, ClientError> {
+        self.client.try_disconnect_after_queued_with(options)
     }
 }
