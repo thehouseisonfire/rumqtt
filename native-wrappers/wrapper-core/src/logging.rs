@@ -152,6 +152,10 @@ impl Counters {
         }
     }
 }
+#[allow(
+    deprecated,
+    reason = "Atomic fetch_update is available at the Rust 1.88 MSRV"
+)]
 fn increment(counter: &AtomicU64) {
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
         Some(v.saturating_add(1))
@@ -1676,7 +1680,7 @@ mod tests {
         }
         assert!(context.flush().wait(DEADLINE).unwrap());
         let rows = records.lock().clone();
-        assert!(!rows.is_empty());
+        assert_ne!(rows.len(), 0);
         for row in rows {
             assert_eq!(row.fields[0].value, LogValue::Unsigned(row.client_id));
         }

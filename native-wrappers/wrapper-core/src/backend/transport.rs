@@ -31,6 +31,13 @@ pub fn io_failure(error: &std::io::Error) -> Option<TransportFailure> {
         .and_then(|terminal| io_failure(terminal.get_ref()))
 }
 
+#[cfg_attr(
+    not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")),
+    allow(
+        clippy::missing_const_for_fn,
+        reason = "The bind-device implementation allocates on Linux, Android, and Fuchsia"
+    )
+)]
 fn network(options: &rumqttc_v4::NetworkOptions) -> NetworkConfig {
     NetworkConfig {
         tcp_send_buffer_size: options.tcp_send_buffer_size(),

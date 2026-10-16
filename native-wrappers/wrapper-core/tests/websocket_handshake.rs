@@ -379,7 +379,7 @@ fn ipv6_handshake_snapshots_match_direct_and_proxy_connector_targets() {
                     );
                     if connector {
                         let requests = requests.lock().unwrap();
-                        assert!(!requests.is_empty());
+                        assert_ne!(requests.len(), 0);
                         assert!(
                             requests
                                 .iter()

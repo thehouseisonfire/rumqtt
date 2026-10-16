@@ -145,7 +145,7 @@ fn stalled_logging_does_not_stop_qos_keepalive_reconnect_or_mqtt_shutdown() {
                 execution.join(support::DEADLINE).unwrap();
             }
             let records = records.lock().unwrap();
-            assert!(!records.is_empty());
+            assert_ne!(records.len(), 0);
             let formatted = format!("{records:?}");
             drop(records);
             for secret in [

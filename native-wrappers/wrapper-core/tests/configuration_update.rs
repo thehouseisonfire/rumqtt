@@ -473,7 +473,7 @@ fn concurrent_updates_are_serialized_and_do_not_starve_a_shared_execution_peer()
         }
     }
     revisions.sort_unstable();
-    assert!(!revisions.is_empty());
+    assert_ne!(revisions.len(), 0);
     assert_eq!(
         revisions,
         (1..=u64::try_from(revisions.len()).unwrap()).collect::<Vec<_>>()

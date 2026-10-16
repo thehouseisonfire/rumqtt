@@ -821,7 +821,7 @@ fn isolated_redirect_never_reads_or_writes_the_origin_store_scope() {
     let mut client = support::start(config).unwrap();
     let _events = connected(&mut client);
     let before = store.0.lock().unwrap().clone();
-    assert!(!before.is_empty());
+    assert_ne!(before.len(), 0);
     assert!(
         before
             .iter()

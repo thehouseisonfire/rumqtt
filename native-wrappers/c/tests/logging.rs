@@ -202,7 +202,7 @@ fn retained_ffi_registration_and_record_copy_survive_client_and_logging_teardown
         rumqttc_logging_context_release(context);
         assert_eq!(owner.drops.load(Ordering::Relaxed), 1);
         let records = owner.records.lock().unwrap();
-        assert!(!records.is_empty());
+        assert_ne!(records.len(), 0);
         for &record in records.iter() {
             let record = record as *mut rumqttc_log_record;
             let mut info: rumqttc_log_record_info_t = std::mem::zeroed();

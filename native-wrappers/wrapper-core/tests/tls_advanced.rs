@@ -26,7 +26,7 @@ impl TlsVerifier for Policy {
     ) -> std::result::Result<(), TlsCallbackReason> {
         assert_eq!(request.server_name, "127.0.0.1");
         assert_eq!(request.layer, TlsLayer::Broker);
-        assert!(!request.certificates.is_empty());
+        assert_ne!(request.certificates.len(), 0);
         assert!(request.deadline.is_some());
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.slow {
@@ -283,7 +283,7 @@ fn external_signatures_are_checked_and_failed_selection_cannot_become_anonymous_
 fn cipher_and_policy_validation_is_enforceable_and_transactional() {
     fixture::install_provider_for_providerless_client();
     let suites = TlsBackend::Rustls.supported_cipher_suites().unwrap();
-    assert!(!suites.is_empty());
+    assert_ne!(suites.len(), 0);
     for suites in [vec![0xffff], vec![suites[0], suites[0]], vec![0; 65]] {
         assert!(
             TlsConfig {
@@ -748,7 +748,7 @@ impl DeferredHost {
 }
 impl AsyncTlsVerifier for DeferredHost {
     fn verify(&self, r: AsyncTlsVerificationRequest) -> TlsCallbackFuture<()> {
-        assert!(!r.certificates.is_empty());
+        assert_ne!(r.certificates.len(), 0);
         assert!(r.deadline.is_some());
         self.response(TlsCallbackStage::Verification, move |_| {
             assert_eq!(r.server_name, "127.0.0.1");

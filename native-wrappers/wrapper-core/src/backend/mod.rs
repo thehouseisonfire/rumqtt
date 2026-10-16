@@ -390,10 +390,10 @@ impl BackendClient {
                 ));
             };
             let (reason, properties) = v5::disconnect_properties(properties)?;
-            let options = match timeout {
-                Some(timeout) => rumqttc_v5::DisconnectOptions::graceful_with_timeout(timeout),
-                None => rumqttc_v5::DisconnectOptions::graceful(),
-            };
+            let options = timeout.map_or_else(
+                rumqttc_v5::DisconnectOptions::graceful,
+                rumqttc_v5::DisconnectOptions::graceful_with_timeout,
+            );
             return client
                 .try_disconnect_with(options.reason(reason).properties(properties))
                 .map_err(|error| v5::map_client_error(&error));
@@ -511,6 +511,13 @@ pub fn build(config: ClientConfig) -> Result<(BackendClient, BackendDriver)> {
     }
 }
 
+#[cfg_attr(
+    not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")),
+    allow(
+        clippy::missing_const_for_fn,
+        reason = "The bind-device implementation allocates on Linux, Android, and Fuchsia"
+    )
+)]
 fn build_network(common: &crate::CommonConfig) -> rumqttc_v4::NetworkOptions {
     let config = &common.network;
     let mut network = rumqttc_v4::NetworkOptions::new();

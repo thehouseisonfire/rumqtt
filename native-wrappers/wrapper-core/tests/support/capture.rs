@@ -97,7 +97,7 @@ pub fn assert_redacted(debug_and_errors: &str, secrets: &[&str]) {
     #[cfg(not(feature = "tracing"))]
     let traces = String::new();
     for secret in secrets {
-        assert!(!secret.is_empty());
+        assert_ne!(*secret, "");
         assert!(
             !debug_and_errors.contains(secret),
             "secret appeared in formatted output"
