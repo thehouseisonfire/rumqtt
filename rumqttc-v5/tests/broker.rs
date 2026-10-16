@@ -229,6 +229,11 @@ impl Broker {
     }
 
     pub async fn read_packet_with_timeout(&mut self, timeout: Duration) -> Option<Packet> {
+        // A bulk read may already have queued the packet that lets the client make progress.
+        if let Some(packet) = self.incoming.pop_front() {
+            return Some(packet);
+        }
+
         drop(
             time::timeout(timeout, async {
                 let result = self.framed.readb(&mut self.incoming).await;

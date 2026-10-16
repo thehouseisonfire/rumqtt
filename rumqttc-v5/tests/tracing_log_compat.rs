@@ -1,5 +1,5 @@
 use log::{Log, Metadata, Record};
-use rumqttc::{EventLoop, MqttOptions};
+use rumqttc::{ConnectionError, EventLoop, MqttOptions};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -35,10 +35,18 @@ async fn tracing_events_fall_back_to_one_log_record_each() {
     log::set_max_level(log::LevelFilter::Trace);
 
     let mut options = MqttOptions::new("log-compat", "localhost");
+    // A zero timeout can still succeed against a local broker. Keep the connector pending
+    // so the timeout and its lifecycle records are independent of the host environment.
+    options.set_socket_connector(|_, _| {
+        std::future::pending::<std::io::Result<tokio::io::DuplexStream>>()
+    });
     options.set_connect_timeout(Duration::ZERO);
     let mut eventloop = EventLoop::new(options, 1);
 
-    assert!(eventloop.poll().await.is_err());
+    assert!(matches!(
+        eventloop.poll().await,
+        Err(ConnectionError::Timeout(_))
+    ));
 
     let records = LOGGER.records.lock().unwrap();
     assert_eq!(
