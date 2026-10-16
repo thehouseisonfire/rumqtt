@@ -2,6 +2,12 @@
 
 ### Changed
 
+- **Breaking — wrapper-core Rust observations:** `IncomingPublish` adds
+  `packet_id: Option<u16>` and `connection_generation: Option<u64>`; exhaustive
+  struct literals must supply these fields. Native mappings retain the broker's
+  QoS 1/2 identifier and snapshot the accepted connection generation. QoS 0 has
+  no identifier. Python and JavaScript public event formats remain unchanged.
+
 - **Breaking — MQTT v4/v5 disconnect configuration:** Add `DisconnectOptions`
   and `disconnect_with`/`try_disconnect_with` for configured graceful, timed graceful,
   and immediate disconnects. With `ordered-shutdown`, use `OrderedDisconnectOptions`
@@ -86,6 +92,14 @@
   before deferred work finishes. Tokens share existing single-use, client-bound
   and connection-generation authority without retaining clients or runtimes;
   successful admission consumes all aliases independently of local flush outcome.
+
+- Native C: Add `rumqttc_event_publish_packet_id()` and
+  `rumqttc_event_publish_connection_generation()` with explicit presence outputs.
+  Observations survive acknowledgement, reconnect, and client destruction for
+  the lifetime of the event. Identifiers can be reused within a connection and
+  are diagnostic correlation data, not unique message or deduplication keys.
+  Acknowledgement still requires an event-bound token; existing C signatures,
+  record layouts, ABI version, and loader identity are preserved.
 
 - Native wrappers: Add optional audited structured C logging with explicit retained
   contexts, immutable sink filters, configuration/live placement, opaque client

@@ -354,6 +354,35 @@ void native_check_event_accessors(const rumqttc_event_t *event) {
     REQUIRE(present == 0 && packet_id == 0);
   REQUIRE(rumqttc_event_outgoing_packet_id(event, NULL, NULL) == RUMQTTC_INVALID_ARGUMENT);
 
+  for (unsigned mask = 1; mask <= 3; ++mask) {
+    uint8_t id_present = UINT8_MAX, generation_present = UINT8_MAX;
+    uint16_t id = UINT16_MAX;
+    uint64_t generation = UINT64_MAX;
+    int matches = kind == RUMQTTC_EVENT_INCOMING_PUBLISH;
+    expect_kind(rumqttc_event_publish_packet_id(event, mask & 1 ? &id_present : NULL, mask & 2 ? &id : NULL), matches);
+    expect_kind(rumqttc_event_publish_connection_generation(event, mask & 1 ? &generation_present : NULL,
+                                                            mask & 2 ? &generation : NULL), matches);
+    if (!matches) {
+      if (mask & 1)
+        REQUIRE(id_present == 0 && generation_present == 0);
+      if (mask & 2)
+        REQUIRE(id == 0 && generation == 0);
+    }
+    id_present = generation_present = UINT8_MAX;
+    id = UINT16_MAX;
+    generation = UINT64_MAX;
+    REQUIRE(rumqttc_event_publish_packet_id(NULL, mask & 1 ? &id_present : NULL,
+                                           mask & 2 ? &id : NULL) == RUMQTTC_INVALID_ARGUMENT);
+    REQUIRE(rumqttc_event_publish_connection_generation(NULL, mask & 1 ? &generation_present : NULL,
+                                                       mask & 2 ? &generation : NULL) == RUMQTTC_INVALID_ARGUMENT);
+    if (mask & 1)
+      REQUIRE(id_present == 0 && generation_present == 0);
+    if (mask & 2)
+      REQUIRE(id == 0 && generation == 0);
+  }
+  REQUIRE(rumqttc_event_publish_packet_id(event, NULL, NULL) == RUMQTTC_INVALID_ARGUMENT);
+  REQUIRE(rumqttc_event_publish_connection_generation(event, NULL, NULL) == RUMQTTC_INVALID_ARGUMENT);
+
   for (uint32_t property_class = RUMQTTC_EVENT_PROPERTIES_CONNACK;
        property_class <= RUMQTTC_EVENT_PROPERTIES_AUTHENTICATION; ++property_class) {
     int matches = property_class == RUMQTTC_EVENT_PROPERTIES_CONNACK ? connack_status == RUMQTTC_OK

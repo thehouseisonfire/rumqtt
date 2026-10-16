@@ -1881,6 +1881,23 @@ RUMQTTC_API rumqttc_status_t rumqttc_event_redirect_target(const rumqttc_event_t
 RUMQTTC_API rumqttc_status_t rumqttc_event_redirect_diagnostics(const rumqttc_event_t *event, uint32_t *decision_out, uint64_t *attempts_out, uint8_t *limit_present_out, uint64_t *limit_out, uint64_t *visited_out, uint8_t *loop_out, uint8_t *candidate_present_out, uint64_t *candidate_index_out, uint64_t *candidate_count_out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_disconnected(const rumqttc_event_t *event, uint32_t *phase_out, rumqttc_error_t **event_error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_publish(const rumqttc_event_t *event, rumqttc_string_view_t *topic_out, rumqttc_bytes_view_t *payload_out, rumqttc_qos_t *qos_out, uint8_t *retain_out, uint8_t *duplicate_out, uint8_t *ack_available_out);
+
+/* Incoming broker-assigned wire identifier: absent for QoS 0. Reusable after
+ * exchange completion, including within the same connection. Identifiers are
+ * independent in each direction and grant no acknowledgement authority.
+ * Both accessors below copy immutable, event-owned observations, readable after
+ * acknowledgement, reconnect and client destruction until event destruction.
+ * Either output may be NULL; both NULL is INVALID_ARGUMENT. Supplied outputs
+ * are zeroed before validation. NULL event is INVALID_ARGUMENT; a different
+ * event kind is INVALID_STATE. Absence is OK with presence/value both zero. */
+RUMQTTC_API rumqttc_status_t rumqttc_event_publish_packet_id(
+    const rumqttc_event_t *event, uint8_t *present_out, uint16_t *packet_id_out);
+
+/* Accepted connection generation, local to one client lifetime. Absent before
+ * the first accepted CONNACK. Generation plus packet ID is not a unique message,
+ * operation or durable deduplication key; session replay can span generations. */
+RUMQTTC_API rumqttc_status_t rumqttc_event_publish_connection_generation(
+    const rumqttc_event_t *event, uint8_t *present_out, uint64_t *generation_out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_v5_response_topic(const rumqttc_event_t *event, uint8_t *present_out, rumqttc_string_view_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_v5_correlation_data(const rumqttc_event_t *event, uint8_t *present_out, rumqttc_bytes_view_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_v5_content_type(const rumqttc_event_t *event, uint8_t *present_out, rumqttc_string_view_t *out);

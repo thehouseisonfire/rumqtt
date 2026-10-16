@@ -54,7 +54,7 @@ branches, including disabled ones, so API additions require an explicit review.
 | v5 | event | Outgoing.Auth | supported | Optional outgoing Other activity; auth lifecycle separately observable | authentication |
 | v5 | event | Event.Auth, AuthEvent.Started, AuthEvent.Continue, AuthEvent.Succeeded, AuthEvent.Failed | supported | Owned Authentication event; callback owns challenge data | authentication |
 | v5 | event | Event.Redirect | supported | Accepted/rejected source/reason/reference; resolved SRV endpoint precedes Connected | redirect_policy::redirect_reference_forms_select_isolated_endpoints_for_both_sources, redirect_policy::srv_priority_precedes_weight_and_selected_endpoint_is_reported, redirect_policy::srv_lookup_failures_have_no_origin_revision_and_release_owner |
-| v4, v5 | event | Packet.ConnAck, Packet.Publish | supported | Connected details / IncomingPublish with owned properties | config_wire, protocol_parity, authentication |
+| v4, v5 | event | Packet.ConnAck, Packet.Publish | supported | Connected details / IncomingPublish with owned properties, optional wire packet ID and accepted connection generation (core/C; Python/JavaScript public formats unchanged) | config_wire, protocol_parity, authentication, incoming_publish, native_incoming_publish |
 | v5 | event | Packet.Disconnect | supported | BrokerDisconnect retains properties across poll cleanup | authentication |
 | v4 | event | Packet.Disconnect | not applicable | MQTT 3.1.1 servers cannot send DISCONNECT | docs/spec/mqtt-v3.1.1.md |
 | v4, v5 | event | Packet.PubAck, Packet.PubRec, Packet.PubRel, Packet.PubComp, Packet.SubAck, Packet.UnsubAck | intentionally omitted | No raw ACK stream; tracked terminal outcomes retain v4 identifiers/SUBACK codes and complete v5 terminal ACK details, including rejection/recovery; successful intermediate PUBREC/PUBREL remain internal | completion unit tests, native_acknowledgement_results, protocol_parity, session_store |
@@ -465,3 +465,41 @@ stall only that context's logging. Native MQTT progress and terminal results sta
 independent. No global subscriber/logger, legacy-log bridge, dependency packet
 trace, span tree, or new JavaScript/Python logging API is introduced. Existing
 language bindings remain compatible with logging-unattached core startup.
+
+## Incoming PUBLISH identifiers (TODO43)
+
+Core/C preserve the exact incoming QoS 1/2 wire packet identifier and the
+accepted-connection generation in owned events, independently of ACK mode.
+QoS 0 has no identifier; generation is absent before the first accepted CONNACK.
+The generation uses the existing error-context counter, not the ACK token's
+invalidation counter. Python/JavaScript public event formats are unchanged.
+
+These are diagnostic observations, with acknowledgement authority exclusively
+in client-bound tokens. Identifiers can be reused after completion within a
+connection, are assigned independently in each direction, and can persist
+across session reconnects. Even client/generation/identifier is not a unique
+message or durable deduplication key. See MQTT 3.1.1 section 2.3.1 and MQTT 5
+section 2.2.1 in `docs/spec/`.
+
+`incoming_publish` and the deterministic `native_incoming_publish` C consumer
+cover both protocols and ACK modes, QoS 0/1/2, exact IDs `0x1234` and `65535`,
+QoS 1 retransmission, native QoS 2 duplicate suppression, same-connection reuse,
+reconnect reuse, stale/foreign ACK rejection, and retained event metadata after
+client destruction. Core tests also reject malformed zero IDs through native
+validation. Unit/native accessor tests cover optional outputs, absence, NULL
+events, wrong kinds, and output initialization. The C/C++ consumers reference
+both additive accessors; existing C declarations and public record layouts are
+preserved.
+
+Linux x86_64 validation passed: full core/C tests with default features (418
+passed) and without defaults (349 passed), shared-execution observation tests,
+316 codec tests, native workspace compilation, JavaScript event tests, and 26
+Python fixture tests. Each core/C run retained the two existing ignored tests
+(manual diagnostics benchmark and Mosquitto Will test). The complete native
+consumer/example suite passed 76 tests, with logging and ordered-shutdown
+examples skipped because their features were disabled. Header/export/package
+checks and local before/after ABI containment passed; exactly two functions were
+added and public records were identical. Historical comparison reported no
+published `0.1.0-alpha` baseline. macOS/Windows execution remains unverified.
+Clippy completed with the pre-existing `double_must_use` warning in
+`completion.rs:124`; strict `-D warnings` remains blocked by that warning.

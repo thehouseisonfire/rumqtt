@@ -1276,6 +1276,29 @@ using a destroyed client pointer. Missing local authority reports `INVALID_STATE
 core validation rejects foreign, stale, or consumed retransmission aliases using
 existing admission errors. Supplied outputs initialize to NULL/zero on failure.
 
+`rumqttc_event_publish_packet_id()` copies the incoming broker-assigned wire
+identifier with separate presence/value outputs: QoS 0 has no identifier;
+QoS 1/2 retain the exact native value. `rumqttc_event_publish_connection_generation()`
+copies the accepted connection generation, local to one client lifetime and
+absent before the first accepted CONNACK. Both observations are captured when
+the event is mapped, independently of automatic/manual ACK mode or ACK availability.
+They remain readable after acknowledgement, reconnect, and client destruction
+until the event is destroyed. Each accessor permits either output individually,
+rejects both outputs being NULL, and zeroes supplied outputs before validation.
+A NULL event is `INVALID_ARGUMENT`; the wrong event kind is `INVALID_STATE`;
+an absent value succeeds with presence/value both zero. Existing non-null
+pointer ownership and lifetime requirements still apply.
+
+Use these values to correlate broker logs and packet traces. Packet identifiers
+are independent in each direction, and the broker can reuse an identifier after
+an exchange completes, even within the same connection. Therefore even a client,
+connection generation, and packet identifier together are not a unique message
+ID, operation ID, or durable deduplication key. Persistent-session retransmission
+may span connection generations. An observed identifier grants no ACK authority;
+all acknowledgement APIs still require the original event's token. Native
+duplicate suppression is unchanged, including suppression of repeated QoS 2
+PUBLISH events. See the [manual acknowledgement example](examples/manual_acknowledgement.c).
+
 `rumqttc_client_try_acknowledge_with_options` and
 `rumqttc_client_acknowledge_with_options_tracked` add MQTT 5 ACK content using
 `rumqttc_acknowledgement_options_t` and `rumqttc_v5_acknowledgement_options_t`.

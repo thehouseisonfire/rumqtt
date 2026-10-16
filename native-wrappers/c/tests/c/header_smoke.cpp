@@ -13,6 +13,13 @@ int main() {
   assert(rumqttc_ack_token_retain(NULL, &token, NULL) == RUMQTTC_INVALID_ARGUMENT);
   rumqttc_ack_token_release(token);
 
+  uint8_t id_present = UINT8_MAX, generation_present = UINT8_MAX;
+  uint16_t incoming_id = UINT16_MAX;
+  uint64_t incoming_generation = UINT64_MAX;
+  assert(rumqttc_event_publish_packet_id(nullptr, &id_present, &incoming_id) == RUMQTTC_INVALID_ARGUMENT);
+  assert(rumqttc_event_publish_connection_generation(nullptr, &generation_present, &incoming_generation) ==
+         RUMQTTC_INVALID_ARGUMENT);
+  assert(id_present == 0 && incoming_id == 0 && generation_present == 0 && incoming_generation == 0);
   rumqttc_v5_acknowledgement_options_t ack_content = RUMQTTC_V5_ACKNOWLEDGEMENT_OPTIONS_INIT;
   rumqttc_acknowledgement_options_t ack_options = RUMQTTC_ACKNOWLEDGEMENT_OPTIONS_INIT;
   rumqttc_user_property_t user_property = RUMQTTC_USER_PROPERTY_INIT;

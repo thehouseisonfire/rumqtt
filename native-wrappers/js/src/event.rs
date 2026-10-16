@@ -262,6 +262,8 @@ mod tests {
             qos: QoS::AtMostOnce,
             retain: false,
             duplicate: false,
+            packet_id: None,
+            connection_generation: None,
             ack_token: None,
             v5_properties: properties,
         }))

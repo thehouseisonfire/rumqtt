@@ -1,5 +1,6 @@
 #include "example_common.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -34,11 +35,26 @@ static int acknowledge_next_publish(rumqttc_client_t *client) {
   if (event == NULL)
     return 1;
 
+  uint8_t id_present = 0, generation_present = 0;
+  uint16_t packet_id = 0;
+  uint64_t generation = 0;
+  if (rumqttc_event_publish_packet_id(event, &id_present, &packet_id) != RUMQTTC_OK ||
+      rumqttc_event_publish_connection_generation(
+          event, &generation_present, &generation) != RUMQTTC_OK) {
+    rumqttc_event_destroy(event);
+    return 1;
+  }
+  /* Diagnostic correlation only: IDs can be reused within this generation.
+   * Acknowledgement below still requires the event's client-bound token. */
+  if (id_present && generation_present)
+    printf("incoming packet ID %u on connection generation %" PRIu64 "\n",
+           (unsigned)packet_id, generation);
+
   /* Finish reading or persisting borrowed publication data before destroying
    * the event. Only the small token needs to follow deferred application work.
    */
   failed = example_report(rumqttc_event_take_ack_token(event, &token, &error),
-                          &error, "take acknowledgement token");
+                         &error, "take acknowledgement token");
   rumqttc_event_destroy(event);
   if (failed) {
     rumqttc_error_destroy(error);

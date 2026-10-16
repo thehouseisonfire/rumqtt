@@ -508,6 +508,50 @@ class Broker:
             else:
                 raise AssertionError(f"unexpected terminal-results packet: {packet!r}")
 
+    def incoming_publish(self, stream: socket.socket, protocol: int, client_id: bytes, attempt: int) -> None:
+        stream.sendall(frame(2, 0, b"\x00\x00" + (b"\x00" if protocol == 5 else b"")))
+        if client_id.startswith(b"native-incoming-foreign-"):
+            packet = read_frame(stream)
+            if packet is not None and packet[0] != 14:
+                raise AssertionError("foreign event authorized an ACK")
+            return
+        manual = client_id.endswith(b"-1")
+
+        def publish(qos: int, packet_id: int, payload: bytes, duplicate: bool = False) -> None:
+            body = b"\x00\x01a" + (struct.pack("!H", packet_id) if qos else b"")
+            body += (b"\x00" if protocol == 5 else b"") + payload
+            stream.sendall(frame(3, (qos << 1) | (8 if duplicate else 0), body))
+
+        def ack(kind: int, packet_id: int) -> None:
+            packet = read_frame(stream)
+            if packet is None or packet[:2] != (kind, 0) or packet[2][:2] != struct.pack("!H", packet_id):
+                raise AssertionError(f"incorrect incoming PUBLISH acknowledgement: {packet}")
+
+        if attempt == 1:
+            publish(0, 0, b"zero")
+            for duplicate, payload in [(False, b"one"), (True, b"one"), (False, b"reuse")]:
+                publish(1, 0x1234, payload, duplicate)
+                ack(4, 0x1234)
+            publish(2, 65535, b"two")
+            ack(5, 65535)
+            publish(2, 65535, b"two", True)
+            ack(5, 65535)
+            stream.sendall(frame(6, 2, b"\xff\xff"))
+            ack(7, 65535)
+            publish(0, 0, b"done")
+            publish(1, 0x1234, b"stale")
+            if not manual:
+                ack(4, 0x1234)
+            self.barrier(client_id.decode() + "-drop")
+            return
+        if attempt != 2:
+            raise AssertionError("unexpected incoming PUBLISH reconnect")
+        publish(1, 0x1234, b"new")
+        ack(4, 0x1234)
+        packet = read_frame(stream)
+        if packet is not None and packet[0] != 14:
+            raise AssertionError("unexpected packet after incoming PUBLISH fixture")
+
     def acknowledgement_options(self, stream: socket.socket, protocol: int, client_id: bytes) -> None:
         with self.failure_lock:
             self.client_ids.add(client_id)
@@ -911,6 +955,9 @@ class Broker:
                 return
             if client_id.startswith(b"native-ack-options-"):
                 self.acknowledgement_options(stream, protocol, client_id)
+                return
+            if client_id.startswith((b"native-incoming-publish-", b"native-incoming-foreign-")):
+                self.incoming_publish(stream, protocol, client_id, attempt)
                 return
             if client_id.startswith(b"native-batch-"):
                 self.batching(stream, protocol, client_id)

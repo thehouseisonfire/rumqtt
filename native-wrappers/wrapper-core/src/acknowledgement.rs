@@ -358,6 +358,7 @@ fn option_error(message: impl Into<String>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorKind;
 
     fn v5_ack(qos2: bool, packet_id: u16) -> PreparedAck {
         PreparedAck::V5(if qos2 {
@@ -365,6 +366,43 @@ mod tests {
         } else {
             rumqttc_v5::ManualAck::PubAck(rumqttc_v5::PubAck::new(packet_id, None))
         })
+    }
+
+    #[test]
+    fn matching_packet_ids_do_not_authorize_foreign_or_stale_tokens() {
+        for mqtt5 in [false, true] {
+            let (operations, _) = OperationRegistry::new(1);
+            let first = AcknowledgementCoordinator::new(7, operations.clone());
+            let foreign = AcknowledgementCoordinator::new(8, operations);
+            let ack = || {
+                if mqtt5 {
+                    v5_ack(false, 0x1234)
+                } else {
+                    v4_puback(0x1234)
+                }
+            };
+            first.begin_connection(None);
+            foreign.begin_connection(None);
+            let old_token = first.insert(ack()).unwrap();
+            let foreign_token = foreign.insert(ack()).unwrap();
+            assert!(
+                first
+                    .reserve(foreign_token, &AcknowledgementProtocolOptions::default())
+                    .is_err()
+            );
+            first.invalidate(&Error::new(ErrorKind::Network, "connection lost"));
+            first.begin_connection(None);
+            let current_token = first.insert(ack()).unwrap();
+            assert!(
+                first
+                    .reserve(old_token, &AcknowledgementProtocolOptions::default())
+                    .is_err()
+            );
+            first
+                .reserve(current_token, &AcknowledgementProtocolOptions::default())
+                .unwrap()
+                .commit();
+        }
     }
 
     #[test]

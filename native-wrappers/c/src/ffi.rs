@@ -5823,6 +5823,57 @@ fn incoming(event: &EventObject) -> Result<&IncomingPublish, ErrorHandle> {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_publish_packet_id(
+    event: *const rumqttc_event,
+    present_out: *mut u8,
+    packet_id_out: *mut u16,
+) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(packet_id_out, 0);
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if present_out.is_null() && packet_id_out.is_null() {
+            return Err(ErrorHandle::argument("packet ID output is NULL"));
+        }
+        let publish = incoming(unsafe { event_ref(event) }?)?;
+        unsafe {
+            write_optional(present_out, u8::from(publish.packet_id.is_some()));
+            write_optional(packet_id_out, publish.packet_id.unwrap_or(0));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_event_publish_connection_generation(
+    event: *const rumqttc_event,
+    present_out: *mut u8,
+    generation_out: *mut u64,
+) -> u32 {
+    unsafe {
+        write_optional(present_out, 0);
+        write_optional(generation_out, 0);
+    }
+    boundary(ptr::null_mut(), ptr::null_mut(), || {
+        if present_out.is_null() && generation_out.is_null() {
+            return Err(ErrorHandle::argument(
+                "connection generation output is NULL",
+            ));
+        }
+        let publish = incoming(unsafe { event_ref(event) }?)?;
+        unsafe {
+            write_optional(
+                present_out,
+                u8::from(publish.connection_generation.is_some()),
+            );
+            write_optional(generation_out, publish.connection_generation.unwrap_or(0));
+        }
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_event_publish(
     event: *const rumqttc_event,
     topic_out: *mut rumqttc_string_view_t,
@@ -6516,6 +6567,89 @@ pub unsafe extern "C" fn rumqttc_string_copy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incoming_publish_metadata_preserves_presence_and_initializes_all_outputs() {
+        // All non-null pointers refer to live event objects and writable outputs.
+        unsafe {
+            let absent = rumqttc_event {
+                inner: EventObject::new(WrapperEvent::IncomingPublish(Box::new(IncomingPublish {
+                    topic: Bytes::from_static(b"a"),
+                    payload: Bytes::new(),
+                    qos: QoS::AtMostOnce,
+                    retain: false,
+                    duplicate: false,
+                    packet_id: None,
+                    connection_generation: None,
+                    ack_token: None,
+                    v5_properties: None,
+                }))),
+            };
+            let present = rumqttc_event {
+                inner: EventObject::new(WrapperEvent::IncomingPublish(Box::new(IncomingPublish {
+                    topic: Bytes::from_static(b"a"),
+                    payload: Bytes::new(),
+                    qos: QoS::AtLeastOnce,
+                    retain: false,
+                    duplicate: false,
+                    packet_id: Some(u16::MAX),
+                    connection_generation: Some(u64::from(u32::MAX) + 1),
+                    ack_token: None,
+                    v5_properties: None,
+                }))),
+            };
+            let wrong = rumqttc_event {
+                inner: EventObject::new(WrapperEvent::GracefulShutdownCompleted),
+            };
+            macro_rules! check {
+                ($accessor:ident, $ty:ty, $expected:expr) => {
+                    for (event, status, expected) in [
+                        (&raw const absent, OK, 0),
+                        (&raw const present, OK, $expected),
+                        (&raw const wrong, crate::error::INVALID_STATE, 0),
+                        (ptr::null(), crate::error::INVALID_ARGUMENT, 0),
+                    ] {
+                        for mask in 1..=3 {
+                            let mut presence = u8::MAX;
+                            let mut value = <$ty>::MAX;
+                            assert_eq!(
+                                $accessor(
+                                    event,
+                                    if mask & 1 != 0 {
+                                        &raw mut presence
+                                    } else {
+                                        ptr::null_mut()
+                                    },
+                                    if mask & 2 != 0 {
+                                        &raw mut value
+                                    } else {
+                                        ptr::null_mut()
+                                    },
+                                ),
+                                status
+                            );
+                            if mask & 1 != 0 {
+                                assert_eq!(presence, u8::from(expected != 0));
+                            }
+                            if mask & 2 != 0 {
+                                assert_eq!(value, expected);
+                            }
+                        }
+                        assert_eq!(
+                            $accessor(event, ptr::null_mut(), ptr::null_mut()),
+                            crate::error::INVALID_ARGUMENT
+                        );
+                    }
+                };
+            }
+            check!(rumqttc_event_publish_packet_id, u16, u16::MAX);
+            check!(
+                rumqttc_event_publish_connection_generation,
+                u64,
+                u64::from(u32::MAX) + 1
+            );
+        }
+    }
 
     #[test]
     fn acknowledgement_records_validate_sizes_flags_strings_and_counts() {

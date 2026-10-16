@@ -477,6 +477,10 @@ impl Shared {
         self.shutdown.require_running()
     }
 
+    pub(crate) fn connection_generation(&self) -> Option<u64> {
+        self.error_context().generation
+    }
+
     fn error_context(&self) -> crate::ErrorContext {
         *self
             .error_context
@@ -1184,7 +1188,7 @@ mod acknowledgement_tests {
     use super::*;
     use crate::{AcknowledgementProtocolOptions, Completion, V5AcknowledgementOptions};
 
-    fn client() -> (ClientHandle, flume::Receiver<rumqttc_v5::Request>) {
+    fn pending_client() -> (ClientHandle, flume::Receiver<rumqttc_v5::Request>) {
         let (tx, rx) = flume::bounded(1);
         let (operations, _receivers) = OperationRegistry::new(1);
         let acknowledgements = AcknowledgementCoordinator::new(7, operations.clone());
@@ -1206,8 +1210,31 @@ mod acknowledgement_tests {
             panic_tx,
             crate::reconnect::Controller::new(crate::ReconnectPolicy::Legacy),
         );
-        shared.begin_connection(ProtocolVersion::V5, false, Some(100), || {});
         (ClientHandle::new(shared), rx)
+    }
+
+    fn client() -> (ClientHandle, flume::Receiver<rumqttc_v5::Request>) {
+        let (handle, rx) = pending_client();
+        handle
+            .shared
+            .begin_connection(ProtocolVersion::V5, false, Some(100), || {});
+        (handle, rx)
+    }
+
+    #[test]
+    fn observation_generation_tracks_accepted_connections_independently_of_ack_invalidation() {
+        let (handle, _rx) = pending_client();
+        let shared = &handle.shared;
+        assert_eq!(shared.connection_generation(), None);
+        let error = Error::new(ErrorKind::Network, "connection lost");
+        shared.invalidate_connection(&error);
+        assert_eq!(shared.connection_generation(), None);
+        shared.begin_connection(ProtocolVersion::V5, false, None, || {});
+        assert_eq!(shared.connection_generation(), Some(1));
+        shared.invalidate_connection(&error);
+        assert_eq!(shared.connection_generation(), Some(1));
+        shared.begin_connection(ProtocolVersion::V5, false, None, || {});
+        assert_eq!(shared.connection_generation(), Some(2));
     }
 
     fn ack_token(handle: &ClientHandle, id: u16) -> AckToken {

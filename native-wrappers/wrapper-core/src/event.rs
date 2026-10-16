@@ -29,6 +29,12 @@ pub struct IncomingPublish {
     pub qos: QoS,
     pub retain: bool,
     pub duplicate: bool,
+    /// Broker-assigned wire identifier; absent for QoS 0. Reusable after an exchange
+    /// completes, even within one connection. Observation grants no ACK authority.
+    pub packet_id: Option<u16>,
+    /// Accepted connection generation, local to this client lifetime. Absent before
+    /// the first accepted CONNACK. This and `packet_id` are not a unique message key.
+    pub connection_generation: Option<u64>,
     pub ack_token: Option<AckToken>,
     pub v5_properties: Option<V5IncomingPublishProperties>,
 }

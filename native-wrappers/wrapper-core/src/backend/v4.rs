@@ -732,6 +732,8 @@ fn map_v4_event(
                 qos: from_qos(publish.qos),
                 retain: publish.retain,
                 duplicate: publish.dup,
+                packet_id: (publish.qos != rumqttc_v4::QoS::AtMostOnce).then_some(publish.pkid),
+                connection_generation: shared.connection_generation(),
                 ack_token,
                 v5_properties: None,
             })))

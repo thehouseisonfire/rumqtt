@@ -1474,6 +1474,8 @@ fn map_incoming_publish(
         qos: from_qos(publish.qos),
         retain: publish.retain,
         duplicate: publish.dup,
+        packet_id: (publish.qos != rumqttc_v5::QoS::AtMostOnce).then_some(publish.pkid),
+        connection_generation: shared.connection_generation(),
         ack_token,
         v5_properties: publish.properties.map(from_incoming_publish_properties),
     }))
