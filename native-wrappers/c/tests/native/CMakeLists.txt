@@ -429,3 +429,25 @@ endif()
 add_test(NAME rumqttc-native-deferred-admission
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-deferred-admission>)
 set_tests_properties(rumqttc-native-deferred-admission PROPERTIES LABELS "native;admission;ownership;concurrency" TIMEOUT 30)
+
+rumqttc_native_target(rumqttc-native-protocol-observations native_protocol_observations.c)
+add_test(NAME rumqttc-native-protocol-observations
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-protocol-observations>)
+set_tests_properties(rumqttc-native-protocol-observations PROPERTIES LABELS "native;wire;events;ownership" TIMEOUT 90)
+
+rumqttc_native_target(rumqttc-native-auth-observations native_auth.c)
+target_compile_definitions(rumqttc-native-auth-observations PRIVATE RUMQTTC_TEST_RAW_OBSERVATIONS=1)
+add_test(NAME rumqttc-native-auth-observations
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth-observations> --redact)
+set_tests_properties(rumqttc-native-auth-observations PROPERTIES LABELS "native;wire;events;ownership" TIMEOUT 90)
+
+rumqttc_native_target(rumqttc-native-auth-reject-observations native_auth_reject.c)
+target_compile_definitions(rumqttc-native-auth-reject-observations PRIVATE RUMQTTC_TEST_RAW_OBSERVATIONS=1)
+add_test(NAME rumqttc-native-auth-reject-observations
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-auth-reject-observations> --redact)
+set_tests_properties(rumqttc-native-auth-reject-observations PROPERTIES LABELS "native;wire;events" TIMEOUT 90)
+
+if(MSVC)
+    target_compile_options(rumqttc-native-auth-observations PRIVATE /experimental:c11atomics)
+    target_compile_options(rumqttc-native-auth-reject-observations PRIVATE /experimental:c11atomics)
+endif()

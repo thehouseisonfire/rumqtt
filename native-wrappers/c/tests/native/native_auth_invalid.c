@@ -65,7 +65,10 @@ static void failed(void *user_data, const rumqttc_auth_request_t *request, uint3
   auth_context *context = user_data;
   REQUIRE(request->stage == RUMQTTC_AUTH_REQUEST_FAILED);
   REQUIRE(failure != 0);
-  atomic_fetch_add(&context->failures, 1);
+  /* Count the reauthentication exchange under test. A subsequent reconnect's
+   * initial exchange can also be cancelled when this consumer closes. */
+  if (request->exchange == RUMQTTC_AUTH_EXCHANGE_REAUTHENTICATION)
+    atomic_fetch_add(&context->failures, 1);
 }
 
 static void destroy_auth(void *user_data) {

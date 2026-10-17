@@ -251,6 +251,9 @@ pub struct CommonConfig {
     pub websocket_headers: Vec<crate::WebSocketHeader>,
     pub websocket_handshake: Option<crate::WebSocketHandshakeConfig>,
     pub emit_outgoing_events: bool,
+    /// Startup-only native observations; default disabled. Selected events share the
+    /// bounded application queue and can trigger its delivery-timeout failure.
+    pub protocol_observations: crate::ProtocolObservationSelection,
 }
 
 impl std::fmt::Debug for CommonConfig {
@@ -316,6 +319,7 @@ impl CommonConfig {
             websocket_headers: Vec::new(),
             websocket_handshake: None,
             emit_outgoing_events: false,
+            protocol_observations: crate::ProtocolObservationSelection::default(),
         }
     }
 

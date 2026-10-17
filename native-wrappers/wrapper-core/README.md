@@ -728,7 +728,6 @@ including builds without wrapper default features. Direct Rust client users opt 
 to this feature for publish budgets and detailed transmission outcomes; wrapper
 admission defaults and capacity reclamation are unchanged.
 
-
 ## Owned deferred admission
 
 `ClientHandle::reserve_pending_admission(bytes)` reserves a per-client count/data
@@ -757,3 +756,13 @@ roll back only within a valid generation, and commit authority at native admissi
 
 See the [C contract](../c/README.md#deferred-command-admission) for accounting,
 ordering, observer ownership, event draining, and the staged admission/completion API.
+
+## Optional protocol observations
+
+Wrapper-core and C support startup-selected incoming control packets, precise
+outgoing packet kinds, and separately selected raw AUTH observations. Selection
+defaults off; existing event traffic and terminal ACK results remain unchanged.
+Selected events share the bounded application queue, so slow consumers can pause
+polling and trigger delivery-timeout termination. Outgoing activity describes
+native scheduling, not flush or peer receipt. See the
+[availability, selection, and ownership contract](../protocol-observations.md).

@@ -1640,7 +1640,6 @@ outputs. Diagnostic codes are 0=none, 1=v4 accepted as clean, and 2=v5 broker-on
 resume. Optional outputs are zeroed on error; at least one output is required.
 Existing public event and diagnostics records and the ABI line are unchanged.
 
-
 ## Deferred command admission
 
 `RUMQTTC_CAP_DEFERRED_ADMISSION` is available in every build. The additive
@@ -1725,3 +1724,13 @@ managed execution threads and inside host callbacks; polling/zero-time observati
 and cancellation remain available. See the complete bounded producer and independent
 event-consumer example in [deferred_admission.c](examples/deferred_admission.c).
 Host reactor readiness notifications are separate future work (TODO42).
+
+## Optional protocol observations
+
+Wrapper-core and C support startup-selected incoming control packets, precise
+outgoing packet kinds, and separately selected raw AUTH observations. Selection
+defaults off; existing event traffic and terminal ACK results remain unchanged.
+Selected events share the bounded application queue, so slow consumers can pause
+polling and trigger delivery-timeout termination. Outgoing activity describes
+native scheduling, not flush or peer receipt. See the
+[availability, selection, and ownership contract](../protocol-observations.md).

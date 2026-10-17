@@ -71,8 +71,9 @@ impl Drop for AckClaim<'_> {
         }
     }
 }
-pub fn encode(event: WrapperEvent, acks: &AckRegistry) -> String {
+pub fn encode(event: WrapperEvent, acks: &AckRegistry) -> Option<String> {
     let value = match event {
+        WrapperEvent::ProtocolObservation(_) => return None,
         WrapperEvent::ConnectionRejected(details) => {
             json!({ "type": "connectionRejected", "details": connack_details(details) })
         }
@@ -148,7 +149,7 @@ pub fn encode(event: WrapperEvent, acks: &AckRegistry) -> String {
             json!({"type":"driverError","error":error_value(&e)})
         }
     };
-    value.to_string()
+    Some(value.to_string())
 }
 
 fn connack_details(details: rumqttc_wrapper_core::ConnAckDetails) -> Value {

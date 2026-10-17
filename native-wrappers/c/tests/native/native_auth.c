@@ -158,6 +158,45 @@ static void check_retained_challenge(rumqttc_event_t *event) {
   }
 }
 
+#ifdef RUMQTTC_TEST_RAW_OBSERVATIONS
+static unsigned raw_count;
+static rumqttc_event_t *raw_retained;
+#endif
+
+static rumqttc_event_t *next_auth_event(rumqttc_client_t *client) {
+  for (;;) {
+    rumqttc_event_t *event = NULL;
+    CHECK(rumqttc_client_event_recv_timeout_ms(client, NATIVE_DEADLINE_MS, &event, NULL));
+#ifdef RUMQTTC_TEST_RAW_OBSERVATIONS
+    uint32_t kind = 0;
+    CHECK(rumqttc_event_kind(event, &kind));
+    if (kind == RUMQTTC_EVENT_PROTOCOL_OBSERVATION) {
+      rumqttc_protocol_observation_details_t info = RUMQTTC_PROTOCOL_OBSERVATION_DETAILS_INIT;
+      CHECK(rumqttc_event_protocol_observation(event, &info, NULL));
+      REQUIRE(info.present && info.packet_kind == RUMQTTC_PACKET_AUTH && info.direction == RUMQTTC_DIRECTION_INCOMING);
+      REQUIRE(info.generation_present == (raw_count != 0));
+      if (info.generation_present) REQUIRE(info.connection_generation == 1);
+      REQUIRE(info.reason_present && (info.reason == 0x18 || info.reason == 0));
+      uint8_t present = 0;
+      rumqttc_string_view_t method = {NULL, 0};
+      rumqttc_bytes_view_t data = {NULL, 0};
+      /* ERROR_OUT_SUCCESS: rumqttc_event_protocol_observation_authentication_method */
+      CHECK(rumqttc_event_protocol_observation_authentication_method(event, &present, &method, NULL));
+      REQUIRE(present && method.len == 6 && memcmp(method.data, "custom", 6) == 0);
+      /* ERROR_OUT_SUCCESS: rumqttc_event_protocol_observation_authentication_data */
+      CHECK(rumqttc_event_protocol_observation_authentication_data(event, &present, &data, NULL));
+      REQUIRE(present && data.len == (info.reason == 0x18 ? 8u : 12u));
+      rumqttc_ack_token_t *token = NULL;
+      REQUIRE(rumqttc_event_take_ack_token(event, &token, NULL) == RUMQTTC_INVALID_STATE && token == NULL);
+      if (raw_count++ == 0) raw_retained = event;
+      else rumqttc_event_destroy(event);
+      continue;
+    }
+#endif
+    return event;
+  }
+}
+
 int main(void) {
   rumqttc_config_t *config = NULL;
   rumqttc_client_t *client = NULL;
@@ -182,11 +221,13 @@ int main(void) {
                                      native_string("native-v5-auth-async"), NULL));
   CHECK(rumqttc_config_set_v5_authenticator(config, registration,
                                             native_string("custom"), 5000, NULL));
+#ifdef RUMQTTC_TEST_RAW_OBSERVATIONS
+  CHECK(rumqttc_config_set_protocol_observations(config, RUMQTTC_OBSERVE_RAW_AUTH, NULL));
+#endif
   CHECK(rumqttc_client_start(config, &client, NULL));
   for (;;) {
     rumqttc_event_kind_t kind = 0;
-    CHECK(rumqttc_client_event_recv_timeout_ms(client, NATIVE_DEADLINE_MS,
-                                               &event, NULL));
+    event = next_auth_event(client);
     CHECK(rumqttc_event_kind(event, &kind));
     native_check_event_accessors(event);
     if (kind == RUMQTTC_EVENT_AUTHENTICATION) {
@@ -249,7 +290,10 @@ int main(void) {
     const uint32_t stages[] = {RUMQTTC_AUTH_STAGE_STARTED, RUMQTTC_AUTH_STAGE_CONTINUE, RUMQTTC_AUTH_STAGE_SUCCEEDED};
     for (unsigned position = 0; position < 3; ++position) {
       uint32_t exchange = 0, stage = 0;
-      event = native_wait_event(client, RUMQTTC_EVENT_AUTHENTICATION);
+      event = next_auth_event(client);
+      uint32_t kind = 0;
+      CHECK(rumqttc_event_kind(event, &kind));
+      REQUIRE(kind == RUMQTTC_EVENT_AUTHENTICATION);
       CHECK(rumqttc_event_authentication(event, &exchange, &stage, NULL, NULL, NULL));
       REQUIRE(exchange == RUMQTTC_AUTH_EXCHANGE_REAUTHENTICATION && stage == stages[position]);
       native_check_event_accessors(event);
@@ -271,5 +315,12 @@ int main(void) {
   REQUIRE(atomic_load(&destroyed) == 1);
   REQUIRE(retained != NULL);
   check_retained_challenge(retained);
+#ifdef RUMQTTC_TEST_RAW_OBSERVATIONS
+  REQUIRE(raw_count == 5 && raw_retained != NULL);
+  rumqttc_bytes_view_t raw_data = {NULL, 0};
+  CHECK(rumqttc_event_protocol_observation_authentication_data(raw_retained, NULL, &raw_data, NULL));
+  REQUIRE(raw_data.len == 8 && memcmp(raw_data.data, "server\0\xff", 8) == 0);
+  rumqttc_event_destroy(raw_retained);
+#endif
   return 0;
 }

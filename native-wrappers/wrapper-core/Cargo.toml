@@ -100,3 +100,7 @@ cc = { version = "1", optional = true }
 [[bench]]
 name = "ordered_shutdown"
 harness = false
+
+[[bench]]
+name = "protocol_observations"
+harness = false

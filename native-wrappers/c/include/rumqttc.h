@@ -177,6 +177,27 @@ typedef uint32_t rumqttc_event_kind_t;
 #define RUMQTTC_EVENT_PROPERTIES_BROKER_DISCONNECT 2u
 #define RUMQTTC_EVENT_PROPERTIES_AUTHENTICATION 3u
 
+/* Startup-only selections; zero preserves default event traffic. */
+#define RUMQTTC_OBSERVE_INCOMING_CONTROL 1u
+#define RUMQTTC_OBSERVE_PRECISE_OUTGOING 2u
+#define RUMQTTC_OBSERVE_RAW_AUTH 4u
+#define RUMQTTC_EVENT_PROTOCOL_OBSERVATION 12u
+#define RUMQTTC_DIRECTION_INCOMING 1u
+#define RUMQTTC_DIRECTION_OUTGOING 2u
+#define RUMQTTC_PACKET_PUBLISH 3u
+#define RUMQTTC_PACKET_PUBACK 4u
+#define RUMQTTC_PACKET_PUBREC 5u
+#define RUMQTTC_PACKET_PUBREL 6u
+#define RUMQTTC_PACKET_PUBCOMP 7u
+#define RUMQTTC_PACKET_SUBSCRIBE 8u
+#define RUMQTTC_PACKET_SUBACK 9u
+#define RUMQTTC_PACKET_UNSUBSCRIBE 10u
+#define RUMQTTC_PACKET_UNSUBACK 11u
+#define RUMQTTC_PACKET_PINGREQ 12u
+#define RUMQTTC_PACKET_PINGRESP 13u
+#define RUMQTTC_PACKET_DISCONNECT 14u
+#define RUMQTTC_PACKET_AUTH 15u
+
 typedef uint32_t rumqttc_completion_kind_t;
 #define RUMQTTC_COMPLETION_QOS0_FLUSHED 1u
 #define RUMQTTC_COMPLETION_QOS1_ACKNOWLEDGED 2u
@@ -530,6 +551,27 @@ typedef struct rumqttc_acknowledgement_details_t {
 
 #define RUMQTTC_ACKNOWLEDGEMENT_DETAILS_INIT \
     { sizeof(rumqttc_acknowledgement_details_t), 0, 0, 0, 0, 0, 0, 0, 0, { 0, 0, 0, 0, 0 } }
+
+/* Immutable metadata; string/binary views belong to the owning event. */
+typedef struct rumqttc_protocol_observation_details_t {
+    uint32_t struct_size;
+    rumqttc_protocol_t protocol;
+    uint32_t direction;
+    uint32_t packet_kind;
+    uint64_t connection_generation;
+    uint16_t packet_id;
+    uint8_t present;
+    uint8_t packet_id_present;
+    uint8_t generation_present;
+    uint8_t reason_present;
+    uint8_t reason;
+    uint8_t properties_available;
+    uint8_t properties_present;
+    uint8_t results_present;
+    uint8_t reserved[4];
+} rumqttc_protocol_observation_details_t;
+#define RUMQTTC_PROTOCOL_OBSERVATION_DETAILS_INIT \
+    { sizeof(rumqttc_protocol_observation_details_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, { 0, 0, 0, 0 } }
 
 typedef struct rumqttc_user_property_t {
     uint32_t struct_size;
@@ -1907,6 +1949,29 @@ RUMQTTC_API rumqttc_status_t rumqttc_event_v5_subscription_identifier_at(const r
 RUMQTTC_API rumqttc_status_t rumqttc_event_v5_user_property_count(const rumqttc_event_t *event, size_t *out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_v5_user_property_at(const rumqttc_event_t *event, size_t index, rumqttc_string_view_t *name_out, rumqttc_string_view_t *value_out);
 RUMQTTC_API rumqttc_status_t rumqttc_event_outgoing_kind(const rumqttc_event_t *event, uint32_t *out);
+/* Selected observations share the bounded event queue; full queues can pause polling
+ * and terminate the driver after the configured delivery timeout. Outgoing events
+ * describe native scheduling, not socket flush or peer receipt. AwaitAck is not a packet.
+ * Precise outgoing selection emits one enriched outgoing event regardless of the coarse flag.
+ * Incoming selection never duplicates PUBLISH, CONNACK or DISCONNECT events. Raw AUTH is
+ * separate and confers no response authority; existing AUTH lifecycle details are unchanged.
+ * Metadata: coarse outgoing is OK with present=0, unrelated event kinds are INVALID_STATE.
+ * Fields marked unavailable are never inferred. Before accepted CONNACK (including retries),
+ * generation is absent. IDs may be reused within a generation and replay spans generations.
+ * Property access requires properties_available; AUTH access requires incoming AUTH.
+ * Returned views survive client destruction and expire with the event. Use existing copy
+ * helpers for independent ownership. Outputs are initialized before validation; at least
+ * one optional output is required. Indices out of bounds are INVALID_ARGUMENT. */
+RUMQTTC_API rumqttc_status_t rumqttc_config_set_protocol_observations(rumqttc_config_t *config, uint32_t flags, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_event_protocol_observation(const rumqttc_event_t *event, rumqttc_protocol_observation_details_t *out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_event_protocol_observation_result_count(const rumqttc_event_t *event, uint8_t *present_out, size_t *count_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_event_protocol_observation_result_at(const rumqttc_event_t *event, size_t index, uint8_t *reason_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_event_protocol_observation_user_property_count(const rumqttc_event_t *event, size_t *count_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_event_protocol_observation_user_property_at(const rumqttc_event_t *event, size_t index, rumqttc_string_view_t *name_out, rumqttc_string_view_t *value_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_event_protocol_observation_reason_string(const rumqttc_event_t *event, uint8_t *present_out, rumqttc_string_view_t *value_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_event_protocol_observation_authentication_method(const rumqttc_event_t *event, uint8_t *present_out, rumqttc_string_view_t *value_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_event_protocol_observation_authentication_data(const rumqttc_event_t *event, uint8_t *present_out, rumqttc_bytes_view_t *value_out, rumqttc_error_t **error_out);
+
 RUMQTTC_API void rumqttc_event_destroy(rumqttc_event_t *event);
 
 RUMQTTC_API rumqttc_status_t rumqttc_error_status(const rumqttc_error_t *error, rumqttc_status_t *out);

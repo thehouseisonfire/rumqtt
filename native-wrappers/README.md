@@ -76,9 +76,18 @@ workloads; dedicated startup remains the default. See the
 [C lifecycle contract](c/README.md#shared-execution) and
 [execution measurements](wrapper-core/benches/execution.md).
 
-
 C additionally exposes [bounded deferred command admission](c/README.md#deferred-command-admission)
 with owned cancellation-aware observers for publishing, subscriptions, unsubscriptions,
 and detached-token ACKs. Admission and MQTT completion remain separate observations;
 existing immediate/tracked calls retain their behavior. See the
 [independent event-consumer example](c/examples/deferred_admission.c).
+
+## Optional protocol observations
+
+Wrapper-core and C support startup-selected incoming control packets, precise
+outgoing packet kinds, and separately selected raw AUTH observations. Selection
+defaults off; existing event traffic and terminal ACK results remain unchanged.
+Selected events share the bounded application queue, so slow consumers can pause
+polling and trigger delivery-timeout termination. Outgoing activity describes
+native scheduling, not flush or peer receipt. See the
+[availability, selection, and ownership contract](protocol-observations.md).

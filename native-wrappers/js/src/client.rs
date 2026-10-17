@@ -264,15 +264,19 @@ impl NativeMqttClient {
     pub async fn next_event(&self) -> String {
         self.guard(async {
             let mut events = self.events.lock().await;
-            let response = match events.recv_async().await {
-                Ok(Some(value)) => {
-                    let encoded = event::encode(value, &self.acknowledgements);
-                    let event = serde_json::from_str::<serde_json::Value>(&encoded)
-                        .unwrap_or_else(|_| panic_event("event JSON conversion failed"));
-                    json!({ "ok": true, "done": false, "event": event }).to_string()
+            let response = loop {
+                match events.recv_async().await {
+                    Ok(Some(value)) => {
+                        let Some(encoded) = event::encode(value, &self.acknowledgements) else {
+                            continue;
+                        };
+                        let event = serde_json::from_str::<serde_json::Value>(&encoded)
+                            .unwrap_or_else(|_| panic_event("event JSON conversion failed"));
+                        break json!({ "ok": true, "done": false, "event": event }).to_string();
+                    }
+                    Ok(None) => break json!({ "ok": true, "done": true }).to_string(),
+                    Err(error) => break response_error(&error, None),
                 }
-                Ok(None) => json!({ "ok": true, "done": true }).to_string(),
-                Err(error) => response_error(&error, None),
             };
             drop(events);
             if self.boundary_panicked.load(Ordering::Acquire)

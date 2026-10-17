@@ -41,8 +41,9 @@ impl AckRegistry {
     }
 }
 
-pub fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> String {
+pub fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> Option<String> {
     let event = match event {
+        WrapperEvent::ProtocolObservation(_) => return None,
         WrapperEvent::ConnectionRejected(details) => {
             json!({ "type": "connectionRejected", "details": connack_details(details) })
         }
@@ -107,7 +108,7 @@ pub fn encode(event: WrapperEvent, acknowledgements: &AckRegistry) -> String {
             json!({ "type": "driverError", "error": error_value(&error) })
         }
     };
-    event.to_string()
+    Some(event.to_string())
 }
 
 fn publish_event(
@@ -271,18 +272,22 @@ mod tests {
 
     #[test]
     fn v4_publish_omits_mqtt5_properties() {
-        let value: Value = serde_json::from_str(&encode(publish(None), &AckRegistry::default()))
-            .expect("event JSON");
+        let value: Value =
+            serde_json::from_str(&encode(publish(None), &AckRegistry::default()).unwrap())
+                .expect("event JSON");
         assert!(value["message"].get("properties").is_none());
         assert!(value["message"].get("ackId").is_none());
     }
 
     #[test]
     fn v5_publish_omits_absent_optional_properties() {
-        let value: Value = serde_json::from_str(&encode(
-            publish(Some(V5IncomingPublishProperties::default())),
-            &AckRegistry::default(),
-        ))
+        let value: Value = serde_json::from_str(
+            &encode(
+                publish(Some(V5IncomingPublishProperties::default())),
+                &AckRegistry::default(),
+            )
+            .unwrap(),
+        )
         .expect("event JSON");
         let properties = value["message"]["properties"]
             .as_object()

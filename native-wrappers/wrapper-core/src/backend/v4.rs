@@ -109,8 +109,8 @@ use crate::operations::{
     PendingFuture, PendingSender, accept_registration, fail_pending, resolve_pending,
 };
 use crate::runtime::{
-    DriverContext, EventDelivery, ShutdownInputs, TerminalStatus, complete_shutdown, deliver,
-    finish_close, overflow_error,
+    DriverContext, EventDelivery, ShutdownInputs, TerminalStatus, complete_shutdown,
+    deliver_observed, finish_close, overflow_error,
 };
 use crate::shutdown::PollErrorAction;
 use crate::{
@@ -359,6 +359,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         events,
         delivery_timeout,
         emit_outgoing,
+        observations,
         manual_ack,
         protocol,
         immediate_shutdown_rx,
@@ -549,10 +550,21 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     event,
                     &shared,
                     &mut connected,
-                    emit_outgoing,
-                    manual_ack,
-                    protocol,
-                ) && !deliver(&delivery, event).await
+                    EventMappingOptions {
+                        emit_outgoing,
+                        observations,
+                        manual_ack,
+                        protocol,
+                    },
+                ) && !deliver_observed(
+                    &delivery,
+                    event,
+                    observations,
+                    &completion_rx,
+                    &mut pending,
+                    &mut senders,
+                )
+                .await
                 {
                     let error = overflow_error();
                     shared.fail_acknowledgements(&error);
@@ -677,7 +689,16 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     shared.notify_progress();
                     continue;
                 }
-                if !deliver(&delivery, WrapperEvent::Disconnected { phase, error }).await {
+                if !deliver_observed(
+                    &delivery,
+                    WrapperEvent::Disconnected { phase, error },
+                    observations,
+                    &completion_rx,
+                    &mut pending,
+                    &mut senders,
+                )
+                .await
+                {
                     let error = overflow_error();
                     shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);
@@ -688,15 +709,27 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     }
 }
 
+#[derive(Clone, Copy)]
+struct EventMappingOptions {
+    emit_outgoing: bool,
+    observations: crate::ProtocolObservationSelection,
+    manual_ack: bool,
+    protocol: ProtocolVersion,
+}
+
 fn map_v4_event(
     eventloop: &mut rumqttc_v4::EventLoop,
     event: rumqttc_v4::Event,
     shared: &Shared,
     connected: &mut bool,
-    emit_outgoing: bool,
-    manual_ack: bool,
-    protocol: ProtocolVersion,
+    mapping: EventMappingOptions,
 ) -> Option<WrapperEvent> {
+    let EventMappingOptions {
+        emit_outgoing,
+        observations,
+        manual_ack,
+        protocol,
+    } = mapping;
     match event {
         rumqttc_v4::Event::Incoming(rumqttc_v4::Packet::ConnAck(connack)) => {
             if !shared.begin_connection(protocol, connack.session_present, None, || {
@@ -748,7 +781,18 @@ fn map_v4_event(
                 }
                 _ => {}
             }
-            emit_outgoing.then(|| {
+            let observation = observations
+                .precise_outgoing
+                .then(|| {
+                    super::observation::outgoing_v4(
+                        &outgoing,
+                        (*connected)
+                            .then(|| shared.connection_generation())
+                            .flatten(),
+                    )
+                })
+                .flatten();
+            (emit_outgoing || observation.is_some()).then(|| {
                 let packet_id = match outgoing {
                     rumqttc_v4::Outgoing::Publish(id)
                     | rumqttc_v4::Outgoing::Subscribe(id)
@@ -761,10 +805,19 @@ fn map_v4_event(
                     _ => None,
                 };
                 WrapperEvent::Outgoing(crate::OutgoingEvent {
+                    observation,
                     activity: map_outgoing(&outgoing),
                     packet_id,
                 })
             })
+        }
+        rumqttc_v4::Event::Incoming(packet) if observations.incoming_control => {
+            super::observation::incoming_v4(
+                packet,
+                (*connected)
+                    .then(|| shared.connection_generation())
+                    .flatten(),
+            )
         }
         rumqttc_v4::Event::Incoming(_) => None,
     }

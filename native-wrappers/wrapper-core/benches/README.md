@@ -178,3 +178,5 @@ median per-run p50/p95/p99 admission latency, and separate allocation samples.
 Per-run percentile medians are not pooled latency percentiles. Rerun on the
 target platform with representative payloads, transport and persistence before
 choosing an optional ordered build for a throughput-sensitive deployment.
+
+Native protocol observations have separate [allocation and retention measurements](protocol-observations.md).

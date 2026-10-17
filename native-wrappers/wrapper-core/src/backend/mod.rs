@@ -6,6 +6,7 @@ pub use tls::build_tls;
 mod auth;
 pub mod configuration;
 mod diagnostics;
+mod observation;
 mod reconnect;
 mod redirect;
 pub mod session;

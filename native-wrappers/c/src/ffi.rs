@@ -35,6 +35,10 @@ pub use websocket::*;
 mod transport;
 pub use transport::*;
 
+#[path = "observation.rs"]
+mod observation;
+pub use observation::*;
+
 #[path = "acknowledgement.rs"]
 mod acknowledgement;
 pub use acknowledgement::*;
@@ -4976,6 +4980,7 @@ pub unsafe extern "C" fn rumqttc_client_event_recv_timeout_ms(
 
 const fn event_kind(event: &WrapperEvent) -> u32 {
     match event {
+        WrapperEvent::ProtocolObservation(_) => 12,
         WrapperEvent::Connected { .. } => 1,
         WrapperEvent::Authentication(_) => 8,
         WrapperEvent::Redirect(_) => 9,

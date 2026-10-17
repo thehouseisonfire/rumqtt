@@ -452,7 +452,7 @@ class Broker:
 
     def acknowledgement_results(self, stream: socket.socket, protocol: int, client_id: bytes, attempt: int) -> None:
         suffix_name = "v5" if protocol == 5 else "v4"
-        recovery = client_id == b"native-terminal-recovery"
+        recovery = client_id.startswith(b"native-terminal-recovery")
         present = int(recovery and attempt == 2)
         stream.sendall(frame(2, 0, bytes((present, 0)) + (b"\x00" if protocol == 5 else b"")))
         reason = b"terminal-private-reason"
@@ -479,6 +479,25 @@ class Broker:
                 topic, offset = string_at(body, 0)
                 qos = flags >> 1 & 3
                 if qos == 0:
+                    if topic == b"observation-fence":
+                        stream.sendall(frame(3, 0, b"\x00\x01f" + (b"\x00" if protocol == 5 else b"") + b"fence"))
+                    if topic == b"observation-inbound":
+                        wire = b"\x00\x01a\x40\x00" + (b"\x00" if protocol == 5 else b"") + b"incoming"
+                        stream.sendall(frame(3, 4, wire))
+                        for duplicate in (True, False):
+                            ack = read_frame(stream)
+                            if ack is None or ack[0] != 5 or ack[2][:2] != b"\x40\x00":
+                                raise AssertionError("observation PUBREC missing")
+                            if duplicate:
+                                stream.sendall(frame(3, 12, wire))
+                        for packet_id in (b"\x40\x00", b"\x40\x01"):
+                            stream.sendall(frame(6, 2, packet_id))
+                            ack = read_frame(stream)
+                            if ack is None or ack[0] != 7 or ack[2][:2] != packet_id:
+                                raise AssertionError("observation PUBCOMP missing")
+                            if protocol == 5 and packet_id == b"\x40\x01" and ack[2][2:3] != b"\x92":
+                                raise AssertionError("unknown PUBREL did not produce negative PUBCOMP")
+                        stream.sendall(frame(3, 0, b"\x00\x01z" + (b"\x00" if protocol == 5 else b"") + b"done"))
                     continue
                 packet_id = body[offset:offset + 2]
                 if topic == b"pending":

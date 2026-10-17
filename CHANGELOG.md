@@ -2,6 +2,17 @@
 
 ### Changed
 
+- Wrapper-core/C: Add default-disabled native protocol observations for incoming
+  control packets, exact outgoing packet kinds, and separately selected raw AUTH.
+  Retain decoded reasons/properties in event-owned immutable storage, preserve
+  existing AUTH lifecycle details and terminal ACK results, and keep ready
+  completions observable during blocked diagnostic delivery. Selected events use
+  the existing bounded queue and overflow contract; outgoing observations do not
+  imply socket flush or peer receipt. C APIs are additive. Wrapper-core Rust
+  `CommonConfig`/`OutgoingEvent` literals and exhaustive `WrapperEvent` matches
+  must include the new selection/detail fields and observation variant. Python
+  and JavaScript public event formats remain unchanged.
+
 - **Breaking — wrapper-core Rust observations:** `IncomingPublish` adds
   `packet_id: Option<u16>` and `connection_generation: Option<u64>`; exhaustive
   struct literals must supply these fields. Native mappings retain the broker's

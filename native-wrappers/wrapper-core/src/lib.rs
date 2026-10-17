@@ -42,7 +42,12 @@ pub use logging::{
     MAX_LOG_MESSAGE_BYTES, MAX_LOG_RECORD_BYTES, MAX_LOG_TEXT_BYTES,
 };
 mod handle;
+mod observation;
 mod operations;
+pub use observation::{
+    ObservationProperties, PacketDirection, PacketKind, ProtocolObservation,
+    ProtocolObservationSelection,
+};
 mod pending_admission;
 pub use pending_admission::{
     PendingAdmissionHandle, PendingAdmissionLimits, PendingAdmissionOutcome,

@@ -32,6 +32,7 @@ set_tests_properties(rumqttc-thread-join-contract PROPERTIES LABELS "native;conc
 set(RUMQTTC_C_EXAMPLES
     websocket_tokens
     event_polling
+    protocol_observations
     reconnect
     session_recovery
     diagnostics

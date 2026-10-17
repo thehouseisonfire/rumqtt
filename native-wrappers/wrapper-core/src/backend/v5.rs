@@ -320,8 +320,8 @@ use crate::operations::{
     resolve_pending,
 };
 use crate::runtime::{
-    DriverContext, EventDelivery, ShutdownInputs, TerminalStatus, complete_shutdown, deliver,
-    finish_close, overflow_error,
+    DriverContext, EventDelivery, ShutdownInputs, TerminalStatus, complete_shutdown,
+    deliver_observed, finish_close, overflow_error,
 };
 use crate::shutdown::PollErrorAction;
 use crate::{
@@ -648,6 +648,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
         events,
         delivery_timeout,
         emit_outgoing,
+        observations,
         manual_ack,
         protocol,
         immediate_shutdown_rx,
@@ -667,6 +668,7 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
     let mut pending_auth: Option<(u8, Option<crate::AuthProperties>)> = None;
     let mapping = EventMappingOptions {
         emit_outgoing,
+        observations,
         manual_ack,
         protocol,
         auth_failure: None,
@@ -942,7 +944,15 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 )
             };
             if let Some(event) = event
-                && !deliver(&delivery, event).await
+                && !deliver_observed(
+                    &delivery,
+                    event,
+                    observations,
+                    &completion_rx,
+                    &mut pending,
+                    &mut senders,
+                )
+                .await
             {
                 return TerminalStatus::Failed(overflow_error());
             }
@@ -985,7 +995,15 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         ..mapping
                     },
                     &mut pending_auth,
-                ) && !deliver(&delivery, event).await
+                ) && !deliver_observed(
+                    &delivery,
+                    event,
+                    observations,
+                    &completion_rx,
+                    &mut pending,
+                    &mut senders,
+                )
+                .await
                 {
                     return TerminalStatus::Failed(overflow_error());
                 }
@@ -1009,7 +1027,15 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                         ..mapping
                     },
                     &mut pending_auth,
-                ) && !deliver(&delivery, event).await
+                ) && !deliver_observed(
+                    &delivery,
+                    event,
+                    observations,
+                    &completion_rx,
+                    &mut pending,
+                    &mut senders,
+                )
+                .await
                 {
                     return TerminalStatus::Failed(overflow_error());
                 }
@@ -1060,14 +1086,32 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                             srv_candidate_count: resolved.srv_candidate_count,
                             ..redirect
                         };
-                        if !deliver(&delivery, WrapperEvent::Redirect(redirect)).await {
+                        if !deliver_observed(
+                            &delivery,
+                            WrapperEvent::Redirect(redirect),
+                            observations,
+                            &completion_rx,
+                            &mut pending,
+                            &mut senders,
+                        )
+                        .await
+                        {
                             let error = overflow_error();
                             shared.fail_acknowledgements(&error);
                             fail_pending(&mut senders, &error);
                             return TerminalStatus::Failed(error);
                         }
                     }
-                    if !deliver(&delivery, event).await {
+                    if !deliver_observed(
+                        &delivery,
+                        event,
+                        observations,
+                        &completion_rx,
+                        &mut pending,
+                        &mut senders,
+                    )
+                    .await
+                    {
                         let error = overflow_error();
                         shared.fail_acknowledgements(&error);
                         fail_pending(&mut senders, &error);
@@ -1140,7 +1184,15 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     shared.fail_acknowledgements(&terminal);
                     fail_pending(&mut senders, &terminal);
                     if !recovery_overtook_poll
-                        && !deliver(&delivery, WrapperEvent::Redirect(event)).await
+                        && !deliver_observed(
+                            &delivery,
+                            WrapperEvent::Redirect(event),
+                            observations,
+                            &completion_rx,
+                            &mut pending,
+                            &mut senders,
+                        )
+                        .await
                     {
                         return TerminalStatus::Failed(overflow_error());
                     }
@@ -1215,7 +1267,16 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                     shared.notify_progress();
                     continue;
                 }
-                if !deliver(&delivery, WrapperEvent::Disconnected { phase, error }).await {
+                if !deliver_observed(
+                    &delivery,
+                    WrapperEvent::Disconnected { phase, error },
+                    observations,
+                    &completion_rx,
+                    &mut pending,
+                    &mut senders,
+                )
+                .await
+                {
                     let error = overflow_error();
                     shared.fail_acknowledgements(&error);
                     fail_pending(&mut senders, &error);
@@ -1289,6 +1350,7 @@ fn connack_details(connack: rumqttc_v5::ConnAck) -> crate::ConnAckDetails {
 #[derive(Clone, Copy)]
 struct EventMappingOptions {
     emit_outgoing: bool,
+    observations: crate::ProtocolObservationSelection,
     manual_ack: bool,
     protocol: ProtocolVersion,
     auth_failure: Option<crate::AuthFailure>,
@@ -1354,6 +1416,24 @@ fn map_auth_event(
     }
 }
 
+fn map_auth_packet(
+    auth: rumqttc_v5::Auth,
+    pending_auth: &mut Option<(u8, Option<crate::AuthProperties>)>,
+    selected: bool,
+    generation: Option<u64>,
+) -> Option<WrapperEvent> {
+    let reason = match auth.code {
+        rumqttc_v5::AuthReasonCode::Success => 0,
+        rumqttc_v5::AuthReasonCode::Continue => 0x18,
+        rumqttc_v5::AuthReasonCode::ReAuthenticate => 0x19,
+    };
+    *pending_auth = Some((reason, auth.properties.map(super::auth::from_properties)));
+    selected.then(|| {
+        let (reason, properties) = pending_auth.as_ref().expect("just installed AUTH packet");
+        super::observation::raw_auth(*reason, properties.as_ref(), generation)
+    })
+}
+
 fn map_v5_event(
     eventloop: &mut rumqttc_v5::EventLoop,
     event: rumqttc_v5::Event,
@@ -1363,15 +1443,14 @@ fn map_v5_event(
     pending_auth: &mut Option<(u8, Option<crate::AuthProperties>)>,
 ) -> Option<WrapperEvent> {
     match event {
-        rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Auth(auth)) => {
-            let reason = match auth.code {
-                rumqttc_v5::AuthReasonCode::Success => 0,
-                rumqttc_v5::AuthReasonCode::Continue => 0x18,
-                rumqttc_v5::AuthReasonCode::ReAuthenticate => 0x19,
-            };
-            *pending_auth = Some((reason, auth.properties.map(super::auth::from_properties)));
-            None
-        }
+        rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Auth(auth)) => map_auth_packet(
+            auth,
+            pending_auth,
+            mapping.observations.raw_auth,
+            (*connected)
+                .then(|| shared.connection_generation())
+                .flatten(),
+        ),
         rumqttc_v5::Event::Redirect(outcome) => {
             shared.invalidate_connection(&Error::new(ErrorKind::Network, "connection redirected"));
             *connected = false;
@@ -1445,8 +1524,20 @@ fn map_v5_event(
         rumqttc_v5::Event::Incoming(rumqttc_v5::Packet::Publish(publish)) => {
             Some(map_incoming_publish(publish, shared, mapping.manual_ack))
         }
-        rumqttc_v5::Event::Outgoing(outgoing) => {
-            map_outgoing_event(&outgoing, shared, mapping.emit_outgoing)
+        rumqttc_v5::Event::Outgoing(outgoing) => map_outgoing_event(
+            &outgoing,
+            shared,
+            mapping.emit_outgoing,
+            mapping.observations.precise_outgoing,
+            *connected,
+        ),
+        rumqttc_v5::Event::Incoming(packet) if mapping.observations.incoming_control => {
+            super::observation::incoming_v5(
+                packet,
+                (*connected)
+                    .then(|| shared.connection_generation())
+                    .flatten(),
+            )
         }
         rumqttc_v5::Event::Incoming(_) => None,
     }
@@ -1485,6 +1576,8 @@ fn map_outgoing_event(
     outgoing: &rumqttc_v5::Outgoing,
     shared: &Shared,
     emit_outgoing: bool,
+    precise: bool,
+    connected: bool,
 ) -> Option<WrapperEvent> {
     match outgoing {
         rumqttc_v5::Outgoing::PubAck(packet_id) => {
@@ -1495,7 +1588,15 @@ fn map_outgoing_event(
         }
         _ => {}
     }
-    emit_outgoing.then(|| {
+    let observation = precise
+        .then(|| {
+            super::observation::outgoing_v5(
+                outgoing,
+                connected.then(|| shared.connection_generation()).flatten(),
+            )
+        })
+        .flatten();
+    (emit_outgoing || observation.is_some()).then(|| {
         let packet_id = match outgoing {
             rumqttc_v5::Outgoing::Publish(id)
             | rumqttc_v5::Outgoing::Subscribe(id)
@@ -1508,6 +1609,7 @@ fn map_outgoing_event(
             _ => None,
         };
         WrapperEvent::Outgoing(crate::OutgoingEvent {
+            observation,
             activity: map_outgoing(outgoing),
             packet_id,
         })

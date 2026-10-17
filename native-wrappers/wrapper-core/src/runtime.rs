@@ -824,6 +824,7 @@ impl NativeClient {
         let request_capacity = config.common.request_channel_capacity;
         let pending_limits = config.common.pending_admission_limits;
         let emit_outgoing = config.common.emit_outgoing_events;
+        let observations = config.common.protocol_observations;
         let manual_ack = config.common.ack_mode == AckMode::Manual;
         let session_expiry_zero = match &config.protocol {
             crate::ProtocolConfig::V4(_) => true,
@@ -880,6 +881,7 @@ impl NativeClient {
             events: event_tx,
             delivery_timeout,
             emit_outgoing,
+            observations,
             manual_ack,
             protocol,
             immediate_shutdown_rx,
@@ -980,6 +982,7 @@ pub struct DriverContext {
     pub(crate) events: Sender<WrapperEvent>,
     pub(crate) delivery_timeout: Duration,
     pub(crate) emit_outgoing: bool,
+    pub(crate) observations: crate::ProtocolObservationSelection,
     pub(crate) manual_ack: bool,
     pub(crate) protocol: ProtocolVersion,
     pub(crate) immediate_shutdown_rx: Receiver<()>,
@@ -1196,7 +1199,8 @@ pub struct EventDelivery<'a> {
     pub(crate) immediate_shutdown: &'a Receiver<()>,
     pub(crate) panic: &'a Receiver<()>,
     #[cfg(feature = "ordered-shutdown")]
-    pub(crate) staged: std::sync::Mutex<Option<WrapperEvent>>,
+    // Allocate the single retained event only if an ordered deadline interrupts delivery.
+    pub(crate) staged: std::sync::Mutex<Option<Box<WrapperEvent>>>,
 }
 
 // The two explicit loops keep protocol types statically checked and make all translation local.
@@ -1221,7 +1225,7 @@ pub async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool 
             _ = delivery.immediate_shutdown.recv_async() => true,
             () = delivery.shared.wait_ordered_deadline() => {
                 // Retain one blocked event until teardown while native polling resumes.
-                *delivery.staged.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(event);
+                *delivery.staged.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(event));
                 true
             },
             result = tokio::time::timeout(delivery.timeout, &mut send) => matches!(result, Ok(Ok(()))),
@@ -1235,6 +1239,58 @@ pub async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool 
         result = tokio::time::timeout(delivery.timeout, delivery.events.send_async(event)) => {
             matches!(result, Ok(Ok(())))
         },
+    }
+}
+
+/// Keep terminal notices observable while selected diagnostics wait for queue capacity.
+/// The native poll is not resumed or cancelled by this helper.
+pub async fn deliver_observed(
+    delivery: &EventDelivery<'_>,
+    event: WrapperEvent,
+    selection: crate::ProtocolObservationSelection,
+    completions: &Receiver<CompletionRegistration>,
+    pending: &mut FuturesUnordered<PendingFuture>,
+    senders: &mut HashMap<OperationId, PendingSender>,
+) -> bool {
+    if selection.enabled() {
+        crate::operations::process_ready_completions(completions, pending, senders);
+    }
+    let send = deliver(delivery, event);
+    tokio::pin!(send);
+    if !selection.enabled() {
+        return send.await;
+    }
+    // Only selected delivery pays for this allocation. Keeping the auxiliary loop
+    // off the driver frame bounds its size with combined optional native features.
+    Box::pin(complete_during_delivery(
+        send,
+        completions,
+        pending,
+        senders,
+    ))
+    .await
+}
+
+async fn complete_during_delivery<F: std::future::Future<Output = bool>>(
+    mut send: std::pin::Pin<&mut F>,
+    completions: &Receiver<CompletionRegistration>,
+    pending: &mut FuturesUnordered<PendingFuture>,
+    senders: &mut HashMap<OperationId, PendingSender>,
+) -> bool {
+    loop {
+        tokio::select! {
+            result = &mut send => return result,
+            registration = completions.recv_async() => {
+                if let Ok(registration) = registration {
+                    crate::operations::accept_registration(registration, pending, senders);
+                }
+                tokio::task::yield_now().await;
+            }
+            Some(result) = pending.next(), if !pending.is_empty() => {
+                crate::operations::resolve_pending(result, senders);
+                tokio::task::yield_now().await;
+            }
+        }
     }
 }
 

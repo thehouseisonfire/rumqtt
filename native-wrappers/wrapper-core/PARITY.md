@@ -49,8 +49,8 @@ branches, including disabled ones, so API additions require an explicit review.
 | v4, v5 | operation | disconnect, try_disconnect, disconnect_with_timeout, try_disconnect_with_timeout, disconnect_now, try_disconnect_now | supported | Existing graceful/immediate commands and coalescing closer | shutdown, lifecycle |
 | v4, v5 | operation | disconnect_with, try_disconnect_with (DisconnectOptions) | supported | Graceful/immediate policy; WC-10 first-admitted payload; exact MQTT 5 reason/properties | config_wire, close_races::mqtt5_disconnect_options_on_v4_do_not_admit_or_close, close_races::close_callers_keep_independent_deadlines_and_escalation_preserves_payload |
 | v5 | operation | reauth, try_reauth, reauth_tracked, try_reauth_tracked | supported | WC-05 tracked Reauthenticate command | authentication::overlapping_reauthentication_is_rejected_before_the_active_exchange_closes, authentication::rejected_overlap_preserves_success_and_releases_admission_for_the_next_exchange, authentication::authentication_reconnect_and_pending_challenge_shutdown_release_exchange |
-| v4, v5 | event | Event.Incoming | supported | WC-11 application packets mapped below; ACK packets stay internal to completions | protocol_parity, authentication |
-| v4, v5 | event | Event.Outgoing, Outgoing.Publish, Outgoing.Subscribe, Outgoing.Unsubscribe, Outgoing.PubAck, Outgoing.PubRec, Outgoing.PubRel, Outgoing.PubComp, Outgoing.AwaitAck, Outgoing.PingReq, Outgoing.PingResp, Outgoing.Disconnect | supported | Optional OutgoingEvent has coarse activity and packet id where present | backend map_outgoing, lifecycle |
+| v4, v5 | event | Event.Incoming | supported | WC-11 application packets mapped below; ACK packets remain in completions and are additionally observable through opt-in protocol events | protocol_parity, authentication |
+| v4, v5 | event | Event.Outgoing, Outgoing.Publish, Outgoing.Subscribe, Outgoing.Unsubscribe, Outgoing.PubAck, Outgoing.PubRec, Outgoing.PubRel, Outgoing.PubComp, Outgoing.AwaitAck, Outgoing.PingReq, Outgoing.PingResp, Outgoing.Disconnect | supported | Optional OutgoingEvent preserves coarse activity and packet ID; independent precise selection enriches the same event with exact packet kind | backend map_outgoing, lifecycle |
 | v5 | event | Outgoing.Auth | supported | Optional outgoing Other activity; auth lifecycle separately observable | authentication |
 | v5 | event | Event.Auth, AuthEvent.Started, AuthEvent.Continue, AuthEvent.Succeeded, AuthEvent.Failed | supported | Owned Authentication event; callback owns challenge data | authentication |
 | v5 | event | Event.Redirect | supported | Accepted/rejected source/reason/reference; resolved SRV endpoint precedes Connected | redirect_policy::redirect_reference_forms_select_isolated_endpoints_for_both_sources, redirect_policy::srv_priority_precedes_weight_and_selected_endpoint_is_reported, redirect_policy::srv_lookup_failures_have_no_origin_revision_and_release_owner |
@@ -59,7 +59,7 @@ branches, including disabled ones, so API additions require an explicit review.
 | v4 | event | Packet.Disconnect | not applicable | MQTT 3.1.1 servers cannot send DISCONNECT | docs/spec/mqtt-v3.1.1.md |
 | v4, v5 | event | Packet.PubAck, Packet.PubRec, Packet.PubRel, Packet.PubComp, Packet.SubAck, Packet.UnsubAck | intentionally omitted | No raw ACK stream; tracked terminal outcomes retain v4 identifiers/SUBACK codes and complete v5 terminal ACK details, including rejection/recovery; successful intermediate PUBREC/PUBREL remain internal | completion unit tests, native_acknowledgement_results, protocol_parity, session_store |
 | v4, v5 | event | Packet.Connect, Packet.Subscribe, Packet.Unsubscribe, Packet.PingReq, Packet.PingResp | intentionally omitted | Client-origin packets and keepalive internals have no second raw event stream | protocol_parity, backend event mapping |
-| v5 | event | Packet.Auth | intentionally omitted | Raw AUTH challenges belong to the configured authority, lifecycle events stay observable | authentication |
+| v5 | event | Packet.Auth | supported | Opt-in immutable raw AUTH observations; configured authenticator exclusively owns responses; existing lifecycle details remain available | authentication, native-auth-observations |
 | v4, v5 | operation | disconnect_after_queued, disconnect_after_queued_with_timeout, try_disconnect_after_queued, try_disconnect_after_queued_with_timeout | supported | Optional ordered-shutdown feature; OrderedDisconnect and OrderedShutdown completion delegate to the native fence, with bounded closer and retained cleanup | ordered_shutdown, native_ordered_shutdown, docs/recipes/ordered-shutdown.md |
 | v4, v5 | operation | disconnect_after_queued_with, try_disconnect_after_queued_with (OrderedDisconnectOptions) | supported | Optional ordered-shutdown feature; OrderedDisconnectWithOptions owns MQTT 5 DISCONNECT properties; matching closers retain the original deadline | ordered_shutdown, native_ordered_shutdown |
 
@@ -513,3 +513,19 @@ publish budgets. Tests: `handle::pending_tests`, `publish_admission::deferred_*`
 C `pending_admission_tests`, and `native_deferred_admission` cover cancellation
 arbitration, pending limits, restoration, ACK/control/shared-peer progress, observer
 lifetimes and teardown. Reactor notifications remain TODO42.
+
+## Optional protocol observations (TODO44)
+
+Core/C startup selectors expose actual native incoming PUBACK/PUBREC/PUBREL/PUBCOMP,
+SUBACK/UNSUBACK/PINGRESP and separately selected AUTH, plus exact outgoing packet
+kinds. Existing incoming packet events are not duplicated. AwaitAck remains a
+coarse scheduling activity; outgoing contents are unavailable. Default selection
+is empty, including in Python/JavaScript. See the
+[availability and lifecycle contract](../protocol-observations.md).
+
+Evidence: `backend::observation::tests`, `protocol_observations` integration tests,
+`native_protocol_observations`, `native_auth` in default/raw-observation modes,
+and the allocation/retention benchmark. These cover selectors, reason/properties,
+QoS 2 rejection/replay/duplicate suppression, accepted generations, PINGRESP,
+retained event views, AUTH authority, completion progress with full queues,
+overflow termination, and single-worker shared execution.

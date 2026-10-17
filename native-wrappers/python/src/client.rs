@@ -482,7 +482,19 @@ impl NativeMqttClient {
                     Err(error) => return response_error(&error, None),
                 }
             };
-            match v.events.lock().await.recv_async().await{Ok(Some(e))=>json!({"ok":true,"done":false,"event":serde_json::from_str::<serde_json::Value>(&event::encode(e,&v.acks)).unwrap_or_default()}).to_string(),Ok(None)=>json!({"ok":true,"done":true}).to_string(),Err(e)=>response_error(&e,None)}
+            let mut events = v.events.lock().await;
+            loop {
+                match events.recv_async().await {
+                    Ok(Some(e)) => {
+                        let Some(encoded) = event::encode(e, &v.acks) else {
+                            continue;
+                        };
+                        break json!({"ok":true,"done":false,"event":serde_json::from_str::<serde_json::Value>(&encoded).unwrap_or_default()}).to_string();
+                    }
+                    Ok(None) => break json!({"ok":true,"done":true}).to_string(),
+                    Err(e) => break response_error(&e, None),
+                }
+            }
         })
     }
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {

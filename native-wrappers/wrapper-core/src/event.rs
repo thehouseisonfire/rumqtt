@@ -29,7 +29,7 @@ pub struct IncomingPublish {
     pub qos: QoS,
     pub retain: bool,
     pub duplicate: bool,
-    /// Broker-assigned wire identifier; absent for QoS 0. Reusable after an exchange
+    /// Broker-assigned wire identifier; absent for `QoS` 0. Reusable after an exchange
     /// completes, even within one connection. Observation grants no ACK authority.
     pub packet_id: Option<u16>,
     /// Accepted connection generation, local to this client lifetime. Absent before
@@ -59,6 +59,8 @@ pub enum OutgoingActivity {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutgoingEvent {
+    /// Exact scheduling detail when selected; unavailable for non-packet `AwaitAck`.
+    pub observation: Option<std::sync::Arc<crate::ProtocolObservation>>,
     pub activity: OutgoingActivity,
     /// Zero is represented as None (`QoS` 0 has no packet identifier).
     pub packet_id: Option<u16>,
@@ -148,6 +150,8 @@ pub struct DiagnosticsSnapshot {
 
 #[derive(Clone, Debug)]
 pub enum WrapperEvent {
+    /// Selected incoming control packet. This snapshot grants no ACK or AUTH authority.
+    ProtocolObservation(std::sync::Arc<crate::ProtocolObservation>),
     /// A negative CONNACK. Connection recovery is reported separately.
     ConnectionRejected(ConnAckDetails),
     Authentication(crate::AuthEvent),

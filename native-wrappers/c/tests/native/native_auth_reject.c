@@ -58,6 +58,9 @@ int main(void) {
   uint8_t present = 0;
   uint32_t failure = 0;
   unsigned saw_failed = 0;
+#ifdef RUMQTTC_TEST_RAW_OBSERVATIONS
+  unsigned raw_seen = 0;
+#endif
   REQUIRE(context != NULL);
   vtable.respond = auth_respond;
   vtable.failed = auth_failed;
@@ -70,12 +73,24 @@ int main(void) {
                                      native_string("native-v5-auth-reject"), NULL));
   CHECK(rumqttc_config_set_v5_authenticator(config, registration,
                                             native_string("custom"), 5000, NULL));
+#ifdef RUMQTTC_TEST_RAW_OBSERVATIONS
+  CHECK(rumqttc_config_set_protocol_observations(config, RUMQTTC_OBSERVE_RAW_AUTH, NULL));
+#endif
   CHECK(rumqttc_client_start(config, &client, NULL));
   for (;;) {
     rumqttc_event_kind_t kind = 0;
     CHECK(rumqttc_client_event_recv_timeout_ms(client, NATIVE_DEADLINE_MS,
                                                &event, NULL));
     CHECK(rumqttc_event_kind(event, &kind));
+#ifdef RUMQTTC_TEST_RAW_OBSERVATIONS
+    if (kind == RUMQTTC_EVENT_PROTOCOL_OBSERVATION) {
+      rumqttc_protocol_observation_details_t info = RUMQTTC_PROTOCOL_OBSERVATION_DETAILS_INIT;
+      CHECK(rumqttc_event_protocol_observation(event, &info, NULL));
+      REQUIRE(!saw_failed && ++raw_seen == 1);
+      REQUIRE(info.present && info.packet_kind == RUMQTTC_PACKET_AUTH && !info.generation_present);
+      REQUIRE(info.reason_present && info.reason == 0x18 && info.properties_available);
+    }
+#endif
     if (kind == RUMQTTC_EVENT_AUTHENTICATION) {
       uint32_t stage = 0;
       CHECK(rumqttc_event_authentication(event, NULL, &stage, NULL, NULL,
@@ -90,6 +105,9 @@ int main(void) {
     rumqttc_event_destroy(event);
   }
   REQUIRE(saw_failed == 1);
+#ifdef RUMQTTC_TEST_RAW_OBSERVATIONS
+  REQUIRE(raw_seen == 1);
+#endif
   REQUIRE(context->starts == 1 && context->challenges == 1 &&
           context->failures == 1);
   REQUIRE(error != NULL);
