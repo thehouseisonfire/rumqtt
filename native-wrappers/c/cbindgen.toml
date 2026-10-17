@@ -9,6 +9,8 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_notification_context", "rumqttc_notification_options_t", "rumqttc_notification_key_t",
+    "rumqttc_notification_ready_t", "rumqttc_notification_status_t",
     "rumqttc_pending_admission", "rumqttc_pending_admission_limits_t",
     "rumqttc_logging_context",
     "rumqttc_logging_registration",
@@ -112,6 +114,7 @@ include = [
 ]
 
 [export.rename]
+"rumqttc_notification_context" = "rumqttc_notification_context_t"
 "rumqttc_pending_admission" = "rumqttc_pending_admission_t"
 "rumqttc_execution_context" = "rumqttc_execution_context_t"
 "rumqttc_tls_profile" = "rumqttc_tls_profile_t"

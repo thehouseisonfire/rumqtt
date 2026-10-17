@@ -91,3 +91,10 @@ Selected events share the bounded application queue, so slow consumers can pause
 polling and trigger delivery-timeout termination. Outgoing activity describes
 native scheduling, not flush or peer receipt. See the
 [availability, selection, and ownership contract](protocol-observations.md).
+
+## Optional host readiness
+
+C hosts can enable optional `readiness` to integrate many clients, MQTT completions,
+and deferred admissions into one host event loop using bounded registrations and
+an explicitly owned OS wake resource. MQTT keeps managed execution. See the
+[C host-loop contract](c/README.md#host-event-loop-readiness-optional).

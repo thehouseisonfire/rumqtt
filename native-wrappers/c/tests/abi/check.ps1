@@ -25,7 +25,9 @@ function Initialize-MsvcToolchain {
         -DevCmdArguments "-arch=x64 -host_arch=x64"
 }
 
-cargo build --manifest-path (Join-Path $CrateDir "Cargo.toml")
+$CargoFeatures = @()
+if ($env:RUMQTTC_C_FEATURES) { $CargoFeatures = @("--features", $env:RUMQTTC_C_FEATURES) }
+cargo build --manifest-path (Join-Path $CrateDir "Cargo.toml") @CargoFeatures
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 if ($Check -in @("all", "native", "ffi-header", "exports")) {

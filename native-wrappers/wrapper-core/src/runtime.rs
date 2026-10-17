@@ -196,6 +196,8 @@ impl DriverTerminal {
         rumqttc_core::scoped_event!(name: "mqtt.wrapper.shutdown_completed", target: "rumqttc::wrapper", tracing::Level::INFO,
             success = matches!(terminal, TerminalStatus::Closed { .. }));
         let _ = sender.send(terminal);
+        #[cfg(feature = "readiness")]
+        self.shared.event_readiness.terminal_published();
     }
 }
 
@@ -212,9 +214,20 @@ impl Drop for DriverTerminal {
 }
 
 pub struct EventConsumer {
+    #[cfg(feature = "readiness")]
+    readiness: crate::readiness::EventReadiness,
+    #[cfg(feature = "readiness")]
+    _readiness_view: Arc<crate::readiness::EventView>,
     events: Receiver<WrapperEvent>,
     terminal: Receiver<TerminalStatus>,
     terminal_seen: bool,
+}
+
+#[cfg(feature = "readiness")]
+impl Drop for EventConsumer {
+    fn drop(&mut self) {
+        self.readiness.0.invalidate();
+    }
 }
 
 impl std::fmt::Debug for EventConsumer {
@@ -224,6 +237,19 @@ impl std::fmt::Debug for EventConsumer {
 }
 
 impl EventConsumer {
+    /// Acquires non-consuming readiness without retaining this consumer or its client.
+    #[cfg(feature = "readiness")]
+    #[must_use]
+    pub fn readiness(&self) -> crate::readiness::EventReadiness {
+        self.readiness.clone()
+    }
+
+    fn mark_terminal_seen(&mut self) {
+        self.terminal_seen = true;
+        #[cfg(feature = "readiness")]
+        self.readiness.0.terminal_consumed();
+    }
+
     /// Attempts to receive an event without blocking.
     ///
     /// # Errors
@@ -266,11 +292,11 @@ impl EventConsumer {
                 Ok(self.recv_terminal_timeout(remaining))
             }
             Ok(TimedReceive::Terminal(Ok(status))) => {
-                self.terminal_seen = true;
+                self.mark_terminal_seen();
                 Ok(Some(status.into_event()))
             }
             Ok(TimedReceive::Terminal(Err(_))) => {
-                self.terminal_seen = true;
+                self.mark_terminal_seen();
                 Ok(None)
             }
             Err(flume::select::SelectError::Timeout) => Ok(None),
@@ -297,7 +323,7 @@ impl EventConsumer {
                 Err(_) => self.recv_terminal_async().await,
             },
             terminal = self.terminal.recv_async() => {
-                self.terminal_seen = true;
+                self.mark_terminal_seen();
                 Ok(terminal.ok().map(TerminalStatus::into_event))
             }
         }
@@ -309,12 +335,12 @@ impl EventConsumer {
         }
         match self.terminal.try_recv() {
             Ok(status) => {
-                self.terminal_seen = true;
+                self.mark_terminal_seen();
                 Some(status.into_event())
             }
             Err(flume::TryRecvError::Empty) => None,
             Err(flume::TryRecvError::Disconnected) => {
-                self.terminal_seen = true;
+                self.mark_terminal_seen();
                 None
             }
         }
@@ -324,13 +350,9 @@ impl EventConsumer {
         if self.terminal_seen {
             return Ok(None);
         }
-        self.terminal_seen = true;
-        Ok(self
-            .terminal
-            .recv_async()
-            .await
-            .ok()
-            .map(TerminalStatus::into_event))
+        let terminal = self.terminal.recv_async().await;
+        self.mark_terminal_seen();
+        Ok(terminal.ok().map(TerminalStatus::into_event))
     }
 
     fn recv_terminal_timeout(&mut self, timeout: Duration) -> Option<WrapperEvent> {
@@ -339,11 +361,11 @@ impl EventConsumer {
         }
         match self.terminal.recv_timeout(timeout) {
             Ok(status) => {
-                self.terminal_seen = true;
+                self.mark_terminal_seen();
                 Some(status.into_event())
             }
             Err(flume::RecvTimeoutError::Disconnected) => {
-                self.terminal_seen = true;
+                self.mark_terminal_seen();
                 None
             }
             Err(flume::RecvTimeoutError::Timeout) => None,
@@ -873,6 +895,10 @@ impl NativeClient {
         shared.set_configuration(configuration.control.clone());
         shared.set_protocol_admission_state(session_expiry_zero, reauthentication_enabled);
         shared.publish_native_diagnostics(driver.capture_diagnostics());
+        #[cfg(feature = "readiness")]
+        let readiness_view = shared.event_readiness.event_view(event_tx.clone());
+        #[cfg(feature = "readiness")]
+        let event_readiness = crate::readiness::EventReadiness(shared.event_readiness.clone());
         let context = DriverContext {
             shared: Arc::clone(&shared),
             completion_rx,
@@ -914,6 +940,10 @@ impl NativeClient {
             work,
             driver,
             events: EventConsumer {
+                #[cfg(feature = "readiness")]
+                readiness: event_readiness,
+                #[cfg(feature = "readiness")]
+                _readiness_view: readiness_view,
                 events: event_rx,
                 terminal: terminal_rx,
                 terminal_seen: false,
@@ -1213,7 +1243,11 @@ pub async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool 
         // Watch admission even if this send was blocked before the fence existed.
         // The fast path avoids cloning events when the application keeps up.
         let event = match delivery.events.try_send(event) {
-            Ok(()) => return true,
+            Ok(()) => {
+                #[cfg(feature = "readiness")]
+                delivery.shared.event_readiness.publish();
+                return true;
+            }
             Err(flume::TrySendError::Disconnected(_)) => return false,
             Err(flume::TrySendError::Full(event)) => event,
         };
@@ -1228,7 +1262,12 @@ pub async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool 
                 *delivery.staged.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(event));
                 true
             },
-            result = tokio::time::timeout(delivery.timeout, &mut send) => matches!(result, Ok(Ok(()))),
+            result = tokio::time::timeout(delivery.timeout, &mut send) => {
+                let delivered = matches!(result, Ok(Ok(())));
+                #[cfg(feature = "readiness")]
+                if delivered { delivery.shared.event_readiness.publish(); }
+                delivered
+            },
         }
     }
     #[cfg(not(feature = "ordered-shutdown"))]
@@ -1237,7 +1276,10 @@ pub async fn deliver(delivery: &EventDelivery<'_>, event: WrapperEvent) -> bool 
         _ = delivery.panic.recv_async() => terminate_driver_for_boundary_panic(),
         _ = delivery.immediate_shutdown.recv_async() => true,
         result = tokio::time::timeout(delivery.timeout, delivery.events.send_async(event)) => {
-            matches!(result, Ok(Ok(())))
+            let delivered = matches!(result, Ok(Ok(())));
+            #[cfg(feature = "readiness")]
+            if delivered { delivery.shared.event_readiness.publish(); }
+            delivered
         },
     }
 }
@@ -1700,5 +1742,42 @@ mod tests {
         let error = overflow_error();
         assert_eq!(error.code(), ErrorCode::EventBufferOverflow);
         assert!(!error.retryable());
+    }
+}
+
+#[cfg(all(test, feature = "readiness"))]
+mod readiness_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_terminal_wait_preserves_terminal_readiness_and_observation() {
+        let (event_tx, event_rx) = flume::bounded(1);
+        let (terminal_tx, terminal_rx) = flume::bounded(1);
+        let source = crate::readiness::Source::new(crate::readiness::SourceKind::Events);
+        let view = source.event_view(event_tx);
+        let mut events = EventConsumer {
+            readiness: crate::readiness::EventReadiness(source.clone()),
+            _readiness_view: view,
+            events: event_rx,
+            terminal: terminal_rx,
+            terminal_seen: false,
+        };
+        assert!(events.recv_terminal_async().now_or_never().is_none());
+        terminal_tx
+            .send(TerminalStatus::Closed { graceful: false })
+            .unwrap();
+        source.terminal_published();
+        let context = crate::readiness::NotificationContext::new(1).unwrap();
+        let key = context.register_events(&events.readiness(), 0).unwrap();
+        let mut revision = 0;
+        context
+            .collect(1, |entry| revision = entry.revision)
+            .unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            Some(WrapperEvent::ImmediateShutdownCompleted)
+        ));
+        context.acknowledge(key, revision).unwrap();
+        assert!(!context.prepare_wait().unwrap());
     }
 }

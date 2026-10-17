@@ -1,6 +1,7 @@
 # Wrapper ordered shutdown measurements
 
 Explicit shared execution has a separate [method, decision and results](execution.md).
+Optional C readiness has a separate [contract, harness and evidence](readiness.md).
 
 Keep `ordered-shutdown` disabled in standard wrapper packages. Enabling it changes
 native admission and publication tracking even when no fence is requested. The

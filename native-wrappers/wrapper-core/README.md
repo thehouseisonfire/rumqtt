@@ -766,3 +766,27 @@ Selected events share the bounded application queue, so slow consumers can pause
 polling and trigger delivery-timeout termination. Outgoing activity describes
 native scheduling, not flush or peer receipt. See the
 [availability, selection, and ownership contract](../protocol-observations.md).
+
+## Optional host readiness
+
+The disabled-by-default `readiness` feature exposes `readiness::NotificationContext`
+for bounded, non-consuming event/completion/pending-admission observations. One
+context owns a fixed slot table and constant OS signaling resources, with no
+notification threads or scheduling runtime. Immutable results require explicit
+revision acknowledgement; event rearm preserves unread queue/terminal work.
+Pending registrations retain external cancellation-aware observers. Context close
+and signal quiescence are separate from OS-resource release and MQTT joining.
+
+Rust `collect` visitors run without the registration-table lock and can acknowledge,
+deregister, or request context close. Closing stops further visits, and the returned
+count includes the visitor that closed the context. Nested or concurrent collection
+returns `InvalidState`; a visitor panic releases collection ownership without
+poisoning the registration table. Keep the full collect/observe/acknowledge/rearm
+sequence on one logical drainer.
+
+Event sources retain only weak consumer availability views and invalidate on
+consumer destruction. Feature-disabled builds contain no readiness fields or
+publication hooks. Enabled but unregistered completions/admissions allocate no
+readiness source. See the [C protocol](../c/README.md#host-event-loop-readiness-optional)
+and [measurements](benches/readiness.md). Connection-observer readiness remains
+part of the future TODO46 C observer; Python/JavaScript adapters are unchanged.

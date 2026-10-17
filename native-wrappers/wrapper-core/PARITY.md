@@ -273,8 +273,8 @@ shutdown, TLS, WebSocket and proxy profiles. Tests permit shared tasks to migrat
 between workers. The `execution` suite additionally puts peers on one worker
 and verifies capacity, start/shutdown races, peer progress and panic containment.
 Native C fixtures verify callback blocking-wait rejection, retained-token
-release ordering and unload after explicit context teardown. Pumping and foreign
-reactor integration remain unsupported.
+release ordering and unload after explicit context teardown. Caller-driven MQTT pumping remains unsupported; optional host observation
+readiness is described below.
 ## MQTT 5 publish admission (TODO32)
 
 MQTT 5 publish admission adds C policy/limit setters, usage snapshots,
@@ -512,7 +512,25 @@ and deferred operations share native admission helpers, shutdown/recovery gates,
 publish budgets. Tests: `handle::pending_tests`, `publish_admission::deferred_*`,
 C `pending_admission_tests`, and `native_deferred_admission` cover cancellation
 arbitration, pending limits, restoration, ACK/control/shared-peer progress, observer
-lifetimes and teardown. Reactor notifications remain TODO42.
+lifetimes and teardown. Optional host readiness is described below.
+
+## C readiness notifications (TODO42)
+
+The optional, disabled-by-default `readiness` feature adds shared notification
+contexts and registrations for events/terminal status, MQTT completions, and
+pending-admission outcomes. Existing C layouts and immediate/poll/timed-wait
+behavior remain intact; new symbols exist even when unavailable. Adapter discovery
+separates POSIX level-triggered descriptors from Windows waitable events.
+
+Tests: `readiness::tests`, `pending_admission::readiness_tests`, runtime terminal
+cancellation regression, core/C `tests/readiness.rs`, and `native_readiness` cover
+registration/reset/close races, stale keys, partial drains, terminal-only readiness,
+buffer saturation, bounds, pending ownership, client destruction, and shared peers.
+The native C fixture uses one context across twelve clients for both protocols
+and execution placements. See [measurements](benches/readiness.md) for recorded
+platform execution and costs. Linux native execution and Windows cross-checking
+are separate evidence; native macOS/Windows execution belongs to platform CI.
+TODO46 connection-observer readiness and Python/JavaScript integration are deferred.
 
 ## Optional protocol observations (TODO44)
 

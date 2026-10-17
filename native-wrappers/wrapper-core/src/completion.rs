@@ -228,6 +228,8 @@ pub struct CompletionCell {
     result: Mutex<Option<Arc<TerminalOutcome>>>,
     completed: Condvar,
     notified: Notify,
+    #[cfg(feature = "readiness")]
+    readiness: std::sync::OnceLock<Arc<crate::readiness::Source>>,
 }
 
 impl CompletionCell {
@@ -239,6 +241,8 @@ impl CompletionCell {
             result: Mutex::new(None),
             completed: Condvar::new(),
             notified: Notify::new(),
+            #[cfg(feature = "readiness")]
+            readiness: std::sync::OnceLock::new(),
         })
     }
 
@@ -258,6 +262,10 @@ impl CompletionCell {
         drop(state);
         self.completed.notify_all();
         self.notified.notify_waiters();
+        #[cfg(feature = "readiness")]
+        if let Some(readiness) = self.readiness.get() {
+            readiness.complete();
+        }
         true
     }
 
@@ -275,6 +283,17 @@ pub struct CompletionHandle {
 }
 
 impl CompletionHandle {
+    #[cfg(feature = "readiness")]
+    pub(crate) fn notification_source(&self) -> &Arc<crate::readiness::Source> {
+        let source = self.cell.readiness.get_or_init(|| {
+            crate::readiness::Source::new(crate::readiness::SourceKind::Completion)
+        });
+        if self.cell.observe().is_some() {
+            source.complete();
+        }
+        source
+    }
+
     pub(crate) fn observe_recovery(
         &self,
         observation: Arc<rumqttc_core::session_recovery::RecoveryObservation>,

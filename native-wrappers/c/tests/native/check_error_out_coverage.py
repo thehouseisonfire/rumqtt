@@ -17,6 +17,7 @@ source = "\n".join(
         "native_deferred_admission.c",
         "native_protocol_observations.c",
         "native_auth.c",
+        "native_readiness.c",
     )
 )
 functions = set(

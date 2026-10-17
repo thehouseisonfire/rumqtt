@@ -97,6 +97,19 @@
 
 ### Added
 
+- Native wrappers: optional, disabled-by-default `readiness` support for C host
+  event loops. Explicitly owned shared contexts observe events/terminal status,
+  MQTT completions, and deferred admissions through bounded registrations and
+  constant OS wake resources. POSIX level-triggered descriptors and Windows
+  waitable events have separate capability/ownership APIs. Revision acknowledgement,
+  pending-observer cancellation ownership, source invalidation, and signal quiescence
+  preserve existing MQTT execution and event-backpressure contracts. Existing
+  layouts and feature-disabled exports remain compatible. See the
+  [C host-loop example](native-wrappers/c/examples/readiness.c) and
+  [readiness measurements](native-wrappers/wrapper-core/benches/readiness.md):
+  active OS waiting reduces idle polling but exceeds the planned throughput-loss
+  gate in the measured workload. Connection observers await TODO46.
+
 - C wrapper: Add bounded deferred admission for publish, subscribe, unsubscribe,
   and detached-token acknowledgements. Owned pending handles support repeatable
   polling/timed observation, cancellation arbitration, and independently owned MQTT
@@ -334,6 +347,15 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+
+- Wrapper readiness: Preserve event-source invalidation when consumer destruction
+  races collection and acknowledgement, including before the first enqueue hook.
+  Run Rust collection visitors without the registration-table lock so visitors
+  can acknowledge, deregister, or close their context. Closing stops further
+  visits; nested and concurrent collection remain rejected.
+- Wrapper event observation: cancelling an asynchronous terminal wait no longer
+  marks terminal status consumed before receiving it, preserving later observation
+  and optional host readiness.
 - Native wrappers: Preserve authentication failure reasons from earlier connection
   attempts when a later CONNECT receives a refused CONNACK. Classify only the
   refused exchange's lifecycle failure as `BrokerRejected`.

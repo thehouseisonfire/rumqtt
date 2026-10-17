@@ -14,6 +14,8 @@ pub enum ClientError {
 }
 
 pub struct ClientObject {
+    #[cfg(feature = "readiness")]
+    pub(crate) event_readiness: rumqttc_wrapper_core::readiness::EventReadiness,
     pub protocol: ProtocolVersion,
     pub handle: ClientHandle,
     pub events: Mutex<EventConsumer>,
@@ -38,7 +40,11 @@ impl ClientObject {
         let events = native
             .take_events()
             .expect("a newly created native client owns its event consumer");
+        #[cfg(feature = "readiness")]
+        let event_readiness = events.readiness();
         Ok(Self {
+            #[cfg(feature = "readiness")]
+            event_readiness,
             protocol,
             handle,
             events: Mutex::new(events),

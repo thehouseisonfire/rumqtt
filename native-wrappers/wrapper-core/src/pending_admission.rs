@@ -46,6 +46,8 @@ struct Cell {
     changed: Condvar,
     wake: Notify,
     ready: Notify,
+    #[cfg(feature = "readiness")]
+    readiness: std::sync::OnceLock<Arc<crate::readiness::Source>>,
     cancel: AtomicBool,
     owners: AtomicUsize,
     #[cfg(test)]
@@ -63,6 +65,10 @@ impl Cell {
             drop(state);
             self.changed.notify_all();
             self.ready.notify_waiters();
+            #[cfg(feature = "readiness")]
+            if let Some(readiness) = self.readiness.get() {
+                readiness.complete();
+            }
         }
     }
 }
@@ -86,6 +92,17 @@ impl Drop for PendingAdmissionHandle {
 }
 
 impl PendingAdmissionHandle {
+    #[cfg(feature = "readiness")]
+    pub(crate) fn notification_source(&self) -> &Arc<crate::readiness::Source> {
+        let source = self.0.readiness.get_or_init(|| {
+            crate::readiness::Source::new(crate::readiness::SourceKind::PendingAdmission)
+        });
+        if self.poll().is_some() {
+            source.complete();
+        }
+        source
+    }
+
     #[cfg(test)]
     pub(crate) fn after_attempt(&self, entered: flume::Sender<()>, release: flume::Receiver<()>) {
         *self.0.after_attempt.lock().unwrap() = Some((entered, release));
@@ -332,6 +349,8 @@ impl Job {
                 changed: Condvar::new(),
                 wake: Notify::new(),
                 ready: Notify::new(),
+                #[cfg(feature = "readiness")]
+                readiness: std::sync::OnceLock::new(),
                 cancel: AtomicBool::new(false),
                 owners: AtomicUsize::new(1),
                 #[cfg(test)]
@@ -708,4 +727,48 @@ fn validate_packet_size(command: &Command, v4: bool) -> Result<()> {
         return Err(invalid("command exceeds the MQTT remaining-length limit"));
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "readiness"))]
+mod readiness_tests {
+    use super::*;
+    use crate::readiness::NotificationContext;
+
+    #[test]
+    fn registration_retains_pending_observer_and_final_removal_requests_cancellation() {
+        let registry = Registry::new();
+        let job = Job::new(Command::Diagnostics, None, registry.reserve(0, 0).unwrap());
+        let pending = registry.register(job).unwrap();
+        let cell = Arc::downgrade(&pending.0);
+        let context = NotificationContext::new(1).unwrap();
+        let key = context.register_pending_admission(&pending, 1).unwrap();
+        drop(pending);
+        assert!(!cell.upgrade().unwrap().cancel.load(Ordering::Acquire));
+        assert!(!context.prepare_wait().unwrap());
+        context.deregister(key).unwrap();
+        assert!(cell.upgrade().unwrap().cancel.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn cancellation_request_is_not_readiness_and_terminal_results_survive_registry_drop() {
+        let registry = Registry::new();
+        let job = Job::new(Command::Diagnostics, None, registry.reserve(0, 0).unwrap());
+        let pending = registry.register(job).unwrap();
+        let context = NotificationContext::new(1).unwrap();
+        let key = context.register_pending_admission(&pending, 1).unwrap();
+        pending.cancel();
+        assert!(!context.prepare_wait().unwrap());
+        drop(registry);
+        assert!(context.prepare_wait().unwrap());
+        let mut revision = 0;
+        context
+            .collect(1, |entry| revision = entry.revision)
+            .unwrap();
+        context.acknowledge(key, revision).unwrap();
+        assert!(!context.prepare_wait().unwrap());
+        assert!(matches!(
+            pending.poll(),
+            Some(PendingAdmissionOutcome::Failed(_))
+        ));
+    }
 }

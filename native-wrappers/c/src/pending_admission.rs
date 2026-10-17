@@ -101,7 +101,7 @@ pub unsafe extern "C" fn rumqttc_client_pending_admission_snapshot(
     })
 }
 
-unsafe fn pending_ref<'a>(
+pub(super) unsafe fn pending_ref<'a>(
     handle: *const rumqttc_pending_admission,
 ) -> Result<&'a PendingAdmissionHandle, ErrorHandle> {
     if handle.is_null() {

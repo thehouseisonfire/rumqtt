@@ -57,6 +57,8 @@ impl AdmissionGate {
 pub static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct Shared {
+    #[cfg(feature = "readiness")]
+    pub(crate) event_readiness: Arc<crate::readiness::Source>,
     pub(crate) logging: std::sync::OnceLock<crate::logging::ClientLogging>,
     pub(crate) logging_identity: AtomicU64,
     diagnostics: Mutex<Option<Arc<crate::NativeDiagnosticsSnapshot>>>,
@@ -231,6 +233,8 @@ impl Shared {
             BackendClient::V5(_) => ProtocolVersion::V5,
         };
         Arc::new(Self {
+            #[cfg(feature = "readiness")]
+            event_readiness: crate::readiness::Source::new(crate::readiness::SourceKind::Events),
             logging: std::sync::OnceLock::new(),
             logging_identity: AtomicU64::new(0),
             diagnostics: Mutex::new(None),

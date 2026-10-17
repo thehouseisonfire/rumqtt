@@ -69,6 +69,8 @@ pub use reconnect::{
     ReconnectConfig, ReconnectDiagnostics, ReconnectExhaustion, ReconnectJitter, ReconnectPhase,
     ReconnectPolicy, ReconnectStopReason, RetryBudget,
 };
+#[cfg(feature = "readiness")]
+pub mod readiness;
 mod runtime;
 pub mod rust_session_store;
 mod session;

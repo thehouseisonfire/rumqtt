@@ -1723,7 +1723,116 @@ or relax event-backpressure termination. Nonzero observation waits are forbidden
 managed execution threads and inside host callbacks; polling/zero-time observation
 and cancellation remain available. See the complete bounded producer and independent
 event-consumer example in [deferred_admission.c](examples/deferred_admission.c).
-Host reactor readiness notifications are separate future work (TODO42).
+Optional [host event-loop readiness](#host-event-loop-readiness-optional) observes
+admission, completions, and events through one shared OS wake resource.
+
+## Host event-loop readiness (optional)
+
+Build with `cargo build --manifest-path native-wrappers/Cargo.toml -p
+rumqttc-c-next --features readiness`. Standard profiles leave readiness disabled.
+The C symbols remain exported in disabled builds and return `CONFIG_ERROR`;
+`RUMQTTC_CAP_READINESS` and `rumqttc_notification_capabilities()` distinguish
+callable support from the POSIX-descriptor/Windows-handle adapters. Core-only
+Cargo feature unification does not enable the C capability.
+
+One explicitly owned notification context can serve an entire host loop across
+many clients and operations. Creation reserves a finite slot table: default
+1,024 entries, configurable with `RUMQTTC_NOTIFICATION_OPTIONS_INIT`. Each source
+allows at most 16 subscriptions across all contexts. Exhaustion returns
+`BACKPRESSURE` without retaining an observer or leaking the other reservation.
+Ready storage is the registration table itself, so there is no overflowing
+notification queue or per-source OS resource. Count limits bound registration
+overhead; retained operation results follow their original source ownership and
+packet/operation limits. Their variable-size data is separate from pending-command
+byte accounting. Deregister completed sources promptly when their results are no
+longer needed. Producers signal without acquiring
+host administration locks; no notification thread, runtime, or supervisor exists.
+
+Register events, MQTT completions, and pending-admission handles with a copied
+64-bit application tag. Tags are copied integers; the host owns any application
+state they reference and coordinates client destruction with source inspection.
+A context owns its registrations until deregistration,
+close, or final release. Keys are context-local slot/generation pairs; reusing a
+slot never makes an old key valid again. Registrations after an immutable result
+is ready report it immediately. Connection-observer integration is deferred to
+TODO46; readiness does not add that C observer.
+
+Use one logical drainer for the complete sequence:
+
+1. `rumqttc_notification_collect` enumerates hints into a caller-owned array.
+   Pass its element size as the stride; larger aligned strides allow future
+   record extensions. Only the returned count of entries is valid. `WOULD_BLOCK`
+   means no sources are ready. Enumeration neither acknowledges nor consumes.
+2. Inspect each authoritative source with existing event, pending-admission,
+   and completion APIs. Tags identify application owners; a hint is never a
+   delivery result. A successful pending admission supplies a separately owned
+   completion, which must be registered separately if it is to wake the host.
+3. Acknowledge each inspected key/revision, or deregister the source. Older
+   acknowledgements never clear newer publications. Event readiness remains
+   discoverable while events or separate terminal status are unread, including
+   partial drains. An acknowledged immutable result stops waking that registration
+   and remains independently readable. A new registration still discovers it.
+4. Call `rumqttc_notification_prepare_wait`. It drains/resets the OS signal and
+   rechecks durable readiness. A nonzero `service_again_out` means repeat the
+   sequence immediately, including when bounded OS draining needs another pass.
+   Only sleep on the exported resource after a zero result. Duplicate, coalesced,
+   and occasional stale hints are harmless.
+
+Collection rotates through slots so a small output array does not starve later
+ready sources. Concurrent administration/drainer calls can return `INVALID_STATE`
+without changing state and may be retried. Hosts must serialize the entire
+logical drainer sequence; passive OS waiters can overlap, without a per-waiter
+notification or fairness guarantee. Client event receiving retains its existing
+single-consumer rule. Registration/rearm do not acquire its receive mutex.
+
+POSIX contexts own a nonblocking Unix socket pair and export its readable end
+for **level-triggered** `poll`/`select`/reactor waits. Windows contexts own an
+unnamed, non-inheritable manual-reset event suitable for Windows wait functions;
+it is not a Winsock socket or an IOCP completion source. Borrowed resources remain
+valid until final context release. Explicit duplicate APIs transfer ownership to
+the host (`close` on POSIX, `CloseHandle` on Windows); Windows duplicates have
+synchronization-only access. Every exported resource is wait-only: do not read,
+write, reset, shut down, or change descriptor flags. Only `prepare_wait` drains or
+resets. Edge-triggered POSIX integration is outside the initial contract.
+
+OS saturation preserves durable readiness and never fails MQTT. Other signaling
+errors latch in `rumqttc_notification_context_status.signal_error`: an OS error,
+-1 for exhausted counters, or -2 for an unclassified I/O error. Drain/preparation
+then returns `INTERNAL_ERROR`; authoritative source APIs remain usable. POSIX
+signaling failure shuts down the signal writer to wake waiters through EOF;
+Windows attempts an event wake. Check context status after OS wait errors and
+stop relying on a failed adapter. An invalid/externally closed OS handle cannot
+provide a reliable wakeup. MQTT admission and execution remain unaffected.
+
+Completion and pending registrations retain observation ownership without keeping
+clients/runtimes alive. They retain underlying observations, not the original C
+handle allocation: keep a valid completion/pending handle for later polling. A
+registration alone returns hints and does not reconstruct a released C handle. A pending registration counts as one external observer:
+releasing the original pending handle leaves it registered, and deregistering its
+last external owner requests cancellation while waiting under the existing race
+arbitration. Neither acknowledgement nor OS draining requests cancellation.
+Releasing completion registrations never cancels admitted MQTT work.
+
+Destroying a C client invalidates its event source and wakes registrations with
+`RUMQTTC_NOTIFICATION_INVALIDATED`. Acknowledge or deregister that hint; it grants
+no right to use the destroyed client or consume its former event queue. Other
+retained operation results remain readable independently of client lifetime.
+
+`rumqttc_notification_context_request_close` rejects new registrations, detaches
+sources, releases their observers, and wakes host waiters. `try_join` returns
+`WOULD_BLOCK` until close and in-flight source signaling are quiescent. It is
+nonblocking, creates no teardown worker, and does not close exported resources.
+Remove resources from host wait sets and stop their users before releasing their
+ownership. Final context release requests cleanup; in-flight signal leases keep
+resources valid until they finish. Successful client or notification join alone
+does not authorize unloading while other execution, notification, duplicate OS
+resource, callback, or host owners remain live.
+
+A stalled host can still fill the existing event queue and terminate the affected
+client. Readiness neither consumes events nor provides MQTT scheduling. Shared
+execution peers continue independently. See the complete
+[host-loop example](examples/readiness.c) and
+[measurement contract and evidence](../wrapper-core/benches/readiness.md).
 
 ## Optional protocol observations
 

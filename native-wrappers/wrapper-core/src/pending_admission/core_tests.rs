@@ -207,3 +207,25 @@ fn pending_observer_deadlines_make_no_delivery_claim_and_callback_waits_are_reje
     });
     drop(Registry::runner(handle.shared.clone()));
 }
+
+#[cfg(feature = "readiness")]
+#[test]
+fn final_readiness_deregistration_racing_native_admission_preserves_single_use_ack_authority() {
+    let (handle, requests) = client();
+    let token = ack_token(&handle, 1);
+    let pending = pending(&handle, token);
+    let context = crate::readiness::NotificationContext::new(1).unwrap();
+    let key = context.register_pending_admission(&pending, 0).unwrap();
+    let (entered, arrived) = flume::bounded(1);
+    let (release, proceed) = flume::bounded(1);
+    pending.after_attempt(entered, proceed);
+    drop(pending);
+    let worker = owner(&handle);
+    arrived.recv_timeout(DEADLINE).unwrap();
+    assert!(requests.try_recv().is_ok());
+    context.deregister(key).unwrap();
+    release.send(()).unwrap();
+    stop(&handle, worker);
+    assert!(handle.try_admit(Command::Acknowledge(token)).is_err());
+    assert!(requests.try_recv().is_err());
+}

@@ -10,7 +10,11 @@ case "${check}" in
     *) echo "unknown C check: ${check}" >&2; exit 2 ;;
 esac
 
-cargo build --manifest-path "${crate_dir}/Cargo.toml"
+cargo_features=()
+if [[ -n "${RUMQTTC_C_FEATURES:-}" ]]; then
+    cargo_features=(--features "${RUMQTTC_C_FEATURES}")
+fi
+cargo build --manifest-path "${crate_dir}/Cargo.toml" "${cargo_features[@]}"
 
 if [[ "${check}" == all || "${check}" == package ]]; then
 pkgconfig_build_dir="${target_dir}/pkgconfig-check"

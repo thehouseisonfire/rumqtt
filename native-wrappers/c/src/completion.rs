@@ -9,6 +9,11 @@ pub struct CompletionObject {
 }
 
 impl CompletionObject {
+    #[cfg(feature = "readiness")]
+    pub(crate) const fn notification_handle(&self) -> &CompletionHandle {
+        &self.handle
+    }
+
     pub fn outcome(&self) -> Option<Arc<TerminalOutcome>> {
         self.handle.try_outcome()
     }

@@ -213,6 +213,27 @@ jobs:
           ctest --test-dir target/rumqttc-c-native -C Debug -R '(native-logging|example-logging)' --output-on-failure
           cargo build --locked -p rumqttc-c-next
 
+      - name: Readiness core and C consumers
+        run: |
+          cargo test --locked -p rumqttc-wrapper-core-next -p rumqttc-c-next --no-default-features --features readiness
+          cargo test --locked -p rumqttc-wrapper-core-next -p rumqttc-c-next --features readiness,ordered-shutdown,tracing-log-compat
+          cargo build --locked -p rumqttc-c-next --features readiness
+          cmake --build target/rumqttc-c-native --config Debug --target rumqttc-native-readiness rumqttc-example-readiness
+          ctest --test-dir target/rumqttc-c-native -C Debug -R '(native-readiness|example-readiness)' --output-on-failure
+
+      - name: Readiness ABI (POSIX)
+        if: ${{ runner.os != 'Windows' }}
+        env:
+          RUMQTTC_C_FEATURES: readiness
+        run: c/tests/abi/check.sh all
+
+      - name: Readiness ABI (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        env:
+          RUMQTTC_C_FEATURES: readiness
+        run: c/tests/abi/check.ps1 all
+
       - name: C ordered shutdown consumers
         run: |
           cargo build --locked -p rumqttc-c-next --features ordered-shutdown

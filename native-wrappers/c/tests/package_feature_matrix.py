@@ -13,6 +13,9 @@ from pathlib import Path
 
 PROFILES = {
     "minimal": (),
+    "readiness-minimal": ("readiness",),
+    "readiness-core-only": ("rumqttc-wrapper-core-next/readiness",),
+    "readiness-composed": ("use-rustls-ring", "websocket", "readiness", "ordered-shutdown", "tracing"),
     "ordered-minimal": ("ordered-shutdown",),
     "ordered-core-only": ("rumqttc-wrapper-core-next/ordered-shutdown",),
     "ordered-rustls": ("use-rustls-ring", "websocket", "ordered-shutdown"),
@@ -103,6 +106,7 @@ def main() -> None:
             "HTTP_PROXY": "proxy" in features,
             "SOCKS5_PROXY": "proxy" in features,
             "ORDERED_SHUTDOWN": "ordered-shutdown" in features,
+            "READINESS": "readiness" in features,
         }
         run(
             [
@@ -160,7 +164,8 @@ def main() -> None:
                     "results.xml",
                     "-R",
                     "rumqttc-native-(proxy|redirect|srv|wire|runtime|tls|network|websocket|unix|socket|custom-transport|auth|"
-                    "event-properties|will-process|ordered-shutdown|reconnect|session-recovery)|rumqttc-example-(reconnect|session_recovery)",
+                    "event-properties|will-process|ordered-shutdown|reconnect|session-recovery|readiness|deferred-admission)|"
+                    "rumqttc-example-(reconnect|session_recovery|readiness)",
                 ],
                 workspace,
                 environment,

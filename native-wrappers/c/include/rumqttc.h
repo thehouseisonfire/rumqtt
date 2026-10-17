@@ -2676,6 +2676,162 @@ RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_cancel(const rumqttc_pend
 RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_poll(const rumqttc_pending_admission_t *handle, uint32_t *state_out, uint64_t *operation_id_out, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_wait_timeout_ms(const rumqttc_pending_admission_t *handle, uint64_t timeout_ms, uint32_t *state_out, uint64_t *operation_id_out, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 
+
+/* Optional readiness (Cargo feature: readiness). All functions remain exported when disabled.
+ * One context serves many clients/operations using bounded storage and constant OS resources.
+ * One logical drainer collects hints, observes existing source APIs, acknowledges the returned
+ * revisions, then calls prepare_wait. Only sleep when service_again_out is zero. Collection and
+ * OS draining never consume source events/results. Partial event drains remain ready; immutable
+ * results stop waking after acknowledgement, while independently remaining repeatably readable.
+ * Keys belong to their context; generations reject stale keys after slot reuse.
+ *
+ * Registering pending admission retains an external observer. Final deregistration/release
+ * requests cancellation only while waiting, under the existing admission arbitration contract.
+ * Acknowledgement does not cancel. Register the returned MQTT completion separately.
+ * Event-source invalidation wakes observers when the client consumer is destroyed; it does not
+ * authorize accessing a destroyed client. Retained registrations never keep MQTT execution alive.
+ *
+ * Borrowed resources are wait-only and valid until final context release. Duplicates are owned
+ * by the caller (close/CloseHandle). Do not read/write/reset/shutdown resources or change flags.
+ * POSIX uses level-triggered readability; Windows uses a manual-reset event HANDLE, not a socket.
+ * A Windows duplicate has synchronization-only access. Remove every resource from host wait
+ * sets before releasing its ownership. Passive waiters may receive coalesced hints; serialize
+ * the full collection/observation/acknowledgement/prepare_wait sequence on one logical drainer.
+ * Concurrent administration may return INVALID_STATE and can be retried by the host.
+ *
+ * request_close detaches sources and wakes waiters. try_join reports WOULD_BLOCK until close
+ * and in-flight source signaling are quiescent. Resources stay valid after join until release.
+ * Joining MQTT alone does not authorize unloading while notification/host owners remain live.
+ * Signal errors are context-local and never fail MQTT; inspect status after OS wait/drain errors.
+ */
+#define RUMQTTC_CAP_READINESS (UINT64_C(1) << 20)
+#define RUMQTTC_NOTIFICATION_POSIX_FD 1u
+#define RUMQTTC_NOTIFICATION_WINDOWS_HANDLE 2u
+#define RUMQTTC_NOTIFICATION_EVENTS 1u
+#define RUMQTTC_NOTIFICATION_COMPLETION 2u
+#define RUMQTTC_NOTIFICATION_PENDING_ADMISSION 3u
+#define RUMQTTC_NOTIFICATION_INVALIDATED 1u
+#define RUMQTTC_NOTIFICATION_OPEN 0u
+#define RUMQTTC_NOTIFICATION_CLOSING 1u
+#define RUMQTTC_NOTIFICATION_QUIESCENT 2u
+#define RUMQTTC_NOTIFICATION_MAX_SOURCE_SUBSCRIBERS 16u
+
+typedef struct rumqttc_notification_context_t rumqttc_notification_context_t;
+typedef struct rumqttc_notification_options_t {
+  uint32_t struct_size;
+  uint32_t reserved;
+  size_t capacity;
+} rumqttc_notification_options_t;
+
+typedef struct rumqttc_notification_key_t {
+  uint64_t slot;
+  uint64_t generation;
+} rumqttc_notification_key_t;
+
+typedef struct rumqttc_notification_ready_t {
+  uint32_t struct_size;
+  uint32_t source_kind;
+  struct rumqttc_notification_key_t key;
+  uint64_t tag;
+  uint64_t revision;
+  uint32_t flags;
+  uint32_t reserved;
+} rumqttc_notification_ready_t;
+
+typedef struct rumqttc_notification_status_t {
+  uint32_t struct_size;
+  uint32_t state;
+  int32_t signal_error;
+  uint32_t reserved;
+  size_t registrations;
+  size_t capacity;
+} rumqttc_notification_status_t;
+
+#define RUMQTTC_NOTIFICATION_OPTIONS_INIT { sizeof(rumqttc_notification_options_t), 0u, 1024u }
+#define RUMQTTC_NOTIFICATION_STATUS_INIT { sizeof(rumqttc_notification_status_t), 0u, 0, 0u, 0u, 0u }
+
+/* collect: entries have entry_size stride (at least sizeof(rumqttc_notification_ready_t),
+ * a multiple of its alignment). Only count_out entries are initialized/valid. count_out=0
+ * on failure; WOULD_BLOCK means no sources are ready. Collection does not acknowledge them.
+ * status: initialize struct_size before calling; undersized records are rejected without writes.
+ * signal_error: zero when healthy, OS error otherwise; -1=counter exhaustion, -2=unclassified I/O.
+ * All error_out parameters are optional; callers own any returned error. */
+RUMQTTC_API uint32_t rumqttc_notification_capabilities(void);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_context_new(const struct rumqttc_notification_options_t *options,
+                                          struct rumqttc_notification_context_t **out,
+                                          struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_context_retain(const struct rumqttc_notification_context_t *context,
+                                             struct rumqttc_notification_context_t **out,
+                                             struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_notification_context_release(struct rumqttc_notification_context_t *context);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_register_events(const struct rumqttc_notification_context_t *context,
+                                              const struct rumqttc_client_t *source,
+                                              uint64_t tag,
+                                              struct rumqttc_notification_key_t *out,
+                                              struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_register_completion(const struct rumqttc_notification_context_t *context,
+                                                  const struct rumqttc_completion_t *source,
+                                                  uint64_t tag,
+                                                  struct rumqttc_notification_key_t *out,
+                                                  struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_register_pending_admission(const struct rumqttc_notification_context_t *context,
+                                                         const struct rumqttc_pending_admission_t *source,
+                                                         uint64_t tag,
+                                                         struct rumqttc_notification_key_t *out,
+                                                         struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_collect(const struct rumqttc_notification_context_t *context,
+                                      struct rumqttc_notification_ready_t *entries,
+                                      size_t entry_size,
+                                      size_t capacity,
+                                      size_t *count_out,
+                                      struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_acknowledge(const struct rumqttc_notification_context_t *context,
+                                          struct rumqttc_notification_key_t registration,
+                                          uint64_t revision,
+                                          struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_deregister(const struct rumqttc_notification_context_t *context,
+                                         struct rumqttc_notification_key_t registration,
+                                         struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_prepare_wait(const struct rumqttc_notification_context_t *context,
+                                           uint32_t *service_again_out,
+                                           struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_context_status(const struct rumqttc_notification_context_t *context,
+                                             struct rumqttc_notification_status_t *out,
+                                             struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_context_request_close(const struct rumqttc_notification_context_t *context,
+                                                    struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_context_try_join(const struct rumqttc_notification_context_t *context,
+                                               struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_borrowed_posix_fd(const struct rumqttc_notification_context_t *context,
+                                                int32_t *out,
+                                                struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_duplicate_posix_fd(const struct rumqttc_notification_context_t *context,
+                                                 int32_t *out,
+                                                 struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_borrowed_windows_handle(const struct rumqttc_notification_context_t *context,
+                                                      void **out,
+                                                      struct rumqttc_error_t **error_out);
+
+RUMQTTC_API rumqttc_status_t rumqttc_notification_duplicate_windows_handle(const struct rumqttc_notification_context_t *context,
+                                                       void **out,
+                                                       struct rumqttc_error_t **error_out);
+
 #ifdef __cplusplus
 }
 #endif
