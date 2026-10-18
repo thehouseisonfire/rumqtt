@@ -2,6 +2,14 @@
 
 ### Changed
 
+- Wrapper-core/C: Preserve bounded structured native connection-failure evidence,
+  including portable I/O kinds, target-specific OS codes, protocol packet context,
+  size/count measurements and typed TLS/proxy/WebSocket causes. Add a size-versioned
+  C error accessor and retain safe details through terminal operations and sanitized
+  reconnect/exhaustion observations without retaining source owners. Freeze original
+  connection provenance and preserve retry, delivery and broker-result behavior.
+  See [native failure mappings](native-wrappers/native-failures.md).
+
 - Wrapper-core/C: Add default-disabled native protocol observations for incoming
   control packets, exact outgoing packet kinds, and separately selected raw AUTH.
   Retain decoded reasons/properties in event-owned immutable storage, preserve

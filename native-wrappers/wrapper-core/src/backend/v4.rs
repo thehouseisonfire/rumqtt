@@ -17,6 +17,10 @@ pub fn map_client_error(error: &rumqttc_v4::ClientError) -> Error {
 }
 
 pub fn map_connection_error(error: &rumqttc_v4::ConnectionError) -> Error {
+    map_connection_error_legacy(error).with_native_failure(super::native_failure::v4(error))
+}
+
+fn map_connection_error_legacy(error: &rumqttc_v4::ConnectionError) -> Error {
     #[cfg(feature = "ordered-shutdown")]
     if let rumqttc_v4::ConnectionError::OrderedDisconnect(reason) = error {
         return map_ordered_error(reason.clone());
@@ -610,7 +614,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                             | rumqttc_v4::ConnectionError::SessionStateMismatch { .. }
                     )
                 {
-                    return TerminalStatus::Failed(map_connection_error(&error));
+                    return TerminalStatus::Failed(shared.contextualize(
+                        configuration.connection_error(map_connection_error(&error)),
+                    ));
                 }
                 #[cfg(feature = "ordered-shutdown")]
                 if matches!(&error, rumqttc_v4::ConnectionError::OrderedDisconnect(_)) {
@@ -624,13 +630,15 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 let eligible = super::reconnect::v4(&error);
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v4::ConnectionError::DisconnectTimeout);
-                let mut error = shared.contextualize(
-                    configuration.connection_error(
-                        websocket
-                            .failure()
-                            .map_or_else(|| map_connection_error(&error), Error::websocket),
+                let mut error = shared.contextualize(configuration.connection_error(
+                    websocket.failure().map_or_else(
+                        || map_connection_error(&error),
+                        |failure| {
+                            Error::websocket(failure)
+                                .with_native_failure(super::native_failure::v4(&error))
+                        },
                     ),
-                );
+                ));
                 if classified {
                     let retryable = super::reconnect::mapped(&error, eligible);
                     error = error.with_retryable(retryable);

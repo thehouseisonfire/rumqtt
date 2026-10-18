@@ -191,6 +191,10 @@ pub fn map_client_error(error: &rumqttc_v5::ClientError) -> Error {
 }
 
 pub fn map_connection_error(error: &rumqttc_v5::ConnectionError) -> Error {
+    map_connection_error_legacy(error).with_native_failure(super::native_failure::v5(error))
+}
+
+fn map_connection_error_legacy(error: &rumqttc_v5::ConnectionError) -> Error {
     #[cfg(feature = "ordered-shutdown")]
     if let rumqttc_v5::ConnectionError::OrderedDisconnect(reason) = error {
         return map_ordered_error(reason.clone());
@@ -246,7 +250,7 @@ pub fn map_connection_error(error: &rumqttc_v5::ConnectionError) -> Error {
         | rumqttc_v5::RedirectFailure::SrvTargetsExhausted {
             last_error: source, ..
         } = &redirect.failure
-            && let Some(failure) = map_connection_error(source).store_failure()
+            && let Some(failure) = map_connection_error_legacy(source).store_failure()
         {
             terminal = terminal.with_store_failure(failure);
         }
@@ -1157,7 +1161,9 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                             | rumqttc_v5::ConnectionError::SessionStateMismatch { .. }
                     )
                 {
-                    return TerminalStatus::Failed(map_connection_error(&error));
+                    return TerminalStatus::Failed(shared.contextualize(
+                        configuration.connection_error(map_connection_error(&error)),
+                    ));
                 }
                 #[cfg(feature = "ordered-shutdown")]
                 if matches!(&error, rumqttc_v5::ConnectionError::OrderedDisconnect(_)) {
@@ -1202,13 +1208,15 @@ pub async fn run(driver: Box<Driver>, context: DriverContext) -> TerminalStatus 
                 let eligible = super::reconnect::v5(&error);
                 let graceful_disconnect_timed_out =
                     matches!(&error, rumqttc_v5::ConnectionError::DisconnectTimeout);
-                let mut error = shared.contextualize(
-                    configuration.connection_error(
-                        websocket
-                            .failure()
-                            .map_or_else(|| map_connection_error(&error), Error::websocket),
+                let mut error = shared.contextualize(configuration.connection_error(
+                    websocket.failure().map_or_else(
+                        || map_connection_error(&error),
+                        |failure| {
+                            Error::websocket(failure)
+                                .with_native_failure(super::native_failure::v5(&error))
+                        },
                     ),
-                );
+                ));
                 if classified {
                     let retryable = super::reconnect::mapped(&error, eligible);
                     error = error.with_retryable(retryable);

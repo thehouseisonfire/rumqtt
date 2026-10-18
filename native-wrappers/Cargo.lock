@@ -1729,6 +1729,7 @@ name = "rumqttc-wrapper-core-next"
 version = "0.34.0-alpha"
 dependencies = [
  "arc-swap",
+ "async-http-proxy",
  "async-tungstenite",
  "bytes",
  "cc",

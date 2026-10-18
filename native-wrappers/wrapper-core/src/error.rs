@@ -2,6 +2,9 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
 
+const HAS_CONFIGURATION_REVISION: u8 = 1;
+const ORIGIN_CAPTURED: u8 = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
     Configuration,
@@ -132,7 +135,7 @@ pub struct Error {
     // Keep the presence flag separate so it packs with the other small fields.
     // An inline Option<u64> pushes the combined error over the large-Err threshold.
     configuration_revision: u64,
-    has_configuration_revision: bool,
+    provenance_flags: u8,
     publish_failure: Option<crate::PublishFailure>,
     store_failure: Option<crate::StoreFailure>,
     auth_failure: Option<crate::AuthFailure>,
@@ -142,22 +145,62 @@ pub struct Error {
     tls_callback_failure: Option<crate::TlsCallbackFailure>,
     ordered_failure: Option<crate::OrderedDisconnectFailure>,
     recovery_failure: Option<crate::RecoveryFailure>,
-    exhaustion: Option<Arc<crate::ReconnectExhaustion>>,
+    details: Option<Arc<ErrorDetails>>,
     context: ErrorContext,
     #[source]
     source: Option<Arc<dyn StdError + Send + Sync>>,
 }
 
+// Reuse the former exhaustion pointer so ordinary error/results do not grow.
+#[derive(Clone, Default)]
+struct ErrorDetails {
+    native: Option<crate::NativeFailureDetails>,
+    exhaustion: Option<crate::ReconnectExhaustion>,
+}
+
 impl Error {
+    #[must_use]
+    pub fn native_failure(&self) -> Option<&crate::NativeFailureDetails> {
+        self.details.as_ref()?.native.as_ref()
+    }
+
+    pub(crate) fn with_native_failure(
+        mut self,
+        native: Option<crate::NativeFailureDetails>,
+    ) -> Self {
+        if let Some(native) = native {
+            Arc::make_mut(self.details.get_or_insert_with(Default::default)).native = Some(native);
+        }
+        self
+    }
+
+    /// Freeze connection provenance, including intentional absence, at its source.
+    pub(crate) const fn capture_origin(mut self) -> Self {
+        self.provenance_flags |= ORIGIN_CAPTURED;
+        self
+    }
+
+    const fn origin_captured(&self) -> bool {
+        self.provenance_flags & ORIGIN_CAPTURED != 0
+    }
+
     /// Diagnostic summaries retain typed context, never opaque source owners or text.
     pub(crate) fn diagnostic_copy(&self) -> Self {
         let mut value = self.clone();
         value.message = Arc::from(self.code.as_str());
         value.source = None;
-        value.exhaustion = None;
+        if value.reconnect_exhaustion().is_some() {
+            value.details = self.native_failure().copied().map(|native| {
+                Arc::new(ErrorDetails {
+                    native: Some(native),
+                    exhaustion: None,
+                })
+            });
+        }
         value
     }
-    pub(crate) fn reconnect_exhausted(details: crate::ReconnectExhaustion) -> Self {
+    pub(crate) fn reconnect_exhausted(mut details: crate::ReconnectExhaustion) -> Self {
+        details.last_failure = details.last_failure.as_ref().map(Self::diagnostic_copy);
         let context = details
             .last_failure
             .as_ref()
@@ -166,13 +209,22 @@ impl Error {
             .with_code(ErrorCode::ReconnectExhausted)
             .with_retryable(false)
             .with_context(context);
-        error.exhaustion = Some(Arc::new(details));
-        error
+        error = error.with_configuration_revision(
+            details
+                .last_failure
+                .as_ref()
+                .and_then(Self::configuration_revision),
+        );
+        error.details = Some(Arc::new(ErrorDetails {
+            exhaustion: Some(details),
+            ..Default::default()
+        }));
+        error.capture_origin()
     }
 
     #[must_use]
     pub fn reconnect_exhaustion(&self) -> Option<&crate::ReconnectExhaustion> {
-        self.exhaustion.as_deref()
+        self.details.as_ref()?.exhaustion.as_ref()
     }
 
     #[must_use]
@@ -186,7 +238,7 @@ impl Error {
             message: Arc::from(message.into()),
             broker_reason: None,
             configuration_revision: 0,
-            has_configuration_revision: false,
+            provenance_flags: 0,
             publish_failure: None,
             store_failure: None,
             auth_failure: None,
@@ -196,7 +248,7 @@ impl Error {
             tls_callback_failure: None,
             ordered_failure: None,
             recovery_failure: None,
-            exhaustion: None,
+            details: None,
             context: ErrorContext::default(),
             source: None,
         }
@@ -220,7 +272,7 @@ impl Error {
             message,
             broker_reason: None,
             configuration_revision: 0,
-            has_configuration_revision: false,
+            provenance_flags: 0,
             publish_failure: None,
             store_failure: None,
             auth_failure: None,
@@ -230,7 +282,7 @@ impl Error {
             tls_callback_failure: None,
             ordered_failure: None,
             recovery_failure: None,
-            exhaustion: None,
+            details: None,
             context: ErrorContext::default(),
             source: Some(Arc::new(error)),
         }
@@ -391,19 +443,24 @@ impl Error {
     /// Origin configuration selected by the connection associated with this failure.
     #[must_use]
     pub const fn configuration_revision(&self) -> Option<u64> {
-        if self.has_configuration_revision {
+        if self.provenance_flags & HAS_CONFIGURATION_REVISION != 0 {
             Some(self.configuration_revision)
         } else {
             None
         }
     }
 
-    pub(crate) const fn with_configuration_revision(mut self, revision: Option<u64>) -> Self {
-        self.has_configuration_revision = revision.is_some();
-        self.configuration_revision = match revision {
-            Some(revision) => revision,
-            None => 0,
-        };
+    pub(crate) fn with_configuration_revision(mut self, revision: Option<u64>) -> Self {
+        if self.origin_captured() {
+            return self;
+        }
+        self.provenance_flags = (self.provenance_flags & !HAS_CONFIGURATION_REVISION)
+            | if revision.is_some() {
+                HAS_CONFIGURATION_REVISION
+            } else {
+                0
+            };
+        self.configuration_revision = revision.unwrap_or_default();
         self
     }
 
@@ -469,6 +526,7 @@ impl fmt::Debug for Error {
             .field("tls_callback_failure", &self.tls_callback_failure)
             .field("ordered_failure", &self.ordered_failure)
             .field("context", &self.context)
+            .field("native_failure", &self.native_failure())
             .finish_non_exhaustive()
     }
 }
@@ -481,9 +539,11 @@ impl Error {
         self.context
     }
     pub(crate) fn with_context(mut self, context: ErrorContext) -> Self {
-        self.context.protocol = self.context.protocol.or(context.protocol);
-        self.context.phase = self.context.phase.or(context.phase);
-        self.context.generation = self.context.generation.or(context.generation);
+        if !self.origin_captured() {
+            self.context.protocol = self.context.protocol.or(context.protocol);
+            self.context.phase = self.context.phase.or(context.phase);
+            self.context.generation = self.context.generation.or(context.generation);
+        }
         self.context.operation_id = self.context.operation_id.or(context.operation_id);
         self
     }
@@ -501,6 +561,15 @@ mod tests {
     use std::io;
 
     use super::{DeliveryStatus, Error, ErrorKind};
+
+    #[test]
+    fn absent_native_details_and_origin_capture_allocate_no_detail_record() {
+        let error = Error::new(ErrorKind::Network, "plain")
+            .with_native_failure(None)
+            .capture_origin();
+        assert!(error.details.is_none());
+        assert!(error.diagnostic_copy().details.is_none());
+    }
 
     #[test]
     fn diagnostic_copy_drops_opaque_source_owners_and_free_form_text() {

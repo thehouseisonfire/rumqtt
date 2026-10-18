@@ -4,6 +4,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static void report_native_cause(const rumqttc_error_t *error) {
+  rumqttc_native_failure_details_t details = RUMQTTC_NATIVE_FAILURE_DETAILS_INIT;
+  if (error == NULL || rumqttc_error_native_failure_details(error, &details) != RUMQTTC_OK || !details.present)
+    return;
+  fprintf(stderr, "native failure domain=%" PRIu32 " code=%" PRIu32, details.domain, details.code);
+  if (details.fields & RUMQTTC_NATIVE_FIELD_IO_KIND)
+    fprintf(stderr, " io_kind=%" PRIu32, details.io_kind);
+  if (details.fields & RUMQTTC_NATIVE_FIELD_OS_ERROR)
+    fprintf(stderr, " os_domain=%" PRIu32 " os_code=%" PRId32, details.os_domain, details.os_error);
+  fputc('\n', stderr);
+}
+
 int main(int argc, char **argv) {
   rumqttc_config_t *config = NULL;
   rumqttc_client_t *client = NULL;
@@ -58,6 +70,14 @@ int main(int argc, char **argv) {
       }
       fprintf(stderr, "client stopped%s after %" PRIu64 " cycles; unfinished delivery may be ambiguous\n",
               exhausted ? " by retry exhaustion" : " by terminal failure", cycles);
+      if (exhausted) {
+        rumqttc_error_t *last = NULL;
+        if (rumqttc_error_reconnect_last_error(failure, &last, NULL) == RUMQTTC_OK)
+          report_native_cause(last);
+        rumqttc_error_destroy(last);
+      } else {
+        report_native_cause(failure);
+      }
       rumqttc_error_destroy(failure);
       rumqttc_event_destroy(event);
       goto cleanup;

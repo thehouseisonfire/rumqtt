@@ -585,7 +585,7 @@ impl Shared {
     }
 
     pub(crate) fn contextualize(&self, error: Error) -> Error {
-        error.with_context(self.error_context())
+        error.with_context(self.error_context()).capture_origin()
     }
 
     fn shutdown_admission(&self) -> Result<Admission> {

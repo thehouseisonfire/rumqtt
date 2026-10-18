@@ -12,6 +12,7 @@ include = [
     "rumqttc_notification_context", "rumqttc_notification_options_t", "rumqttc_notification_key_t",
     "rumqttc_notification_ready_t", "rumqttc_notification_status_t",
     "rumqttc_first_connection",
+    "rumqttc_native_failure_details_t",
     "rumqttc_pending_admission", "rumqttc_pending_admission_limits_t",
     "rumqttc_logging_context",
     "rumqttc_logging_registration",

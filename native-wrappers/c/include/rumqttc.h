@@ -2879,6 +2879,133 @@ RUMQTTC_API rumqttc_status_t rumqttc_notification_duplicate_windows_handle(const
                                                        void **out,
                                                        struct rumqttc_error_t **error_out);
 
+/* Structured native failure evidence. Codes are wrapper-owned and do not affect retry policy. */
+#define RUMQTTC_NATIVE_DOMAIN_UNKNOWN 0u
+#define RUMQTTC_NATIVE_DOMAIN_CONNECTION 1u
+#define RUMQTTC_NATIVE_DOMAIN_IO 2u
+#define RUMQTTC_NATIVE_DOMAIN_PROTOCOL 3u
+#define RUMQTTC_NATIVE_DOMAIN_TLS 4u
+#define RUMQTTC_NATIVE_DOMAIN_PROXY 5u
+#define RUMQTTC_NATIVE_DOMAIN_WEB_SOCKET 6u
+#define RUMQTTC_NATIVE_FAILURE_UNKNOWN 0u
+#define RUMQTTC_NATIVE_FAILURE_IO 1u
+#define RUMQTTC_NATIVE_FAILURE_CONNECTION_TIMEOUT 2u
+#define RUMQTTC_NATIVE_FAILURE_FLUSH_TIMEOUT 3u
+#define RUMQTTC_NATIVE_FAILURE_DISCONNECT_TIMEOUT 4u
+#define RUMQTTC_NATIVE_FAILURE_PEER_CLOSED 5u
+#define RUMQTTC_NATIVE_FAILURE_PING_RESPONSE_TIMEOUT 6u
+#define RUMQTTC_NATIVE_FAILURE_COLLISION_TIMEOUT 7u
+#define RUMQTTC_NATIVE_FAILURE_UNSOLICITED_ACK 8u
+#define RUMQTTC_NATIVE_FAILURE_MALFORMED_PACKET 9u
+#define RUMQTTC_NATIVE_FAILURE_UNEXPECTED_PACKET 10u
+#define RUMQTTC_NATIVE_FAILURE_DUPLICATE_CONN_ACK 11u
+#define RUMQTTC_NATIVE_FAILURE_ACK_COUNT_MISMATCH 12u
+#define RUMQTTC_NATIVE_FAILURE_SESSION_MISMATCH 13u
+#define RUMQTTC_NATIVE_FAILURE_INCOMING_TOO_LARGE 14u
+#define RUMQTTC_NATIVE_FAILURE_OUTGOING_TOO_LARGE 15u
+#define RUMQTTC_NATIVE_FAILURE_INVALID_STATE 16u
+#define RUMQTTC_NATIVE_FAILURE_INVALID_REQUEST 17u
+#define RUMQTTC_NATIVE_FAILURE_WINDOW_FULL 18u
+#define RUMQTTC_NATIVE_FAILURE_CAPABILITY_UNSUPPORTED 19u
+#define RUMQTTC_NATIVE_FAILURE_ALIAS_OUT_OF_RANGE 20u
+#define RUMQTTC_NATIVE_FAILURE_BROKER_REFUSED 21u
+#define RUMQTTC_NATIVE_FAILURE_BROKER_DISCONNECT 22u
+#define RUMQTTC_NATIVE_FAILURE_AUTHENTICATION 23u
+#define RUMQTTC_NATIVE_FAILURE_CONFIGURATION 24u
+#define RUMQTTC_NATIVE_FAILURE_CERTIFICATE 25u
+#define RUMQTTC_NATIVE_FAILURE_TLS_PROTOCOL 26u
+#define RUMQTTC_NATIVE_FAILURE_PROXY_AUTHENTICATION 27u
+#define RUMQTTC_NATIVE_FAILURE_PROXY_POLICY 28u
+#define RUMQTTC_NATIVE_FAILURE_PROXY_UNAVAILABLE 29u
+#define RUMQTTC_NATIVE_FAILURE_WEB_SOCKET_HTTP 30u
+#define RUMQTTC_NATIVE_FAILURE_WEB_SOCKET_PROTOCOL 31u
+#define RUMQTTC_NATIVE_FAILURE_CALLBACK 32u
+#define RUMQTTC_NATIVE_FAILURE_SHUTDOWN 33u
+#define RUMQTTC_NATIVE_FAILURE_RECOVERY 34u
+#define RUMQTTC_NATIVE_FAILURE_REDIRECT 35u
+#define RUMQTTC_NATIVE_IO_UNKNOWN 0u
+#define RUMQTTC_NATIVE_IO_NOT_FOUND 1u
+#define RUMQTTC_NATIVE_IO_PERMISSION_DENIED 2u
+#define RUMQTTC_NATIVE_IO_CONNECTION_REFUSED 3u
+#define RUMQTTC_NATIVE_IO_CONNECTION_RESET 4u
+#define RUMQTTC_NATIVE_IO_HOST_UNREACHABLE 5u
+#define RUMQTTC_NATIVE_IO_NETWORK_UNREACHABLE 6u
+#define RUMQTTC_NATIVE_IO_CONNECTION_ABORTED 7u
+#define RUMQTTC_NATIVE_IO_NOT_CONNECTED 8u
+#define RUMQTTC_NATIVE_IO_ADDR_IN_USE 9u
+#define RUMQTTC_NATIVE_IO_ADDR_NOT_AVAILABLE 10u
+#define RUMQTTC_NATIVE_IO_NETWORK_DOWN 11u
+#define RUMQTTC_NATIVE_IO_BROKEN_PIPE 12u
+#define RUMQTTC_NATIVE_IO_ALREADY_EXISTS 13u
+#define RUMQTTC_NATIVE_IO_WOULD_BLOCK 14u
+#define RUMQTTC_NATIVE_IO_INVALID_INPUT 15u
+#define RUMQTTC_NATIVE_IO_INVALID_DATA 16u
+#define RUMQTTC_NATIVE_IO_TIMED_OUT 17u
+#define RUMQTTC_NATIVE_IO_WRITE_ZERO 18u
+#define RUMQTTC_NATIVE_IO_INTERRUPTED 19u
+#define RUMQTTC_NATIVE_IO_UNSUPPORTED 20u
+#define RUMQTTC_NATIVE_IO_UNEXPECTED_EOF 21u
+#define RUMQTTC_NATIVE_IO_OUT_OF_MEMORY 22u
+#define RUMQTTC_NATIVE_IO_OTHER 23u
+#define RUMQTTC_NATIVE_OS_UNKNOWN 0u
+#define RUMQTTC_NATIVE_OS_LINUX 1u
+#define RUMQTTC_NATIVE_OS_DARWIN 2u
+#define RUMQTTC_NATIVE_OS_WINDOWS 3u
+#define RUMQTTC_NATIVE_OS_OTHER_UNIX 4u
+#define RUMQTTC_NATIVE_QUANTITY_PACKET_BYTES 1u
+#define RUMQTTC_NATIVE_QUANTITY_REMAINING_BYTES 2u
+#define RUMQTTC_NATIVE_QUANTITY_ITEMS 3u
+#define RUMQTTC_NATIVE_QUANTITY_QOS 4u
+#define RUMQTTC_NATIVE_QUANTITY_TOPIC_ALIAS 5u
+#define RUMQTTC_NATIVE_QUANTITY_ADDITIONAL_BYTES 6u
+#define RUMQTTC_NATIVE_FIELD_CAUSE 1u
+#define RUMQTTC_NATIVE_FIELD_IO_KIND 2u
+#define RUMQTTC_NATIVE_FIELD_OS_ERROR 4u
+#define RUMQTTC_NATIVE_FIELD_PACKET_KIND 8u
+#define RUMQTTC_NATIVE_FIELD_PACKET_ID 16u
+#define RUMQTTC_NATIVE_FIELD_HTTP_STATUS 32u
+#define RUMQTTC_NATIVE_FIELD_QUANTITY 64u
+#define RUMQTTC_NATIVE_FIELD_ACTUAL 128u
+#define RUMQTTC_NATIVE_FIELD_MAXIMUM 256u
+#define RUMQTTC_NATIVE_FIELD_EXPECTED 512u
+
+/* Initialize with RUMQTTC_NATIVE_FAILURE_DETAILS_INIT. fields selects independent
+ * optional values; a present zero is valid. Unknown domain/code/io_kind is zero.
+ * cause is the most specific recognized nested cause; outer domain/code remain
+ * intact. OS codes apply only to os_domain on the executing target. Packet kinds
+ * are MQTT numbers 1..15; an ACK ID need not imply a known ACK packet kind.
+ * quantity defines actual/maximum/expected units. No native source owners, strings,
+ * packet data or credentials are retained. See native-failures.md for mappings. */
+typedef struct rumqttc_native_failure_details_t {
+  uint32_t struct_size;
+  uint32_t present;
+  uint32_t domain;
+  uint32_t code;
+  uint32_t cause_domain;
+  uint32_t cause_code;
+  uint32_t fields;
+  uint32_t io_kind;
+  uint32_t os_domain;
+  int32_t os_error;
+  uint32_t packet_kind;
+  uint32_t packet_id;
+  uint32_t http_status;
+  uint32_t quantity;
+  uint64_t actual;
+  uint64_t maximum;
+  uint64_t expected;
+} rumqttc_native_failure_details_t;
+#define RUMQTTC_NATIVE_FAILURE_DETAILS_INIT {sizeof(rumqttc_native_failure_details_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+/* Required out; OK with present=0 when a valid error lacks native evidence.
+ * For valid-sized writable outputs, known fields are cleared before validating
+ * error. Preserve struct_size and extension bytes. NULL/undersized outputs return
+ * INVALID_ARGUMENT without writing beyond their declared size. Successful reads
+ * allocate no memory.
+ * Existing error lifetime rules apply; this copied scalar record owns no pointers.
+ * Exhaustion itself has no native detail; inspect error_reconnect_last_error. */
+RUMQTTC_API rumqttc_status_t rumqttc_error_native_failure_details(
+    const rumqttc_error_t *error, rumqttc_native_failure_details_t *out);
+
 #ifdef __cplusplus
 }
 #endif

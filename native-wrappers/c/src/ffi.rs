@@ -16,6 +16,10 @@ pub use configuration::*;
 mod diagnostics;
 pub use diagnostics::*;
 
+#[path = "native_failure.rs"]
+mod native_failure;
+pub use native_failure::*;
+
 #[path = "tls.rs"]
 mod tls;
 pub use tls::*;

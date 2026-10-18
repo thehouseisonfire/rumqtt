@@ -962,6 +962,30 @@ class Broker:
                     raise AssertionError("recovery changed its fresh/persistent CONNECT policy")
                 if protocol == 5 and b"\x11\x00\x00\x00\x3c" not in connect_properties:
                     raise AssertionError("recovery changed configured MQTT 5 session expiry")
+            if client_id.startswith(b"native-failure-"):
+                ack = frame(2, 0, b"\x00\x00\x00" if protocol == 5 else b"\x00\x00")
+                stream.sendall(ack)
+                # Wait for a tracked operation so both event and completion paths
+                # observe the same terminal native cause, without scheduling races.
+                request = read_frame(stream)
+                if request is None or request[0] != 8:
+                    raise AssertionError("failure fixture expected SUBSCRIBE")
+                scenario = client_id.split(b"-")[2]
+                if scenario == b"duplicate":
+                    stream.sendall(ack)
+                elif scenario == b"unsolicited":
+                    stream.sendall(frame(4, 0, b"\x42\x42"))
+                elif scenario == b"malformed":
+                    stream.sendall(b"\x00\x00")
+                elif scenario == b"oversized":
+                    stream.sendall(b"\x30\x80\x80\x01")
+                elif scenario == b"ping":
+                    # Keep the stream open while deliberately withholding PINGRESP.
+                    while read_frame(stream) is not None:
+                        pass
+                else:
+                    raise AssertionError("unknown native failure scenario")
+                return
             if client_id.startswith(b"native-reconnect-"):
                 if client_id.startswith(b"native-reconnect-auth-"):
                     stream.sendall(frame(2, 0, b"\x00\x87\x00" if protocol == 5 else b"\x00\x05"))

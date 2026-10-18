@@ -566,3 +566,34 @@ verify event-consumer independence, closing/failed acquisition, raw compatibilit
 retention and readiness; native first-connection, readiness, unload and C/C++ ABI
 consumers exercise the public boundary. Platform execution evidence is recorded in
 TODO46 separately from portable wiring.
+
+## Structured native connection failures (TODO45)
+
+Wrapper-core `Error::native_failure()` and C
+`rumqttc_error_native_failure_details()` preserve bounded typed scalar evidence
+without exposing source owners or free-form native error text. The size-versioned
+C record distinguishes absence, unknown classifications, independently present
+I/O/OS/packet fields, and actual/maximum/expected measurements. Existing dedicated
+failure accessors, retry decisions, delivery ambiguity and immutable terminal
+outcomes retain their contracts. Exhaustion and its original native cause remain
+separate observations. See the [complete mapping inventory](../native-failures.md).
+
+Typed unit evidence covers both native mappings, TLS/proxy/WebSocket causes,
+unknown/partial evidence, source traversal bounds, source-owner release, diagnostic
+sanitization/equality, origin preservation and error/result layout. The
+`native_failure` integration test retains first-connection evidence across a
+credential revision and successful reconnect. `native_failure_details` C fixtures
+exercise actual refused connections, duplicate CONNACK, unsolicited ACK, malformed
+packets, oversized input and missed PING across both MQTT versions, comparing
+event/completion/reconnect evidence after client destruction. C unit tests cover
+record presence, optional zero values, invalid output initialization, short buffers
+and extension canaries.
+
+Linux validation on 2026-10-17: wrapper workspace tests, combined rustls Ring/native
+TLS/proxy/WebSocket mapping tests, strict Clippy, C ABI/header/export/package checks,
+and the native C suite passed (84 executed, two feature-disabled examples skipped).
+All 19 wrapper feature configurations passed. Comparing the original and current
+definitions on Linux x86_64 confirmed unchanged `Error`/`TerminalOutcome` sizes of
+120/192 bytes. All 10 packaged C feature profiles passed with native consumers,
+including the new failure-details fixture. macOS/Windows execution
+remains with the existing CI matrix; no new execution claim is made for those targets.

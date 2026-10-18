@@ -14,6 +14,11 @@ pub use auth::{
 };
 pub use scram::ScramConfig;
 mod backend;
+mod native_failure;
+pub use native_failure::{
+    NativeFailureCode, NativeFailureDetails, NativeFailureDomain, NativeFailureQuantity,
+    NativeIoKind, NativeOsDomain,
+};
 mod command;
 mod completion;
 mod config;

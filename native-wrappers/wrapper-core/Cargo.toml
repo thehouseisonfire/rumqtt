@@ -26,7 +26,7 @@ use-rustls-ring = ["use-rustls-no-provider", "rumqttc_v4/use-rustls-ring", "rumq
 use-rustls-aws-lc = ["use-rustls-no-provider", "rumqttc_v4/use-rustls-aws-lc", "rumqttc_v5/use-rustls-aws-lc"]
 use-native-tls = ["rumqttc_v4/use-native-tls", "rumqttc_v5/use-native-tls", "dep:native-tls", "dep:openssl-sys"]
 websocket = ["rumqttc_v4/websocket", "rumqttc_v5/websocket", "dep:http", "dep:async-tungstenite"]
-http-proxy = ["rumqttc_v4/http-proxy", "rumqttc_v5/http-proxy"]
+http-proxy = ["rumqttc_v4/http-proxy", "rumqttc_v5/http-proxy", "dep:async-http-proxy"]
 socks-proxy = ["rumqttc_v4/socks-proxy", "rumqttc_v5/socks-proxy", "dep:tokio-socks"]
 proxy = ["http-proxy", "socks-proxy"]
 system-srv-resolver = ["rumqttc_v5/system-srv-resolver"]
@@ -40,6 +40,7 @@ readiness = ["dep:arc-swap", "dep:windows-sys"]
 transport-proof = ["dep:cc"]
 
 [dependencies]
+async-http-proxy = { version = "1.2.5", default-features = false, optional = true }
 arc-swap = { version = "1", optional = true }
 fastrand = "2.5"
 async-tungstenite = { version = "0.35", default-features = false, features = ["handshake"], optional = true }

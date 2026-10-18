@@ -117,6 +117,8 @@ impl PartialEq for ReconnectDiagnostics {
                     && a.code() == b.code()
                     && a.retryable() == b.retryable()
                     && a.context() == b.context()
+                    && a.configuration_revision() == b.configuration_revision()
+                    && a.native_failure() == b.native_failure()
                     && a.delivery_status() == b.delivery_status()
                     && a.message() == b.message()
                     && a.broker_reason() == b.broker_reason()
@@ -253,7 +255,8 @@ impl State {
 
     fn failed(&mut self, error: Error, now: Instant, sample: impl FnOnce(Duration) -> Duration) {
         self.connection_ended(now);
-        self.last = Some(error);
+        self.last = Some(error.diagnostic_copy());
+        drop(error);
         let delay = match &self.policy {
             ReconnectPolicy::Legacy => Duration::ZERO,
             ReconnectPolicy::Classified(config) => {
@@ -377,7 +380,7 @@ impl Controller {
         if let Some(error) = failure
             && error.code() != ErrorCode::ReconnectExhausted
         {
-            state.last = Some(error.clone());
+            state.last = Some(error.diagnostic_copy());
         }
     }
 

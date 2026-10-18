@@ -720,6 +720,12 @@ redirect behavior. Custom decisions and host scheduling are deferred.
 
 ## Structured diagnostics
 
+`Error::native_failure()` retains bounded scalar native transport/protocol evidence,
+including typed nested causes, independently of formatted messages and source owners.
+Details survive sanitized reconnect summaries and operation/event observations;
+retry/delivery classifications and dedicated failure accessors remain authoritative.
+See the [mapping and provenance inventory](../native-failures.md).
+
 `ClientHandle::diagnostics_snapshot()` returns owned `ClientDiagnosticsSnapshot`
 values with a shared immutable `NativeDiagnosticsSnapshot` and independently
 sampled retry, redacted configuration, and wrapper fence observations. It never

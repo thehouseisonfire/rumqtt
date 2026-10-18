@@ -56,6 +56,7 @@ pub struct ErrorHandle {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FailureDetails {
+    pub native: Option<rumqttc_wrapper_core::NativeFailureDetails>,
     pub configuration_revision: Option<u64>,
     pub store: Option<NonZeroU32>,
     pub auth: Option<NonZeroU32>,
@@ -68,6 +69,7 @@ pub struct FailureDetails {
     pub recovery: Option<NonZeroU32>,
 }
 const EMPTY_FAILURES: FailureDetails = FailureDetails {
+    native: None,
     configuration_revision: None,
     store: None,
     auth: None,
@@ -83,6 +85,7 @@ const EMPTY_FAILURES: FailureDetails = FailureDetails {
 impl FailureDetails {
     fn from_core(error: &Error) -> Self {
         Self {
+            native: error.native_failure().copied(),
             configuration_revision: error.configuration_revision(),
             recovery: error
                 .recovery_failure()

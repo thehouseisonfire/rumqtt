@@ -1114,6 +1114,15 @@ retry. CI uploads these records with the native validation evidence.
 The latest verified platform results and pending execution are recorded in
 [`../wrapper-core/PARITY.md`](../wrapper-core/PARITY.md).
 
+## Native failure evidence
+
+`rumqttc_error_native_failure_details()` adds a size-versioned scalar record for
+native transport/protocol failures. Initialize it with
+`RUMQTTC_NATIVE_FAILURE_DETAILS_INIT` and test its presence/field bits before
+reading optional evidence. It preserves existing status, retry/delivery and
+dedicated failure accessors. See the [mapping and ownership contract](../native-failures.md)
+and [reconnect example](examples/reconnect.c).
+
 ## Compatibility policy
 
 The first published `0.1.0` archive establishes the 0.1 baseline. Every later

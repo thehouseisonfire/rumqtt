@@ -104,3 +104,10 @@ C hosts can enable optional `readiness` to integrate many clients, MQTT completi
 and deferred admissions into one host event loop using bounded registrations and
 an explicitly owned OS wake resource. MQTT keeps managed execution. See the
 [C host-loop contract](c/README.md#host-event-loop-readiness-optional).
+
+## Native failure evidence
+
+Wrapper-core and C expose owned scalar native failure classifications, nested
+TLS/proxy/WebSocket causes, I/O kinds, target-specific OS codes, packet context,
+and size/count evidence. Existing retry/delivery behavior remains authoritative.
+See the [mapping, absence and lifetime contract](native-failures.md).
