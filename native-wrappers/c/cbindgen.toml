@@ -9,6 +9,7 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_v5_publish_budget_snapshot_v2_t",
     "rumqttc_notification_context", "rumqttc_notification_options_t", "rumqttc_notification_key_t",
     "rumqttc_notification_ready_t", "rumqttc_notification_status_t",
     "rumqttc_first_connection",

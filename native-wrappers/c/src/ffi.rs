@@ -3383,6 +3383,56 @@ pub unsafe extern "C" fn rumqttc_config_reset_v5_publish_budget(
     })
 }
 
+#[repr(C)]
+#[derive(Default)]
+pub struct rumqttc_v5_publish_budget_snapshot_v2_t {
+    pub struct_size: u32,
+    pub recovery_pending: u8,
+    pub reserved: [u8; 3],
+    pub outstanding: usize,
+    pub retained_bytes: usize,
+    pub max_outstanding: usize,
+    pub max_bytes: usize,
+}
+
+/// Read coherent live accounting, including the checkpoint-recovery admission gate.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_client_v5_publish_budget_snapshot_v2(
+    client: *const rumqttc_client,
+    out: *mut rumqttc_v5_publish_budget_snapshot_v2_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    boundary(error_out, client.cast_mut(), || {
+        if out.is_null() {
+            return Err(ErrorHandle::argument("publish budget output is NULL"));
+        }
+        // Accept only the size prefix until the caller's full record is validated.
+        let size = unsafe { out.cast::<u32>().read() } as usize;
+        unsafe {
+            ptr::write_bytes(
+                out.cast::<u8>().add(size_of::<u32>()),
+                0,
+                size.min(size_of::<rumqttc_v5_publish_budget_snapshot_v2_t>())
+                    .saturating_sub(size_of::<u32>()),
+            );
+        }
+        if size < size_of::<rumqttc_v5_publish_budget_snapshot_v2_t>() {
+            return Err(ErrorHandle::argument("publish budget output is too small"));
+        }
+        let snapshot = unsafe { client_ref(client.cast_mut()) }?
+            .handle
+            .publish_budget_snapshot()
+            .map_err(|error| core_error(&error, None))?;
+        let out = unsafe { &mut *out };
+        out.recovery_pending = u8::from(snapshot.recovery_pending);
+        out.outstanding = snapshot.outstanding;
+        out.retained_bytes = snapshot.retained_bytes;
+        out.max_outstanding = snapshot.limits.max_outstanding;
+        out.max_bytes = snapshot.limits.max_bytes;
+        Ok(())
+    })
+}
+
 /// Read coherent live usage without waiting for driver progress. At least one output is required.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumqttc_client_v5_publish_budget_snapshot(

@@ -41,6 +41,37 @@ limits without polling the driver. C scalar outputs are optional, require at
 least one non-NULL pointer, and are zeroed before validation. Wrapper-core also
 reports whether checkpoint recovery is pending.
 
+C callers can read the same coherent recovery flag together with usage and limits
+using `rumqttc_client_v5_publish_budget_snapshot_v2` and a
+`rumqttc_v5_publish_budget_snapshot_v2_t` initialized with
+`RUMQTTC_V5_PUBLISH_BUDGET_SNAPSHOT_V2_INIT`. The original scalar accessor keeps
+its signature and behavior. The new output record is required; `error_out` remains
+optional. MQTT 3.1.1 returns the original accessor's protocol error. NULL clients
+or outputs and short records fail. On failure the known writable prefix after
+`struct_size` is zeroed, bounded by the declared size; at least the size prefix
+must be accessible. The size is preserved, reserved bytes are output-only and
+zeroed, and larger records' extension bytes are untouched. Interpret fields only
+after a successful return. Reads remain available while a live client handle is
+closing or terminated; destruction still invalidates the handle.
+
+`recovery_pending=true` means the checkpoint-recovery admission gate has not
+cleared, not that restoration is actively progressing or will succeed. Failed or
+cancelled loading can leave it true even on a terminal client; inspect lifecycle
+and errors separately. It is neither a connection-state indicator nor progress
+for an explicit session-recovery command. False clears only this gate:
+capabilities, channel capacity, count/byte limits, and shutdown can still prevent
+admission. A snapshot reserves no capacity and does not guarantee the next
+admission succeeds. Existing deferred admission remains the mechanism for waiting.
+
+Zero usage while recovery is pending does not prove no checkpointed work exists.
+Replay reservations are charged before the gate clears, so nonzero usage with
+`recovery_pending=true` is valid too. Coherence covers one budget accounting
+observation, not the entire restoration transaction or client lifecycle. Reading
+does not advance/cancel store operations, poll the driver, or consume events.
+Separate reads, including comparisons with the old accessor, can differ as native
+work progresses. Ordinary reconnects reusing already-loaded state do not rearm
+the recovery gate.
+
 Native terminal senders own count/byte reservations. They cover requests in the
 channel, scheduling queues, replay and protocol state. Moving requests, draining
 channels on failed establishment, reconnecting, or dropping observers cannot

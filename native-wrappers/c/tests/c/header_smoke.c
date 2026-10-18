@@ -45,6 +45,11 @@ int main(void) {
   assert(rumqttc_first_connection_poll(NULL, &first_state, NULL, NULL, NULL) == RUMQTTC_INVALID_ARGUMENT);
   assert(first_state == RUMQTTC_FIRST_CONNECTION_UNOBSERVED);
   rumqttc_first_connection_release(connection);
+
+  rumqttc_v5_publish_budget_snapshot_v2_t publish_budget = RUMQTTC_V5_PUBLISH_BUDGET_SNAPSHOT_V2_INIT;
+  assert(publish_budget.struct_size == sizeof(publish_budget));
+  assert(rumqttc_client_v5_publish_budget_snapshot_v2(NULL, &publish_budget, NULL) == RUMQTTC_INVALID_ARGUMENT);
+  assert(publish_budget.recovery_pending == 0 && publish_budget.max_bytes == 0);
   rumqttc_pending_admission_limits_t pending_limits = RUMQTTC_PENDING_ADMISSION_LIMITS_INIT;
   assert(pending_limits.struct_size == sizeof(pending_limits));
   rumqttc_pending_admission_release(NULL);

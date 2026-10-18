@@ -277,6 +277,21 @@ release ordering and unload after explicit context teardown. Caller-driven MQTT 
 readiness is described below.
 ## MQTT 5 publish admission (TODO32)
 
+### C recovery-gate snapshot (TODO47)
+
+`rumqttc_client_v5_publish_budget_snapshot_v2` adds a size-versioned caller-owned
+record with count/data usage, limits, and `recovery_pending`, all projected from
+one live core snapshot. The original scalar API is unchanged. Reads require no
+MQTT polling/event consumption and preserve the native gate after load failure
+or cancellation, including terminal clients; false is not publish readiness.
+Controlled C adapter tests cover empty/nonempty checkpoint restoration, budget
+failure, reconnect, close during loading, terminal reads, and record boundaries.
+The standalone `native_publish_budget_snapshot` C fixture holds load/connector
+callbacks to verify side-effect-free reads, cancellation, and the old projection.
+See the [accounting and recovery contract](publish-admission.md).
+
+### Existing admission coverage
+
 MQTT 5 publish admission adds C policy/limit setters, usage snapshots,
 structured local failure reasons and `LOCAL_REJECTED`, preserving C record
 layouts and the strict policy default. JavaScript/Python inherit finite budgets

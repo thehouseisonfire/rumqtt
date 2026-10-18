@@ -965,6 +965,17 @@ void native_test_error_out_contract(void) {
     /* ERROR_OUT_SUCCESS: rumqttc_client_v5_publish_budget_snapshot */
     CHECK(rumqttc_client_v5_publish_budget_snapshot(budget_client, &count, NULL, NULL, NULL, NULL));
     REQUIRE(count == 0);
+    {
+      rumqttc_v5_publish_budget_snapshot_v2_t snapshot = RUMQTTC_V5_PUBLISH_BUDGET_SNAPSHOT_V2_INIT;
+      /* ERROR_OUT_SUCCESS: rumqttc_client_v5_publish_budget_snapshot_v2 */
+      CHECK(rumqttc_client_v5_publish_budget_snapshot_v2(budget_client, &snapshot, NULL));
+      REQUIRE(snapshot.outstanding == 0 && snapshot.recovery_pending == 0);
+      snapshot.outstanding = 99;
+      snapshot.recovery_pending = 99;
+      /* ERROR_OUT_FAILURE: rumqttc_client_v5_publish_budget_snapshot_v2 */
+      EXPECT_FAILURE(rumqttc_client_v5_publish_budget_snapshot_v2(NULL, &snapshot, NULL));
+      REQUIRE(snapshot.outstanding == 0 && snapshot.recovery_pending == 0);
+    }
     /* ERROR_OUT_FAILURE: rumqttc_client_v5_publish_budget_snapshot */
     EXPECT_FAILURE(rumqttc_client_v5_publish_budget_snapshot(NULL, &count, NULL, NULL, NULL, NULL));
     REQUIRE(count == 0);

@@ -28,9 +28,11 @@ int main(int argc, char **argv) {
   CALL(rumqttc_client_publish_tracked(client, example_string("rumqttc/native/offline"),
                                     example_bytes("queued", 6), &options, &completion, &error));
   {
-    size_t outstanding = 0, bytes = 0;
-    CALL(rumqttc_client_v5_publish_budget_snapshot(client, &outstanding, &bytes, NULL, NULL, &error));
-    printf("outstanding publishes: %zu, charged data bytes: %zu\n", outstanding, bytes);
+    rumqttc_v5_publish_budget_snapshot_v2_t budget = RUMQTTC_V5_PUBLISH_BUDGET_SNAPSHOT_V2_INIT;
+    CALL(rumqttc_client_v5_publish_budget_snapshot_v2(client, &budget, &error));
+    printf("outstanding publishes: %zu, charged data bytes: %zu, recovery gate pending: %u\n",
+           budget.outstanding, budget.retained_bytes, (unsigned)budget.recovery_pending);
+    /* This observation reserves no capacity and does not guarantee admission. */
   }
   /* Admission does not mean broker acceptance. Local negotiated rejection is
    * LOCAL_REJECTED with no broker reason. QoS 0 would complete at local flush. */

@@ -1735,6 +1735,35 @@ RUMQTTC_API rumqttc_status_t rumqttc_config_reset_v5_publish_budget(rumqttc_conf
  * Counters include restored PUBLISH/PUBREL work and survive reconnect queue transfers.
  * Bytes charge retained publish data, not process RSS. Outputs initialize to zero on failure. */
 RUMQTTC_API rumqttc_status_t rumqttc_client_v5_publish_budget_snapshot(rumqttc_client_t *client, size_t *outstanding_out, size_t *retained_bytes_out, size_t *max_outstanding_out, size_t *max_bytes_out, rumqttc_error_t **error_out);
+
+typedef struct rumqttc_v5_publish_budget_snapshot_v2_t {
+    uint32_t struct_size;
+    uint8_t recovery_pending;
+    uint8_t reserved[3];
+    size_t outstanding;
+    size_t retained_bytes;
+    size_t max_outstanding;
+    size_t max_bytes;
+} rumqttc_v5_publish_budget_snapshot_v2_t;
+#define RUMQTTC_V5_PUBLISH_BUDGET_SNAPSHOT_V2_INIT \
+    { sizeof(rumqttc_v5_publish_budget_snapshot_v2_t), 0, { 0, 0, 0 }, 0, 0, 0, 0 }
+/* One live accounting observation, independent of driver polling/event consumption.
+ * recovery_pending=1 means the checkpoint-recovery admission gate has not cleared;
+ * loading may have failed or been cancelled, including on a terminal client. It is
+ * not a connection state or explicit session-recovery progress indicator. Zero
+ * usage while pending does not prove the checkpoint is empty. Replay can be charged
+ * before the gate clears, so nonzero usage with recovery_pending=1 is valid.
+ * recovery_pending=0 clears only this gate: capabilities, channel/budget capacity,
+ * and shutdown can still reject admission. A read reserves no capacity and does not
+ * guarantee the next admission succeeds. Charged bytes are not process RSS.
+ * Available on live MQTT 5 handles, including closing/terminated clients. MQTT 3.1.1
+ * returns the same protocol error as the original accessor. NULL client/out and
+ * undersized records fail. Initialize out.struct_size (at least its u32 prefix must
+ * be accessible); the declared writable prefix after it is zeroed on failure, up to
+ * the known record size. Larger records are accepted and extension bytes untouched.
+ * struct_size is preserved; reserved bytes are output-only and zeroed. error_out
+ * is optional. Check the returned status before interpreting initialized fields. */
+RUMQTTC_API rumqttc_status_t rumqttc_client_v5_publish_budget_snapshot_v2(const rumqttc_client_t *client, rumqttc_v5_publish_budget_snapshot_v2_t *out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_v5_topic_alias_policy(rumqttc_config_t *config, uint32_t policy, rumqttc_error_t **error_out);
 /* Unix path bytes use the platform's native Unix encoding; no UTF-8 conversion. */
 RUMQTTC_API rumqttc_status_t rumqttc_config_set_unix_broker(rumqttc_config_t *config, rumqttc_bytes_view_t path, rumqttc_error_t **error_out);

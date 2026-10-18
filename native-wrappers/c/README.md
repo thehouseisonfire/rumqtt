@@ -1300,6 +1300,25 @@ with `rumqttc_config_set_v5_publish_budget()`, restore defaults with
 `rumqttc_client_v5_publish_budget_snapshot()`. Both C publish entry points remain
 nonblocking. `rumqttc_error_publish_failure()` distinguishes capability waits,
 channel exhaustion, byte/count exhaustion and local rejection.
+For recovery status alongside the same counters and limits, initialize
+`rumqttc_v5_publish_budget_snapshot_v2_t` with
+`RUMQTTC_V5_PUBLISH_BUDGET_SNAPSHOT_V2_INIT` and call
+`rumqttc_client_v5_publish_budget_snapshot_v2()`. This allocation-free read takes
+one live core snapshot without polling MQTT or consuming events. The required
+size-prefixed output accepts larger records, preserves extension bytes, and
+zeros its known writable fields on failure; `error_out` is optional. MQTT 3.1.1
+returns the existing protocol error. Reads work on live closing/terminated
+handles. Check the return status before using the fields.
+
+`recovery_pending` describes the checkpoint admission gate, not current
+connection state or explicit session-recovery progress. It can remain true
+after failed/cancelled loading or termination. Zero usage while pending does
+not prove the checkpoint is empty; charged replay usage can also coexist with
+the gate. False clears only this gate and never guarantees publishing succeeds.
+The snapshot reserves no capacity, and charged bytes do not measure RSS.
+Ordinary reconnects with already-loaded state do not rearm the gate. See the
+[offline publishing example](examples/offline_publishing.c).
+
 `RUMQTTC_LOCAL_REJECTED` distinguishes local checks from broker ACK rejection;
 previously transmitted replay failures remain ambiguous. Read the
 [full accounting, recovery and retry contract](../wrapper-core/publish-admission.md)

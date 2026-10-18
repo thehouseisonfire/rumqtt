@@ -422,6 +422,13 @@ endif()
 add_test(NAME rumqttc-native-publish-admission-offline COMMAND rumqttc-native-publish-admission-offline)
 set_tests_properties(rumqttc-native-publish-admission-offline PROPERTIES LABELS "native;admission;ownership" TIMEOUT 30)
 
+rumqttc_native_target(rumqttc-native-publish-budget-snapshot native_publish_budget_snapshot.c)
+if(MSVC)
+    target_compile_options(rumqttc-native-publish-budget-snapshot PRIVATE /experimental:c11atomics)
+endif()
+add_test(NAME rumqttc-native-publish-budget-snapshot COMMAND rumqttc-native-publish-budget-snapshot)
+set_tests_properties(rumqttc-native-publish-budget-snapshot PROPERTIES LABELS "native;admission;persistence" TIMEOUT 30)
+
 add_test(NAME rumqttc-native-session-recovery
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-session-recovery>)
 set_tests_properties(rumqttc-native-session-recovery PROPERTIES LABELS "native;recovery" TIMEOUT 30)

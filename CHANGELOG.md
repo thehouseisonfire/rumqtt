@@ -2,6 +2,12 @@
 
 ### Changed
 
+- C: Add `rumqttc_client_v5_publish_budget_snapshot_v2` to inspect the MQTT 5
+  checkpoint-recovery admission gate alongside coherent publish usage and limits
+  without polling the driver or consuming events. The size-versioned output
+  preserves the existing scalar API. The flag can remain set after failed or
+  cancelled restoration and does not indicate connection state or publish readiness.
+
 - Wrapper-core/C: Preserve bounded structured native connection-failure evidence,
   including portable I/O kinds, target-specific OS codes, protocol packet context,
   size/count measurements and typed TLS/proxy/WebSocket causes. Add a size-versioned

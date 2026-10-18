@@ -7,14 +7,19 @@ static_assert(std::is_same_v<rumqttc_status_t, uint32_t>);
 static_assert(RUMQTTC_ABI_VERSION == 0x00000001u);
 
 int main() {
-  rumqttc_first_connection_t *connection = NULL;
+  rumqttc_first_connection_t *connection = nullptr;
   uint32_t first_state = UINT32_MAX;
   assert((rumqttc_library_capabilities() & RUMQTTC_CAP_FIRST_CONNECTION) != 0);
-  assert(rumqttc_client_first_connection(NULL, &connection, NULL) == RUMQTTC_INVALID_ARGUMENT);
-  assert(connection == NULL);
-  assert(rumqttc_first_connection_poll(NULL, &first_state, NULL, NULL, NULL) == RUMQTTC_INVALID_ARGUMENT);
+  assert(rumqttc_client_first_connection(nullptr, &connection, nullptr) == RUMQTTC_INVALID_ARGUMENT);
+  assert(connection == nullptr);
+  assert(rumqttc_first_connection_poll(nullptr, &first_state, nullptr, nullptr, nullptr) == RUMQTTC_INVALID_ARGUMENT);
   assert(first_state == RUMQTTC_FIRST_CONNECTION_UNOBSERVED);
   rumqttc_first_connection_release(connection);
+
+  rumqttc_v5_publish_budget_snapshot_v2_t publish_budget = RUMQTTC_V5_PUBLISH_BUDGET_SNAPSHOT_V2_INIT;
+  assert(publish_budget.struct_size == sizeof(publish_budget));
+  assert(rumqttc_client_v5_publish_budget_snapshot_v2(nullptr, &publish_budget, nullptr) == RUMQTTC_INVALID_ARGUMENT);
+  assert(publish_budget.recovery_pending == 0 && publish_budget.max_bytes == 0);
   rumqttc_pending_admission_limits_t pending_limits = RUMQTTC_PENDING_ADMISSION_LIMITS_INIT;
   assert(pending_limits.struct_size == sizeof(pending_limits));
   rumqttc_pending_admission_release(nullptr);
