@@ -1,4 +1,4 @@
-/* One host loop observes events, deferred admission, then MQTT completion.
+/* One host loop observes first connection, events, deferred admission, and MQTT completion.
  * Build the native library with --features readiness. No observer thread is needed. */
 #include "example_common.h"
 #include <stdio.h>
@@ -33,19 +33,24 @@ int main(int argc, char **argv) {
   rumqttc_client_t *client = NULL;
   rumqttc_pending_admission_t *pending = NULL;
   rumqttc_completion_t *completion = NULL;
+  rumqttc_first_connection_t *connection = NULL;
+  rumqttc_notification_key_t connection_key = {0, 0};
   rumqttc_notification_key_t event_key = {0, 0}, pending_key = {0, 0}, completion_key = {0, 0};
   rumqttc_publish_options_t options = example_publish_options(RUMQTTC_QOS_1);
-  int finished = 0, result = 1;
+  int finished = 0, connected = 0, result = 1;
   if (argc != 3) { fprintf(stderr, "usage: %s HOST PORT\n", argv[0]); return 2; }
   if (rumqttc_notification_capabilities() == 0) return 77;
   RUN(rumqttc_notification_context_new(NULL, &context, NULL));
   client = example_connect(argv[1], (uint16_t)strtoul(argv[2], NULL, 10), "c-readiness", RUMQTTC_ACK_AUTOMATIC);
   if (client == NULL) goto cleanup;
+  /* The startup helper already observed success; late registrations report it too. */
+  RUN(rumqttc_client_first_connection(client, &connection, NULL));
+  RUN(rumqttc_notification_register_first_connection(context, connection, 4, &connection_key, NULL));
   RUN(rumqttc_notification_register_events(context, client, 1, &event_key, NULL));
   RUN(rumqttc_client_publish_deferred(client, example_string("rumqttc/native/readiness-example"),
       example_bytes("hello", 5), &options, &pending, NULL));
   RUN(rumqttc_notification_register_pending_admission(context, pending, 2, &pending_key, NULL));
-  while (!finished) {
+  while (!finished || !connected) {
     rumqttc_notification_ready_t entries[8];
     size_t count = 0;
     uint32_t service_again = 0;
@@ -63,6 +68,13 @@ int main(int argc, char **argv) {
           rumqttc_event_destroy(event);
         }
         RUN(rumqttc_notification_acknowledge(context, entry->key, entry->revision, NULL));
+      } else if (entry->source_kind == RUMQTTC_NOTIFICATION_FIRST_CONNECTION) {
+        uint32_t state = RUMQTTC_FIRST_CONNECTION_UNOBSERVED;
+        RUN(rumqttc_first_connection_poll(connection, &state, NULL, NULL, NULL));
+        if (state != RUMQTTC_FIRST_CONNECTION_SUCCEEDED) goto cleanup;
+        /* Historical success; reconnect events still belong to the event consumer. */
+        RUN(rumqttc_notification_acknowledge(context, entry->key, entry->revision, NULL));
+        connected = 1;
       } else if (entry->source_kind == RUMQTTC_NOTIFICATION_PENDING_ADMISSION) {
         uint32_t state = RUMQTTC_ADMISSION_WAITING;
         RUN(rumqttc_pending_admission_poll(pending, &state, NULL, &completion, NULL));
@@ -79,7 +91,7 @@ int main(int argc, char **argv) {
       }
     }
     RUN(rumqttc_notification_prepare_wait(context, &service_again, NULL));
-    if (!finished && !service_again && wait_for_change(context) != 0) goto cleanup;
+    if ((!finished || !connected) && !service_again && wait_for_change(context) != 0) goto cleanup;
   }
   result = 0;
 cleanup:
@@ -96,6 +108,7 @@ cleanup:
     }
     rumqttc_notification_context_release(context);
   }
+  rumqttc_first_connection_release(connection);
   rumqttc_pending_admission_release(pending);
   rumqttc_completion_destroy(completion);
   example_destroy_client(&client);

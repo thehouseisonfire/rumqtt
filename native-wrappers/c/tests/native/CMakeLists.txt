@@ -452,6 +452,11 @@ if(MSVC)
     target_compile_options(rumqttc-native-auth-reject-observations PRIVATE /experimental:c11atomics)
 endif()
 
+rumqttc_native_target(rumqttc-native-first-connection native_first_connection.c)
+add_test(NAME rumqttc-native-first-connection
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-first-connection>)
+set_tests_properties(rumqttc-native-first-connection PROPERTIES LABELS "native;ownership;concurrency" TIMEOUT 60)
+
 rumqttc_native_target(rumqttc-native-readiness native_readiness.c)
 add_test(NAME rumqttc-native-readiness
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-readiness>)

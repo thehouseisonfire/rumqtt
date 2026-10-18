@@ -99,7 +99,10 @@ fn recovery_hides_candidate_connections_discards_queues_and_preserves_session_po
                 }))
                 .unwrap();
             let recovery = client.handle().try_admit(Command::RecoverSession).unwrap();
-            assert!(client.connection().try_wait().is_none());
+            assert!(matches!(
+                client.connection().wait_timeout_outcome(Duration::ZERO),
+                ConnectionWaitOutcome::DeadlineElapsed
+            ));
             assert_eq!(
                 recovery.completion.recovery_snapshot().unwrap().phase,
                 RecoveryPhase::Quiescing
@@ -149,7 +152,13 @@ fn recovery_hides_candidate_connections_discards_queues_and_preserves_session_po
                     && snapshot.fresh_established
             );
             assert_eq!(snapshot.raw_session_present, Some(false));
-            assert!(client.connection().try_wait().unwrap().is_ok());
+            assert!(matches!(
+                client.connection().wait_timeout_outcome(Duration::ZERO),
+                ConnectionWaitOutcome::Completed(Ok(ConnectionResult {
+                    session_present: false,
+                    ..
+                }))
+            ));
             until(&mut events, |event| {
                 matches!(event, WrapperEvent::Connected { .. })
             });

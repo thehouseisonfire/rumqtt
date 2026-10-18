@@ -35,6 +35,9 @@ static void exercise(rumqttc_protocol_t protocol, int shared) {
   rumqttc_execution_context_t *execution = NULL;
   rumqttc_client_t *clients[CLIENTS] = {0};
   rumqttc_pending_admission_t *pending[CLIENTS] = {0};
+  rumqttc_first_connection_t *connections[CLIENTS] = {0};
+  rumqttc_notification_key_t connection_keys[CLIENTS];
+  unsigned connected = 0;
   rumqttc_completion_t *completions[CLIENTS] = {0};
   rumqttc_notification_key_t event_keys[CLIENTS], pending_keys[CLIENTS], completion_keys[CLIENTS];
   rumqttc_notification_key_t invalid = {UINT64_MAX, UINT64_MAX};
@@ -73,6 +76,8 @@ static void exercise(rumqttc_protocol_t protocol, int shared) {
   REQUIRE(rumqttc_notification_register_completion(context, NULL, 0, &invalid, NULL) == RUMQTTC_INVALID_ARGUMENT);
   /* ERROR_OUT_FAILURE: rumqttc_notification_register_pending_admission */
   REQUIRE(rumqttc_notification_register_pending_admission(context, NULL, 0, &invalid, NULL) == RUMQTTC_INVALID_ARGUMENT);
+  /* ERROR_OUT_FAILURE: rumqttc_notification_register_first_connection */
+  REQUIRE(rumqttc_notification_register_first_connection(context, NULL, 0, &invalid, NULL) == RUMQTTC_INVALID_ARGUMENT);
   invalid.slot = UINT64_MAX; invalid.generation = UINT64_MAX;
   /* ERROR_OUT_FAILURE: rumqttc_notification_acknowledge */
   REQUIRE(rumqttc_notification_acknowledge(context, invalid, 1, NULL) == RUMQTTC_INVALID_STATE);
@@ -90,6 +95,9 @@ static void exercise(rumqttc_protocol_t protocol, int shared) {
     if (execution != NULL) CHECK(rumqttc_config_set_execution_context(config, execution, NULL));
     CHECK(rumqttc_client_start(config, &clients[i], NULL));
     rumqttc_config_destroy(config);
+    CHECK(rumqttc_client_first_connection(clients[i], &connections[i], NULL));
+    /* ERROR_OUT_SUCCESS: rumqttc_notification_register_first_connection */
+    CHECK(rumqttc_notification_register_first_connection(context, connections[i], i, &connection_keys[i], NULL));
     /* ERROR_OUT_SUCCESS: rumqttc_notification_register_events */
     CHECK(rumqttc_notification_register_events(context, clients[i], i, &event_keys[i], NULL));
     CHECK(rumqttc_client_publish_deferred(clients[i], native_string("rumqttc/native/readiness"),
@@ -97,7 +105,7 @@ static void exercise(rumqttc_protocol_t protocol, int shared) {
     /* ERROR_OUT_SUCCESS: rumqttc_notification_register_pending_admission */
     CHECK(rumqttc_notification_register_pending_admission(context, pending[i], i, &pending_keys[i], NULL));
   }
-  while (completed != CLIENTS) {
+  while (completed != CLIENTS || connected != CLIENTS) {
     rumqttc_notification_ready_t entries[4];
     size_t count = 99;
     /* ERROR_OUT_FAILURE: rumqttc_notification_collect */
@@ -122,6 +130,12 @@ static void exercise(rumqttc_protocol_t protocol, int shared) {
           }
           /* ERROR_OUT_SUCCESS: rumqttc_notification_acknowledge */
           CHECK(rumqttc_notification_acknowledge(context, entry->key, entry->revision, NULL));
+        } else if (entry->source_kind == RUMQTTC_NOTIFICATION_FIRST_CONNECTION) {
+          uint32_t state = RUMQTTC_FIRST_CONNECTION_UNOBSERVED;
+          CHECK(rumqttc_first_connection_poll(connections[i], &state, NULL, NULL, NULL));
+          REQUIRE(state == RUMQTTC_FIRST_CONNECTION_SUCCEEDED);
+          CHECK(rumqttc_notification_acknowledge(context, entry->key, entry->revision, NULL));
+          ++connected;
         } else if (entry->source_kind == RUMQTTC_NOTIFICATION_PENDING_ADMISSION) {
           uint32_t state = 99;
           CHECK(rumqttc_pending_admission_poll(pending[i], &state, NULL, &completions[i], NULL));
@@ -140,7 +154,7 @@ static void exercise(rumqttc_protocol_t protocol, int shared) {
       }
     }
     CHECK(rumqttc_notification_prepare_wait(context, &ready, NULL));
-    if (!ready && completed != CLIENTS) wait_context(context, NATIVE_DEADLINE_MS);
+    if (!ready && (completed != CLIENTS || connected != CLIENTS)) wait_context(context, NATIVE_DEADLINE_MS);
   }
   for (unsigned i = 0; i < CLIENTS; ++i) {
     native_close_destroy(clients[i]); clients[i] = NULL;
@@ -160,6 +174,11 @@ static void exercise(rumqttc_protocol_t protocol, int shared) {
   for (unsigned i = 0; i < CLIENTS; ++i) {
     CHECK(rumqttc_notification_deregister(context, completion_keys[i], NULL));
     rumqttc_completion_destroy(completions[i]);
+    uint32_t state = RUMQTTC_FIRST_CONNECTION_UNOBSERVED;
+    CHECK(rumqttc_first_connection_poll(connections[i], &state, NULL, NULL, NULL));
+    REQUIRE(state == RUMQTTC_FIRST_CONNECTION_SUCCEEDED);
+    CHECK(rumqttc_notification_deregister(context, connection_keys[i], NULL));
+    rumqttc_first_connection_release(connections[i]);
   }
 #if defined(_WIN32)
   void *duplicate = NULL;

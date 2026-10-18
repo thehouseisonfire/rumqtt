@@ -390,3 +390,129 @@ fn releasing_the_context_during_a_signal_retains_resources_until_the_lease_finis
     assert!(signal.upgrade().is_none());
     assert_eq!(handle.try_wait().unwrap(), Some(Completion::Acknowledged));
 }
+
+#[test]
+fn first_connection_results_notify_once_and_late_registrations_observe_them() {
+    for success in [true, false] {
+        let context = NotificationContext::new(2).unwrap();
+        let handle = crate::ConnectionHandle::new();
+        let key = context.register_first_connection(&handle, 12).unwrap();
+        assert!(entries(&context).is_empty());
+        assert!(!context.prepare_wait().unwrap());
+        if success {
+            handle.connected(crate::ConnectionResult {
+                protocol: crate::ProtocolVersion::V4,
+                session_present: true,
+            });
+        } else {
+            handle.terminate(Error::new(ErrorKind::Timeout, "terminal timeout"));
+        }
+        let entry = entries(&context)[0];
+        assert_eq!(
+            (entry.key, entry.tag, entry.kind),
+            (key, 12, SourceKind::FirstConnection)
+        );
+        context.acknowledge(key, entry.revision).unwrap();
+        assert!(!context.prepare_wait().unwrap());
+        assert!(entries(&context).is_empty());
+        assert_eq!(handle.try_wait().unwrap().is_ok(), success);
+        let late = context.register_first_connection(&handle, 13).unwrap();
+        assert_eq!(entries(&context)[0].key, late);
+        drop(handle);
+        context.deregister(key).unwrap();
+        context.request_close();
+        assert_eq!(context.state(), NotificationState::Quiescent);
+    }
+}
+
+#[test]
+fn first_connection_publication_during_registration_is_not_lost() {
+    let context = NotificationContext::new(1).unwrap();
+    let handle = crate::ConnectionHandle::new();
+    let (arrived, release) = gate(&context.0.after_subscribe);
+    let registering = context.clone();
+    let observer = handle.clone();
+    let worker =
+        std::thread::spawn(move || registering.register_first_connection(&observer, 1).unwrap());
+    arrived.recv_timeout(DEADLINE).unwrap();
+    handle.terminate(Error::new(ErrorKind::Shutdown, "closed"));
+    release.send(()).unwrap();
+    let key = worker.join().unwrap();
+    assert_eq!(entries(&context)[0].key, key);
+    assert!(context.prepare_wait().unwrap());
+}
+
+#[test]
+fn first_connection_limits_roll_back_and_releasing_registrations_never_cancels() {
+    let handle = crate::ConnectionHandle::new();
+    let context = NotificationContext::new(MAX_SOURCE_SUBSCRIBERS + 1).unwrap();
+    let mut keys = Vec::new();
+    for tag in 0..MAX_SOURCE_SUBSCRIBERS {
+        keys.push(
+            context
+                .register_first_connection(&handle, tag as u64)
+                .unwrap(),
+        );
+    }
+    assert!(context.register_first_connection(&handle, 100).is_err());
+    context.deregister(keys.pop().unwrap()).unwrap();
+    context.register_first_connection(&handle, 101).unwrap();
+    context.request_close();
+    assert_eq!(context.state(), NotificationState::Quiescent);
+    assert!(handle.try_wait().is_none());
+    handle.connected(crate::ConnectionResult {
+        protocol: crate::ProtocolVersion::V5,
+        session_present: false,
+    });
+    assert!(handle.try_wait().unwrap().is_ok());
+    assert_eq!(context.usage().unwrap().0, 0);
+}
+
+#[test]
+fn first_connection_close_waits_for_inflight_signaling_and_preserves_the_result() {
+    let context = NotificationContext::new(1).unwrap();
+    let handle = crate::ConnectionHandle::new();
+    context.register_first_connection(&handle, 0).unwrap();
+    let (arrived, release) = gate(&context.0.signal.before_write);
+    let publishing = handle.clone();
+    let worker = std::thread::spawn(move || {
+        publishing.terminate(Error::new(ErrorKind::Timeout, "terminal timeout"));
+    });
+    arrived.recv_timeout(DEADLINE).unwrap();
+    context.request_close();
+    assert_eq!(context.state(), NotificationState::Closing);
+    assert_eq!(context.usage().unwrap(), (0, 1));
+    assert_eq!(
+        handle.try_wait().unwrap().unwrap_err().code(),
+        ErrorCode::Timeout
+    );
+    assert!(context.register_first_connection(&handle, 0).is_err());
+    release.send(()).unwrap();
+    worker.join().unwrap();
+    assert_eq!(context.state(), NotificationState::Quiescent);
+}
+
+#[test]
+fn first_connection_retired_slot_cannot_receive_stale_publication() {
+    let context = NotificationContext::new(1).unwrap();
+    let handle = crate::ConnectionHandle::new();
+    let old = context.register_first_connection(&handle, 0).unwrap();
+    let (arrived, release) = gate(&handle.notification_source().after_snapshot);
+    let worker =
+        std::thread::spawn(move || handle.terminate(Error::new(ErrorKind::Shutdown, "closed")));
+    arrived.recv_timeout(DEADLINE).unwrap();
+    context.deregister(old).unwrap();
+    let handle = crate::ConnectionHandle::new();
+    let new = context.register_first_connection(&handle, 1).unwrap();
+    assert_eq!(new.slot, old.slot);
+    assert_ne!(new.generation, old.generation);
+    release.send(()).unwrap();
+    worker.join().unwrap();
+    assert!(entries(&context).is_empty());
+    handle.connected(crate::ConnectionResult {
+        protocol: crate::ProtocolVersion::V5,
+        session_present: false,
+    });
+    assert_eq!(entries(&context)[0].key, new);
+    assert!(context.acknowledge(old, 1).is_err());
+}

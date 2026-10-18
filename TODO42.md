@@ -2,7 +2,8 @@
 
 Status: implemented behind the disabled-by-default `readiness` feature; Linux
 correctness/ABI validation passed. The performance acceptance gate is not met,
-and native macOS/Windows execution remains outstanding. TODO46 integration is deferred.
+and native macOS/Windows execution remains outstanding. TODO46 connection-observer
+integration is implemented; its validation is recorded in TODO46.
 
 ## Goal
 
@@ -18,8 +19,9 @@ C exposes polling and timed waits but no non-consuming readiness bridge.
 
 Keep MQTT on dedicated or shared managed execution from [TODO33.md](TODO33.md).
 Deliver client-event/terminal, MQTT-completion, and [TODO41.md](TODO41.md)
-pending-admission readiness first. Add [TODO46.md](TODO46.md) connection-observer
-registrations when that C observer exists; it must not block the initial release.
+pending-admission readiness first. Include [TODO46.md](TODO46.md) first-connection
+observer registrations through
+the same immutable-result machinery; basic observer APIs remain independent.
 Existing polling and timed-wait APIs remain independently usable.
 
 The initial implementation uses OS wake primitives with no host callbacks,

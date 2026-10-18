@@ -2677,6 +2677,47 @@ RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_poll(const rumqttc_pendin
 RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_wait_timeout_ms(const rumqttc_pending_admission_t *handle, uint64_t timeout_ms, uint32_t *state_out, uint64_t *operation_id_out, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
 
 
+/* Historical first accepted connection. Observer ownership is independent of the
+ * client; acquisition requires a live client handle but is allowed while closing
+ * or after driver termination. Never race acquisition with client destruction.
+ * Continue draining events independently: queue backpressure may still terminate
+ * the client or prevent further connection progress. Success survives later loss,
+ * shutdown, and failure to deliver the Connected event. It does not prove current
+ * connectivity or completed resubscription. */
+typedef struct rumqttc_first_connection_t rumqttc_first_connection_t;
+#define RUMQTTC_CAP_FIRST_CONNECTION (UINT64_C(1) << 21)
+#define RUMQTTC_FIRST_CONNECTION_UNOBSERVED 0u
+#define RUMQTTC_FIRST_CONNECTION_PENDING 1u
+#define RUMQTTC_FIRST_CONNECTION_SUCCEEDED 2u
+#define RUMQTTC_FIRST_CONNECTION_FAILED 3u
+
+RUMQTTC_API rumqttc_status_t rumqttc_client_first_connection(
+    const rumqttc_client_t *client, rumqttc_first_connection_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_first_connection_retain(
+    const rumqttc_first_connection_t *handle, rumqttc_first_connection_t **out, rumqttc_error_t **error_out);
+/* Retain creates an independent handle. Release accepts NULL and never cancels
+ * startup or MQTT work. Concurrent observations are supported; release must not
+ * race access through that same handle. Results survive client destruction and
+ * retain no runtime/callback/event consumer. Release all handles and finish API
+ * calls before unloading the library. */
+RUMQTTC_API void rumqttc_first_connection_release(rumqttc_first_connection_t *handle);
+/* state_out is required; protocol/session outputs are optional and valid only on
+ * SUCCEEDED. All outputs initialize to UNOBSERVED/0/0 before validation. Argument
+ * errors and forbidden waits leave state UNOBSERVED. PENDING poll returns
+ * WOULD_BLOCK; an expired wait (including zero timeout) returns TIMEOUT/PENDING.
+ * FAILED returns the cached terminal error, which can itself be TIMEOUT. SUCCEEDED
+ * returns OK with protocol and raw Session Present; use effective-session CONNACK
+ * diagnostics for resubscription decisions. Those separately dated diagnostics may
+ * reflect a later connection. A wait timeout never changes the result.
+ * Nonzero waits are forbidden on execution workers/in host callbacks even after
+ * completion. Zero-time observation remains permitted. */
+RUMQTTC_API rumqttc_status_t rumqttc_first_connection_poll(
+    const rumqttc_first_connection_t *handle, uint32_t *state_out, rumqttc_protocol_t *protocol_out,
+    uint8_t *session_present_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_first_connection_wait_timeout_ms(
+    const rumqttc_first_connection_t *handle, uint64_t timeout_ms, uint32_t *state_out,
+    rumqttc_protocol_t *protocol_out, uint8_t *session_present_out, rumqttc_error_t **error_out);
+
 /* Optional readiness (Cargo feature: readiness). All functions remain exported when disabled.
  * One context serves many clients/operations using bounded storage and constant OS resources.
  * One logical drainer collects hints, observes existing source APIs, acknowledges the returned
@@ -2710,6 +2751,7 @@ RUMQTTC_API rumqttc_status_t rumqttc_pending_admission_wait_timeout_ms(const rum
 #define RUMQTTC_NOTIFICATION_EVENTS 1u
 #define RUMQTTC_NOTIFICATION_COMPLETION 2u
 #define RUMQTTC_NOTIFICATION_PENDING_ADMISSION 3u
+#define RUMQTTC_NOTIFICATION_FIRST_CONNECTION 4u
 #define RUMQTTC_NOTIFICATION_INVALIDATED 1u
 #define RUMQTTC_NOTIFICATION_OPEN 0u
 #define RUMQTTC_NOTIFICATION_CLOSING 1u
@@ -2786,6 +2828,11 @@ RUMQTTC_API rumqttc_status_t rumqttc_notification_register_pending_admission(con
                                                          struct rumqttc_notification_key_t *out,
                                                          struct rumqttc_error_t **error_out);
 
+/* Retains only the immutable observation, never execution. Releasing the original
+ * observer or acknowledging readiness does not consume the result or cancel startup. */
+RUMQTTC_API rumqttc_status_t rumqttc_notification_register_first_connection(
+    const rumqttc_notification_context_t *context, const rumqttc_first_connection_t *source, uint64_t tag,
+    rumqttc_notification_key_t *out, rumqttc_error_t **error_out);
 RUMQTTC_API rumqttc_status_t rumqttc_notification_collect(const struct rumqttc_notification_context_t *context,
                                       struct rumqttc_notification_ready_t *entries,
                                       size_t entry_size,

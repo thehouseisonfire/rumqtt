@@ -124,7 +124,7 @@ pub use config::{
     ProtocolConfig, SecretBytes, TlsBackend, TlsClientIdentity, TlsConfig, TlsRootPolicy,
     TopicAliasPolicy, TransportConfig, V4Config, V5Config, V5ConnectProperties,
 };
-pub use connection::{ConnectionHandle, ConnectionResult};
+pub use connection::{ConnectionHandle, ConnectionResult, ConnectionWaitOutcome};
 pub use error::{DeliveryStatus, Error, ErrorCode, ErrorContext, ErrorKind, Result};
 pub use event::{
     AckToken, ConnAckDetails, ConnAckDiagnostic, ConnAckSessionDiagnostics, ConnectionPhase,

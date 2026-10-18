@@ -1134,3 +1134,6 @@ fn releasing_unconsumed_tokens_does_not_acknowledge() {
 
 #[path = "../pending_admission/tests.rs"]
 mod pending_admission_tests;
+
+#[path = "../first_connection/controlled_tests.rs"]
+mod first_connection_tests;

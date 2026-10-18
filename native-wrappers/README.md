@@ -32,6 +32,12 @@ tokens share single-use authority, retain no client/runtime, and expire on
 reconnect. See the [C ownership contract](c/README.md) and
 [manual-ACK example](c/examples/manual_acknowledgement.c).
 
+C hosts can independently await the first accepted connection without consuming
+application events. Owned first-connection observers support repeatable polling,
+bounded blocking waits, and optional host-loop readiness after client destruction.
+They record historical success, not current connectivity; keep draining events.
+See [first-connection observation](c/README.md#first-connection-observation).
+
 ## Session Present compatibility
 
 The MQTT 3.1.1 default rejects a successful clean-session CONNACK with invalid

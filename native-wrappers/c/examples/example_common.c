@@ -66,7 +66,8 @@ rumqttc_client_t *example_connect(const char *host, uint16_t port,
                                   rumqttc_ack_mode_t ack_mode) {
   rumqttc_config_t *config = NULL;
   rumqttc_client_t *client = NULL;
-  rumqttc_event_t *event = NULL;
+  rumqttc_first_connection_t *connection = NULL;
+  uint32_t state = RUMQTTC_FIRST_CONNECTION_UNOBSERVED;
   rumqttc_error_t *error = NULL;
   if (example_report(rumqttc_config_new(RUMQTTC_PROTOCOL_V5, &config, &error),
                      &error, "config_new") ||
@@ -85,12 +86,19 @@ rumqttc_client_t *example_connect(const char *host, uint16_t port,
     return NULL;
   }
   rumqttc_config_destroy(config);
-  event = example_next_event(client, RUMQTTC_EVENT_CONNECTED);
-  if (event == NULL) {
+  /* Preserve every startup event for the application's event consumer. This
+   * bounded startup wait does not drain events: a long retry sequence can still
+   * overflow the queue. Production hosts should drain events concurrently. */
+  if (example_report(rumqttc_client_first_connection(client, &connection, &error),
+                     &error, "first_connection") ||
+      example_report(rumqttc_first_connection_wait_timeout_ms(
+                         connection, 5000, &state, NULL, NULL, &error),
+                     &error, "first_connection_wait")) {
+    rumqttc_first_connection_release(connection);
     example_destroy_client(&client);
     return NULL;
   }
-  rumqttc_event_destroy(event);
+  rumqttc_first_connection_release(connection);
   return client;
 }
 

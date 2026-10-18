@@ -530,7 +530,8 @@ The native C fixture uses one context across twelve clients for both protocols
 and execution placements. See [measurements](benches/readiness.md) for recorded
 platform execution and costs. Linux native execution and Windows cross-checking
 are separate evidence; native macOS/Windows execution belongs to platform CI.
-TODO46 connection-observer readiness and Python/JavaScript integration are deferred.
+First-connection observers register as immutable readiness sources without retaining
+client execution; Python/JavaScript readiness integration remains deferred.
 
 ## Optional protocol observations (TODO44)
 
@@ -547,3 +548,21 @@ and the allocation/retention benchmark. These cover selectors, reason/properties
 QoS 2 rejection/replay/duplicate suppression, accepted generations, PINGRESP,
 retained event views, AUTH authority, completion progress with full queues,
 overflow termination, and single-worker shared execution.
+
+## C first-connection observer (TODO46)
+
+Core and C expose the same immutable first accepted connection or terminal failure
+before success, independently of event consumption. C acquisition/retain/release,
+explicit pending/success/failure states, and timed waits preserve original errors
+and distinguish observer deadlines from terminal timeouts. Nonzero waits reject
+workers/callbacks even for completed observers. Raw Session Present remains distinct
+from effective-session diagnostics. Retained observers and optional readiness
+registrations survive client destruction without execution/callback ownership.
+
+Core connection unit tests and `first_connection`, `reconnect_policy`,
+`protocol_compatibility`, `session_recovery`, and `redirect_policy` scenarios cover
+concurrency, failure, acceptance, and backpressure. Controlled C observer suites
+verify event-consumer independence, closing/failed acquisition, raw compatibility,
+retention and readiness; native first-connection, readiness, unload and C/C++ ABI
+consumers exercise the public boundary. Platform execution evidence is recorded in
+TODO46 separately from portable wiring.

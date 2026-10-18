@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use arc_swap::ArcSwapOption;
 
 use crate::{
-    CompletionHandle, Error, ErrorCode, ErrorKind, PendingAdmissionHandle, Result, WrapperEvent,
+    CompletionHandle, ConnectionHandle, Error, ErrorCode, ErrorKind, PendingAdmissionHandle,
+    Result, WrapperEvent,
 };
 
 mod platform;
@@ -27,6 +28,7 @@ pub enum SourceKind {
     Events = 1,
     Completion = 2,
     PendingAdmission = 3,
+    FirstConnection = 4,
 }
 
 /// Context-local identity; generations never repeat within a context.
@@ -226,6 +228,7 @@ struct Target {
 enum Observation {
     Events(EventReadiness),
     Completion(CompletionHandle),
+    FirstConnection(ConnectionHandle),
     Pending(PendingAdmissionHandle),
 }
 
@@ -234,6 +237,7 @@ impl Observation {
         match self {
             Self::Events(events) => &events.0,
             Self::Completion(completion) => completion.notification_source(),
+            Self::FirstConnection(connection) => connection.notification_source(),
             Self::Pending(pending) => pending.notification_source(),
         }
     }
@@ -527,6 +531,18 @@ impl NotificationContext {
         tag: u64,
     ) -> Result<RegistrationKey> {
         self.register(Observation::Completion(source.clone()), tag)
+    }
+
+    /// Registers the immutable first-connection result without retaining client execution.
+    /// Dropping the registration never cancels startup.
+    /// # Errors
+    /// Returns context state, capacity, or source subscriber-limit errors.
+    pub fn register_first_connection(
+        &self,
+        source: &ConnectionHandle,
+        tag: u64,
+    ) -> Result<RegistrationKey> {
+        self.register(Observation::FirstConnection(source.clone()), tag)
     }
 
     /// Registers admission outcome and retains one external pending observer.

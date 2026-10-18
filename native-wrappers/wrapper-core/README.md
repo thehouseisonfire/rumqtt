@@ -4,6 +4,25 @@ Private Rust infrastructure shared by native rumqtt wrappers. The crate owns
 the MQTT event loop on dedicated or explicitly shared execution and exposes owned, protocol-neutral
 configuration, commands, completions, events, diagnostics, and errors.
 
+## First-connection observation
+
+`ClientHandle::connection()` returns a cloneable `ConnectionHandle` retaining only
+one immutable first success or terminal failure before success. `try_wait()` and
+`wait_async()` share that result with `wait_timeout_outcome(Duration)`. The latter
+returns `ConnectionWaitOutcome::{Completed, DeadlineElapsed, ObservationRejected}`,
+so a caller deadline remains distinct from a cached terminal timeout. Nonzero
+blocking waits reject execution workers and host callbacks even after completion;
+zero-duration observations remain permitted. Wait/drop never cancels startup.
+
+Success is the native accepted connection boundary, independent of event delivery,
+resubscription, and later disconnections/recovery. `ConnectionResult::session_present`
+is raw, not effective session resume. Observers survive client destruction without
+retaining execution or callback owners. Keep draining events: backpressure can still
+prevent progress or terminate the client, but cannot erase an accepted first success.
+With `readiness`, `NotificationContext::register_first_connection` uses the existing
+immutable-result acknowledgement and ownership protocol. See the
+[C contract](../c/README.md#first-connection-observation).
+
 ## Explicit session recovery
 
 `ClientHandle::try_admit(Command::RecoverSession)` admits one driver-owned

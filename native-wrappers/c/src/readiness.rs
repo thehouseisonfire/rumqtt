@@ -1,7 +1,7 @@
 //! Additive, feature-discoverable C notification API. OS exports are wait-only.
 use super::{
     boundary, destroy_box, rumqttc_client, rumqttc_completion, rumqttc_error,
-    rumqttc_pending_admission, struct_size, write_optional,
+    rumqttc_first_connection, rumqttc_pending_admission, struct_size, write_optional,
 };
 use crate::error::ErrorHandle;
 #[cfg(feature = "readiness")]
@@ -276,6 +276,43 @@ pub unsafe extern "C" fn rumqttc_notification_register_pending_admission(
             let registration = context
                 .register_pending_admission(
                     unsafe { super::pending_admission::pending_ref(source) }?,
+                    tag,
+                )
+                .map_err(|error| core(&error))?;
+            unsafe {
+                *out = ffi_key(registration);
+            }
+            Ok(())
+        }
+        #[cfg(not(feature = "readiness"))]
+        {
+            let _ = (context, source, tag);
+            Err(unsupported())
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rumqttc_notification_register_first_connection(
+    context: *const rumqttc_notification_context,
+    source: *const rumqttc_first_connection,
+    tag: u64,
+    out: *mut rumqttc_notification_key_t,
+    error_out: *mut *mut rumqttc_error,
+) -> u32 {
+    unsafe {
+        write_optional(out, rumqttc_notification_key_t::default());
+    }
+    boundary(error_out, ptr::null_mut(), || {
+        if out.is_null() {
+            return Err(ErrorHandle::argument("registration key output is NULL"));
+        }
+        #[cfg(feature = "readiness")]
+        {
+            let context = unsafe { context_ref(context) }?;
+            let registration = context
+                .register_first_connection(
+                    unsafe { super::first_connection::first_connection_ref(source) }?,
                     tag,
                 )
                 .map_err(|error| core(&error))?;

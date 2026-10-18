@@ -18,6 +18,7 @@ source = "\n".join(
         "native_protocol_observations.c",
         "native_auth.c",
         "native_readiness.c",
+        "native_first_connection.c",
     )
 )
 functions = set(

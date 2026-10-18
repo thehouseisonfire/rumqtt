@@ -43,6 +43,10 @@ pub use observation::*;
 mod acknowledgement;
 pub use acknowledgement::*;
 
+#[path = "first_connection.rs"]
+mod first_connection;
+pub use first_connection::*;
+
 #[path = "pending_admission.rs"]
 mod pending_admission;
 pub use pending_admission::*;
@@ -134,6 +138,7 @@ const CAP_RUNTIME_CONFIGURATION: u64 = 1 << 17;
 const CAP_LOGGING_SINK: u64 = 1 << 18;
 const CAP_DEFERRED_ADMISSION: u64 = 1 << 19;
 const CAP_READINESS: u64 = 1 << 20;
+const CAP_FIRST_CONNECTION: u64 = 1 << 21;
 const MAX_CHECKPOINT_SIZE: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
@@ -1284,6 +1289,7 @@ pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
     } else {
         0
     }) | CAP_V4
+        | CAP_FIRST_CONNECTION
         | CAP_DEFERRED_ADMISSION
         | CAP_SHARED_EXECUTION
         | CAP_RUNTIME_CONFIGURATION

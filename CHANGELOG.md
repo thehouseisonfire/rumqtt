@@ -97,6 +97,14 @@
 
 ### Added
 
+- Wrapper-core/C: expose independently owned first-connection observers with
+  repeatable polling, bounded blocking waits, explicit state, selected protocol,
+  and raw Session Present. Caller deadlines remain distinct from cached terminal
+  errors. Observers preserve startup events, survive client destruction without
+  retaining execution/callback ownership, and support optional readiness registration.
+  Success is historical and event-backpressure behavior is unchanged. C APIs and
+  capability discovery are additive; nonzero waits reject workers and callbacks.
+
 - Native wrappers: optional, disabled-by-default `readiness` support for C host
   event loops. Explicitly owned shared contexts observe events/terminal status,
   MQTT completions, and deferred admissions through bounded registrations and

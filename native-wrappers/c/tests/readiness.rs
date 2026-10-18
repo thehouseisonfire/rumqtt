@@ -78,6 +78,19 @@ fn disabled_readiness_keeps_api_exports_and_reports_capabilities_separately() {
             3
         );
         assert_eq!((key.slot, key.generation), (0, 0));
+        key.slot = 99;
+        key.generation = 99;
+        assert_eq!(
+            rumqttc_notification_register_first_connection(
+                ptr::null(),
+                ptr::null(),
+                0,
+                &raw mut key,
+                ptr::null_mut()
+            ),
+            3
+        );
+        assert_eq!((key.slot, key.generation), (0, 0));
     }
 }
 

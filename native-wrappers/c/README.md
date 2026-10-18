@@ -38,6 +38,69 @@ durable-session callback API.
 `RUMQTTC_CAP_AUTH_CALLBACKS` reports the raw MQTT 5 asynchronous
 authenticator callback API.
 
+## First-connection observation
+
+Every build provides `RUMQTTC_CAP_FIRST_CONNECTION`. Acquire an independently
+owned `rumqttc_first_connection_t` with `rumqttc_client_first_connection`; use
+`retain`/`release` when sharing ownership. Acquisition is valid during closing
+and after driver termination while the C client handle remains live. It requires
+no command admission and must not race client destruction.
+
+```c
+rumqttc_first_connection_t *connection = NULL;
+rumqttc_error_t *error = NULL;
+uint32_t state = RUMQTTC_FIRST_CONNECTION_UNOBSERVED;
+rumqttc_protocol_t protocol = 0;
+uint8_t raw_session_present = 0;
+rumqttc_status_t status = rumqttc_client_first_connection(client, &connection, &error);
+if (status == RUMQTTC_OK) {
+    /* Drain events independently while awaiting startup. */
+    status = rumqttc_first_connection_wait_timeout_ms(
+        connection, 5000, &state, &protocol, &raw_session_present, &error);
+}
+/* Inspect both status and state before releasing any returned error. */
+rumqttc_error_destroy(error);
+rumqttc_first_connection_release(connection);
+```
+
+`state_out` is required; protocol and raw Session Present outputs are optional.
+All supplied outputs initialize before validation. Protocol/Session Present are
+valid only in `SUCCEEDED`; they remain zero in other states.
+
+| State | Meaning and status |
+| --- | --- |
+| `UNOBSERVED` (0) | Invalid arguments or forbidden wait; no authoritative observation |
+| `PENDING` (1) | Awaiting a result: poll returns `WOULD_BLOCK`; expired wait returns `TIMEOUT` |
+| `SUCCEEDED` (2) | First accepted connection: `OK`, with protocol and raw Session Present |
+| `FAILED` (3) | Stopped before success: cached terminal error, including a possible `TIMEOUT` |
+
+Zero-duration waits return immediately (`TIMEOUT` if pending). Nonzero waits are
+forbidden on execution workers and in callbacks, even for a completed observer.
+A timeout ends only that observation. Releasing an observer never cancels startup
+or MQTT work. Multiple concurrent observers and later acquisitions share the
+same immutable success or terminal error. Release must not race access through
+that same handle; independently retained handles can be released separately.
+
+Success is historical: the native accepted connection boundary, including redirect
+and recovery processing, precedes application Connected delivery. Later loss,
+shutdown, and recovery do not reset it. It does not prove current connectivity or
+resubscription completion. Raw Session Present is distinct from effective session
+resume; see [Session Present compatibility](#session-present-compatibility).
+Diagnostics describe their own capture and can reflect a later connection; do not
+use a later sample to reconstruct the first connection's effective session.
+
+Observers never consume events or acquire the event-consumer lock. Applications
+must still drain events: a full queue can prevent further connection progress or
+terminate the client. Failure to deliver Connected cannot erase an already accepted
+first success. The [startup helper](examples/example_common.c) preserves the event
+stream and uses a bounded wait; hosts with prolonged retries should drain concurrently.
+
+Observers survive client destruction and retain no client, runtime, callback owner,
+or event consumer. Release all observers and finish concurrent API calls before
+unloading the library. With optional `readiness`, register them using
+`rumqttc_notification_register_first_connection`; acknowledgement affects only the
+notification, leaving the result readable. See [host readiness](#host-event-loop-readiness-optional).
+
 ## Structured logging
 
 Build with `--features tracing` and test `RUMQTTC_CAP_LOGGING_SINK` before using
@@ -1748,14 +1811,14 @@ byte accounting. Deregister completed sources promptly when their results are no
 longer needed. Producers signal without acquiring
 host administration locks; no notification thread, runtime, or supervisor exists.
 
-Register events, MQTT completions, and pending-admission handles with a copied
+Register events, MQTT completions, first-connection observers, and pending-admission handles with a copied
 64-bit application tag. Tags are copied integers; the host owns any application
 state they reference and coordinates client destruction with source inspection.
 A context owns its registrations until deregistration,
 close, or final release. Keys are context-local slot/generation pairs; reusing a
 slot never makes an old key valid again. Registrations after an immutable result
-is ready report it immediately. Connection-observer integration is deferred to
-TODO46; readiness does not add that C observer.
+is ready report it immediately. First-connection registrations retain only the
+observation cell, independently of the client and original observer handle.
 
 Use one logical drainer for the complete sequence:
 
@@ -1763,8 +1826,8 @@ Use one logical drainer for the complete sequence:
    Pass its element size as the stride; larger aligned strides allow future
    record extensions. Only the returned count of entries is valid. `WOULD_BLOCK`
    means no sources are ready. Enumeration neither acknowledges nor consumes.
-2. Inspect each authoritative source with existing event, pending-admission,
-   and completion APIs. Tags identify application owners; a hint is never a
+2. Inspect each authoritative source with existing event, first-connection,
+   pending-admission, and completion APIs. Tags identify application owners; a hint is never a
    delivery result. A successful pending admission supplies a separately owned
    completion, which must be registered separately if it is to wake the host.
 3. Acknowledge each inspected key/revision, or deregister the source. Older

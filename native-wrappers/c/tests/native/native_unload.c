@@ -58,6 +58,9 @@ typedef struct native_api {
   rumqttc_status_t (*client_start)(const rumqttc_config_t *, rumqttc_client_t **, rumqttc_error_t **);
   rumqttc_status_t (*client_close_now_timeout_ms)(rumqttc_client_t *, uint64_t, rumqttc_error_t **);
   rumqttc_status_t (*client_destroy_timeout_ms)(rumqttc_client_t *, uint64_t, rumqttc_error_t **);
+  rumqttc_status_t (*client_first_connection)(const rumqttc_client_t *, rumqttc_first_connection_t **, rumqttc_error_t **);
+  rumqttc_status_t (*first_connection_poll)(const rumqttc_first_connection_t *, uint32_t *, rumqttc_protocol_t *, uint8_t *, rumqttc_error_t **);
+  void (*first_connection_release)(rumqttc_first_connection_t *);
   rumqttc_status_t (*callback_completion_retain)(const rumqttc_callback_completion_t *,
                                                  rumqttc_callback_completion_t **);
   void (*callback_completion_destroy)(rumqttc_callback_completion_t *);
@@ -109,6 +112,7 @@ int main(int argc, char **argv) {
   rumqttc_execution_context_t *execution = NULL;
   rumqttc_client_t *client = NULL;
   rumqttc_callback_completion_t *completion;
+  rumqttc_first_connection_t *connection = NULL;
   void *context = malloc(1);
   REQUIRE(argc == 2 && context != NULL);
   module = open_module(argv[1]);
@@ -127,6 +131,9 @@ int main(int argc, char **argv) {
   LOAD(config_set_v4_clean_session);
   LOAD(config_set_session_store);
   LOAD(client_start);
+  LOAD(client_first_connection);
+  LOAD(first_connection_poll);
+  LOAD(first_connection_release);
   LOAD(client_close_now_timeout_ms);
   LOAD(client_destroy_timeout_ms);
   LOAD(callback_completion_retain);
@@ -145,6 +152,7 @@ int main(int argc, char **argv) {
   REQUIRE(api.config_set_v4_clean_session(config, 0, NULL) == RUMQTTC_OK);
   REQUIRE(api.config_set_session_store(config, registration, view("unload-scope"), 5000, 1024, NULL) == RUMQTTC_OK);
   REQUIRE(api.client_start(config, &client, NULL) == RUMQTTC_OK);
+  REQUIRE(api.client_first_connection(client, &connection, NULL) == RUMQTTC_OK);
   for (unsigned attempt = 0; attempt < 500 && atomic_load(&pending) == 0; ++attempt) {
 #if defined(_WIN32)
     Sleep(10);
@@ -167,6 +175,10 @@ int main(int argc, char **argv) {
           RUMQTTC_INVALID_STATE);
   api.callback_completion_destroy(completion);
   REQUIRE(atomic_load(&destroyed) == 1);
+  uint32_t state = RUMQTTC_FIRST_CONNECTION_UNOBSERVED;
+  REQUIRE(api.first_connection_poll(connection, &state, NULL, NULL, NULL) == RUMQTTC_DISCONNECTED);
+  REQUIRE(state == RUMQTTC_FIRST_CONNECTION_FAILED);
+  api.first_connection_release(connection);
   REQUIRE(close_module(module));
   return 0;
 }
