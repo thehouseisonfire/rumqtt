@@ -1819,6 +1819,11 @@ admission, completions, and events through one shared OS wake resource.
 
 ## Host event-loop readiness (optional)
 
+Readiness remains experimental and disabled by default. Its original performance
+acceptance gate is unmet, and native macOS/Windows validation remains outstanding.
+Evaluate the [recorded costs and validation limits](../wrapper-core/benches/readiness.md)
+against the application's reactor workload before adopting it.
+
 Build with `cargo build --manifest-path native-wrappers/Cargo.toml -p
 rumqttc-c-next --features readiness`. Standard profiles leave readiness disabled.
 The C symbols remain exported in disabled builds and return `CONFIG_ERROR`;
@@ -1868,6 +1873,15 @@ Use one logical drainer for the complete sequence:
    sequence immediately, including when bounded OS draining needs another pass.
    Only sleep on the exported resource after a zero result. Duplicate, coalesced,
    and occasional stale hints are harmless.
+
+While making progress, collect and observe further batches before rearming.
+Bound both events per source and batches per dispatch so a hot source cannot
+monopolize the host loop. At the dispatch boundary, service the reactor's other
+work; schedule another readiness dispatch immediately if work remains. A partial
+event drain stays level-ready even after acknowledgement. Call `prepare_wait`
+before every actual sleep, including after other host work; draining hints alone
+never authorizes sleeping. The example uses at most 64 events per source and
+four batches per dispatch; applications should choose budgets for their own work.
 
 Collection rotates through slots so a small output array does not starve later
 ready sources. Concurrent administration/drainer calls can return `INVALID_STATE`

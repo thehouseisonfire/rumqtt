@@ -548,6 +548,14 @@ are separate evidence; native macOS/Windows execution belongs to platform CI.
 First-connection observers register as immutable readiness sources without retaining
 client execution; Python/JavaScript readiness integration remains deferred.
 
+Source subscriber storage grows with observed fan-out, still capped at 16.
+Registration, enumeration, producers, OS signaling, revisions, and cancellation
+ownership are unchanged. The host example bounds dispatch before rearming.
+Free-slot and guarded-batch prototypes were not retained after mixed measurements;
+there is no new public API or context storage.
+Readiness remains experimental and disabled by default; the original performance
+and native-platform acceptance items are still open.
+
 ## Optional protocol observations (TODO44)
 
 Core/C startup selectors expose actual native incoming PUBACK/PUBREC/PUBREL/PUBCOMP,

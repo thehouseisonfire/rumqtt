@@ -37,6 +37,7 @@ int main(int argc, char **argv) {
   rumqttc_notification_key_t connection_key = {0, 0};
   rumqttc_notification_key_t event_key = {0, 0}, pending_key = {0, 0}, completion_key = {0, 0};
   rumqttc_publish_options_t options = example_publish_options(RUMQTTC_QOS_1);
+  unsigned service_batches = 0;
   int finished = 0, connected = 0, result = 1;
   if (argc != 3) { fprintf(stderr, "usage: %s HOST PORT\n", argv[0]); return 2; }
   if (rumqttc_notification_capabilities() == 0) return 77;
@@ -59,7 +60,8 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < count; ++i) {
       rumqttc_notification_ready_t *entry = &entries[i];
       if (entry->source_kind == RUMQTTC_NOTIFICATION_EVENTS) {
-        for (;;) {
+        /* Leave a hot source's remaining events discoverable for the next dispatch. */
+        for (unsigned received = 0; received < 64; ++received) {
           rumqttc_event_t *event = NULL;
           status = rumqttc_client_event_try_recv(client, &event, NULL);
           if (status == RUMQTTC_WOULD_BLOCK) break;
@@ -90,6 +92,11 @@ int main(int argc, char **argv) {
         finished = 1;
       }
     }
+    if (finished && connected) break;
+    if (count != 0 && ++service_batches < 4) continue;
+    service_batches = 0;
+    /* A reactor services its other callbacks at this dispatch boundary. Only
+     * prepare_wait may authorize sleeping; unread events remain level-ready. */
     RUN(rumqttc_notification_prepare_wait(context, &service_again, NULL));
     if ((!finished || !connected) && !service_again && wait_for_change(context) != 0) goto cleanup;
   }

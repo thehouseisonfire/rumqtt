@@ -95,6 +95,63 @@ fn disabled_readiness_keeps_api_exports_and_reports_capabilities_separately() {
 }
 
 #[cfg(feature = "readiness")]
+unsafe fn acknowledge_invalidations(
+    context: *const rumqttc_notification_context,
+    keys: &[rumqttc_notification_key_t],
+) {
+    // SAFETY: The caller retains the context and supplies its live registration keys.
+    unsafe {
+        #[repr(C)]
+        struct ExtendedEntry {
+            entry: rumqttc_notification_ready_t,
+            extension: u64,
+        }
+        let mut entries: [ExtendedEntry; 3] = std::array::from_fn(|_| ExtendedEntry {
+            // The C record contains only integers and integer registration keys.
+            entry: std::mem::zeroed(),
+            extension: u64::MAX,
+        });
+        let mut observed = Vec::new();
+        while observed.len() != keys.len() {
+            let mut count = 0;
+            assert_eq!(
+                rumqttc_notification_collect(
+                    context,
+                    entries.as_mut_ptr().cast(),
+                    size_of::<ExtendedEntry>(),
+                    entries.len(),
+                    &raw mut count,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            assert!(count > 0 && count <= entries.len());
+            for extended in &entries[..count] {
+                assert_eq!(extended.extension, u64::MAX);
+                let entry = &extended.entry;
+                assert_eq!(entry.flags & 1, 1);
+                let expected = keys[usize::try_from(entry.tag - 7).unwrap()];
+                assert_eq!(
+                    (entry.key.slot, entry.key.generation),
+                    (expected.slot, expected.generation)
+                );
+                assert!(!observed.contains(&entry.tag));
+                observed.push(entry.tag);
+                assert_eq!(
+                    rumqttc_notification_acknowledge(
+                        context,
+                        entry.key,
+                        entry.revision,
+                        ptr::null_mut()
+                    ),
+                    0
+                );
+            }
+        }
+    }
+}
+
+#[cfg(feature = "readiness")]
 #[test]
 fn client_destruction_invalidates_events_without_releasing_context_resources() {
     unsafe {
@@ -136,30 +193,25 @@ fn client_destruction_invalidates_events_without_releasing_context_resources() {
             ),
             0
         );
+        let mut keys = vec![key];
+        for tag in 8..15 {
+            assert_eq!(
+                rumqttc_notification_register_events(
+                    retained,
+                    client,
+                    tag,
+                    &raw mut key,
+                    ptr::null_mut()
+                ),
+                0
+            );
+            keys.push(key);
+        }
         assert_eq!(
             rumqttc_client_destroy_timeout_ms(client, 5000, ptr::null_mut()),
             0
         );
-        let mut entries: [rumqttc_notification_ready_t; 2] = std::mem::zeroed();
-        let mut count = 0;
-        assert_eq!(
-            rumqttc_notification_collect(
-                retained,
-                entries.as_mut_ptr(),
-                size_of::<rumqttc_notification_ready_t>(),
-                2,
-                &raw mut count,
-                ptr::null_mut()
-            ),
-            0
-        );
-        assert_eq!(count, 1);
-        assert_eq!(entries[0].tag, 7);
-        assert_eq!(entries[0].flags & 1, 1);
-        assert_eq!(
-            rumqttc_notification_acknowledge(retained, key, entries[0].revision, ptr::null_mut()),
-            0
-        );
+        acknowledge_invalidations(retained, &keys);
         let mut ready = 99;
         assert_eq!(
             rumqttc_notification_prepare_wait(retained, &raw mut ready, ptr::null_mut()),

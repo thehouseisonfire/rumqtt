@@ -2,7 +2,7 @@
 """Measure explicit readiness binaries without building or modifying sources.
 
 --profile LABEL=MODE:BINARY --library LABEL=LIBRARY (repeat each for every profile).
-Requires psutil and Mosquitto. Mode is poll or active.
+Requires psutil and Mosquitto. Modes: poll, active (original), reactor, blocking.
 """
 from __future__ import annotations
 
@@ -41,7 +41,12 @@ def run_case(args, label, mode, binary, library, count, protocol, repetition):
                 environment = os.environ.copy()
                 environment["RUMQTTC_TEST_PORT"] = str(port)
                 environment["PATH"] = str(library.parent) + os.pathsep + environment.get("PATH", "")
-                child = subprocess.Popen([str(binary), mode, str(count), str(args.rounds), str(protocol)],
+                command = [str(binary), mode, str(count), str(args.rounds), str(protocol)]
+                if args.capacity is not None:
+                    command.extend(["--capacity", str(args.capacity)])
+                if args.host_work_us is not None:
+                    command.extend(["--host-work-us", str(args.host_work_us)])
+                child = subprocess.Popen(command,
                                          stdout=subprocess.PIPE, stderr=log, text=True, env=environment)
                 process = psutil.Process(child.pid)
                 result = {"profile": label, "mode": mode, "clients": count, "protocol": protocol,
@@ -66,6 +71,8 @@ def run_case(args, label, mode, binary, library, count, protocol, repetition):
                     raise RuntimeError("consumer did not confirm all observations")
                 result["throughput"] = result["operations"] * 1e9 / result["elapsed_ns"]
                 result["latency"] = distribution(result["latency_ns"])
+                if "publish_cpu_ns" in result:
+                    result["cpu_ns_per_operation"] = result["publish_cpu_ns"] / result["operations"]
                 return result
             finally:
                 if child is not None:
@@ -76,8 +83,8 @@ def run_case(args, label, mode, binary, library, count, protocol, repetition):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", action="append", required=True)
-    parser.add_argument("--library", action="append", required=True)
+    parser.add_argument("--profile", action="append", required=True, help="LABEL=MODE:BINARY")
+    parser.add_argument("--library", action="append", required=True, help="LABEL=LIBRARY")
     parser.add_argument("--mosquitto", default="mosquitto")
     parser.add_argument("--clients", default="1,32")
     parser.add_argument("--protocols", default="1,2")
@@ -85,6 +92,9 @@ def main():
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cpus", help="optional CPU affinity inherited by brokers and consumers")
+    parser.add_argument("--capacity", type=int, help="registration capacity; omit for the original workload")
+    parser.add_argument("--host-work-us", type=int,
+                        help="unrelated host computation per round; omit for original workload")
     args = parser.parse_args()
     if args.cpus:
         psutil.Process().cpu_affinity([int(cpu) for cpu in args.cpus.split(",")])
@@ -93,13 +103,14 @@ def main():
     for entry in args.profile:
         label, value = entry.split("=", 1)
         mode, binary = value.split(":", 1)
-        if mode not in {"poll", "active"}:
-            parser.error("profile mode must be poll or active")
+        if mode not in {"poll", "active", "reactor", "blocking"}:
+            parser.error("profile mode must be poll, active, reactor, or blocking")
         profiles.append((label, mode, Path(binary).resolve(), libraries[label]))
     report = {"platform": platform.platform(), "machine": platform.machine(),
               "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "rounds": args.rounds, "repetitions": args.repetitions, "runs": [],
-              "cpu_affinity": psutil.Process().cpu_affinity() if hasattr(psutil.Process(), "cpu_affinity") else None}
+              "cpu_affinity": psutil.Process().cpu_affinity() if hasattr(psutil.Process(), "cpu_affinity") else None,
+              "capacity": args.capacity, "host_work_us": args.host_work_us}
     root = Path(__file__).resolve().parents[3]
     report["rustc"] = subprocess.check_output(["rustc", "--version"], text=True).strip()
     report["broker"] = subprocess.check_output([args.mosquitto, "-h"], text=True).splitlines()[0]
@@ -131,11 +142,20 @@ def main():
         for protocol in map(int, args.protocols.split(",")):
             for label, *_ in profiles:
                 runs = [r for r in report["runs"] if (r["profile"], r["clients"], r["protocol"]) == (label, count, protocol)]
-                report["summary"].append({"profile": label, "clients": count, "protocol": protocol,
+                summary = {"profile": label, "clients": count, "protocol": protocol,
                     "throughput_median": statistics.median(r["throughput"] for r in runs),
+                    "throughput_min": min(r["throughput"] for r in runs),
+                    "throughput_max": max(r["throughput"] for r in runs),
                     "p99_ns_median": statistics.median(r["latency"]["p99_ns"] for r in runs),
+                    "p99_ns_min": min(r["latency"]["p99_ns"] for r in runs),
+                    "p99_ns_max": max(r["latency"]["p99_ns"] for r in runs),
                     "idle_cpu_seconds_median": statistics.median(r["idle_cpu_seconds"] for r in runs),
-                    "idle_waits_median": statistics.median(r["idle_waits"] for r in runs)})
+                    "idle_waits_median": statistics.median(r["idle_waits"] for r in runs)}
+                if all("cpu_ns_per_operation" in r for r in runs):
+                    summary["cpu_ns_per_operation_median"] = statistics.median(r["cpu_ns_per_operation"] for r in runs)
+                    summary["publish_cpu_ns_median"] = statistics.median(r["publish_cpu_ns"] for r in runs)
+                    summary["idle_cpu_ns_median"] = statistics.median(r["idle_cpu_ns"] for r in runs)
+                report["summary"].append(summary)
     args.output.write_text(json.dumps(report, separators=(",", ":")) + "\n")
 
 

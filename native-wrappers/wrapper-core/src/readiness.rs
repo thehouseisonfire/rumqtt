@@ -177,7 +177,11 @@ impl Source {
     fn subscribe(&self, target: &Arc<Target>) -> Result<()> {
         let _guard = lock(&self.administration);
         let current = self.subscribers.load();
-        let mut next = Vec::with_capacity(MAX_SOURCE_SUBSCRIBERS);
+        // Most operation sources have one observer. Grow only with their bounded fan-out.
+        let capacity = current.as_ref().map_or(1, |subscribers| {
+            (subscribers.len() + 1).min(MAX_SOURCE_SUBSCRIBERS)
+        });
+        let mut next = Vec::with_capacity(capacity);
         if let Some(current) = &*current {
             next.extend(
                 current

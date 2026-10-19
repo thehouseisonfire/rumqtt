@@ -5,6 +5,13 @@ correctness/ABI validation passed. The performance acceptance gate is not met,
 and native macOS/Windows execution remains outstanding. TODO46 connection-observer
 integration is implemented; its validation is recorded in TODO46.
 
+Direction: retain experimental opt-in support and perform one bounded pass over
+measured administration and host-loop costs. Preserve the original 5% throughput
+and 10% p99 gates; a scoped application-specific acceptance contract would be a
+separate decision. Do not add spinning policies, notification threads, or scheduler
+machinery to match busy polling. If the original gates remain binding and unmet,
+defer acceptance instead of expanding this design.
+
 ## Goal
 
 Let a C application integrate events and operation observations into its own
@@ -164,3 +171,14 @@ predefined 5% gate; p99 evidence is also noisy and crosses the predefined gate
 in some cases. The performance checkbox remains open. Event-burst, hot-peer,
 retained-memory, and native platform measurements are still required before
 claiming the plan's acceptance criteria are satisfied.
+
+The bounded follow-up sizes subscriber storage to observed fan-out while preserving
+the registration, enumeration, and publication/revision/close protocol. Free-slot
+and guarded-batch prototypes were not retained after mixed measurements; no new
+public API or context storage was added.
+The example bounds dispatch and drains ready work before rearming. The benchmark
+keeps the original `active` workload and adds `reactor` and blocking-completion
+comparisons, sparse context capacity, simulated host computation, and active CPU
+accounting. These diagnostics do not replace the original acceptance gates or
+establish actual host wake latency, hot-peer performance, retained-result memory,
+or native macOS/Windows correctness. See the measurement report for evidence.

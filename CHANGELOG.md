@@ -2,6 +2,13 @@
 
 ### Changed
 
+- Wrapper-core/C: Size optional readiness subscriber storage to observed fan-out.
+  Preserve registration, revision/rearm, close, and cancellation behavior without
+  adding APIs or notification machinery. The C host-loop example bounds event
+  dispatch and drains available hints before rearming. Readiness remains disabled
+  by default; its original performance and native-platform acceptance gates remain
+  open. See [measurements](native-wrappers/wrapper-core/benches/readiness.md).
+
 - C: Add `rumqttc_client_v5_publish_budget_snapshot_v2` to inspect the MQTT 5
   checkpoint-recovery admission gate alongside coherent publish usage and limits
   without polling the driver or consuming events. The size-versioned output
