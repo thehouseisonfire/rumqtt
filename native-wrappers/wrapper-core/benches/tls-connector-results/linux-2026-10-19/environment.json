@@ -1,0 +1,54 @@
+{
+  "created_utc": "2026-10-19T17:23:13.421246+00:00",
+  "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+  "machine": "x86_64",
+  "logical_cpus": 16,
+  "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+  "openssl": "OpenSSL 3.6.5 29 Sep 2026 (Library: OpenSSL 3.6.5 29 Sep 2026)",
+  "git_head": "580d3f265193cb772d543b171f4515112beee852",
+  "source_sha256": {
+    "native-wrappers/wrapper-core/src/backend/tls_connector_proof.rs": "8216e451cf4bc06727033270d78458bedd7baae611a025655c3676acbc0a182c",
+    "native-wrappers/wrapper-core/tests/fixtures/tls_connector.c": "9d689587e7111a3421f1be3ce0da48a77316bb36e53e858ca8813772b28c3f75",
+    "native-wrappers/wrapper-core/build.rs": "6e9e775abd32390e366ca9e04813645d1125eac6716bb19ea153abe31b68bf55",
+    "native-wrappers/Cargo.lock": "1f72d970752063e48861b1b6788a6ef5758c5582b4d9ca757f78c8582127b713"
+  },
+  "messages": 10000,
+  "repetitions": 7,
+  "build_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--release",
+    "--manifest-path",
+    "/home/eagle/MQTT/letsgo/rumqtt/native-wrappers/Cargo.toml",
+    "-p",
+    "rumqttc-wrapper-core-next",
+    "--features",
+    "tls-connector-proof",
+    "--lib",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "runs": [
+    {
+      "mode": "threaded",
+      "instrumented": false,
+      "gate_passed": false
+    },
+    {
+      "mode": "inline",
+      "instrumented": false,
+      "gate_passed": false
+    },
+    {
+      "mode": "threaded",
+      "instrumented": true,
+      "gate_passed": null
+    },
+    {
+      "mode": "inline",
+      "instrumented": true,
+      "gate_passed": null
+    }
+  ]
+}

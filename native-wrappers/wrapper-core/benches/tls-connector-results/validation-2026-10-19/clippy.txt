@@ -1,0 +1,2 @@
+    Checking rumqttc-wrapper-core-next v0.34.0-alpha (/home/eagle/MQTT/letsgo/rumqtt/native-wrappers/wrapper-core)
+    Finished `dev` profile [unoptimized] target(s) in 2.62s

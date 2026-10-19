@@ -1,0 +1,21 @@
+   Compiling rumqttc-wrapper-core-next v0.34.0-alpha (/home/eagle/MQTT/letsgo/rumqtt/native-wrappers/wrapper-core)
+    Finished `test` profile [unoptimized] target(s) in 1.47s
+     Running unittests src/lib.rs (native-wrappers/target/debug/deps/rumqttc_wrapper_core-619a015f34eff9d7)
+
+running 13 tests
+test backend::tls_connector_proof::measure_external_tls_delivery_gate ... ignored, release-only measurement; emits private prototype CSV
+test backend::tls_connector_proof::cancelled_unpolled_work_retains_capacity_until_final_release ... ok
+test backend::tls_connector_proof::retained_cancelled_operations_exhaust_registration_capacity ... ok
+test backend::tls_connector_proof::lower_read_does_not_block_writer_and_cancellation_retires_both ... ok
+test backend::tls_connector_proof::lower_eof_without_close_notify_is_truncation ... ok
+test backend::tls_connector_proof::hostname_rejection_is_terminal_and_releases_chain ... ok
+test backend::tls_connector_proof::untrusted_certificate_chain_is_terminal ... ok
+test backend::tls_connector_proof::shutdown_sends_close_notify_with_an_application_read_pending ... ok
+test backend::tls_connector_proof::tls_control_writes_wait_for_an_existing_lower_flush ... ok
+test backend::tls_connector_proof::c_tls_handshake_traffic_and_authenticated_shutdown ... ok
+test backend::tls_connector_proof::handshake_timeout_does_not_stall_shared_execution ... ok
+test backend::tls_connector_proof::native_v4_v5_compose_nested_external_tls_wss_and_custom_base_streams ... ok
+test backend::tls_connector_proof::established_stream_does_not_expire_with_handshake_deadline ... ok
+
+test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 119 filtered out; finished in 1.04s
+

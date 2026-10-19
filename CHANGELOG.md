@@ -8,6 +8,10 @@
   dispatch and drains available hints before rearming. Readiness remains disabled
   by default; its original performance and native-platform acceptance gates remain
   open. See [measurements](native-wrappers/wrapper-core/benches/readiness.md).
+- Wrapper development: Add a private C/OpenSSL TLS-layer composition prototype,
+  cancellation/resource-limit tests and reproducible native-versus-external TLS
+  measurements for TODO49. Public connector ABI delivery remains gated on the
+  [prototype's acceptance criteria](native-wrappers/wrapper-core/benches/tls-connector.md).
 
 - C: Add `rumqttc_client_v5_publish_budget_snapshot_v2` to inspect the MQTT 5
   checkpoint-recovery admission gate alongside coherent publish usage and limits
@@ -376,6 +380,11 @@
   defaulted Rust config/snapshot fields; exhaustive struct literals need updating.
 
 ### Fixed
+
+- Wrapper development: Flush the private TLS prototype's generated ciphertext
+  through the serialized lower writer so buffered streams can complete handshakes
+  and deliver TLS control output. Wait for the final handshake flush before
+  returning success, and propagate flush failures and establishment timeouts.
 
 - Wrapper readiness: Preserve event-source invalidation when consumer destruction
   races collection and acknowledgement, including before the first enqueue hook.

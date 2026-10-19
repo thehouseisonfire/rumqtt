@@ -12,7 +12,7 @@ license.workspace = true
 authors.workspace = true
 readme = "README.md"
 # Raw performance evidence belongs in the repository, not the published library.
-exclude = ["benches/execution-results/**", "benches/readiness-results/**"]
+exclude = ["benches/execution-results/**", "benches/readiness-results/**", "benches/tls-connector-results/**"]
 
 [lib]
 name = "rumqttc_wrapper_core"
@@ -38,6 +38,8 @@ panic-testing = []
 readiness = ["dep:arc-swap", "dep:windows-sys"]
 # Compile the private C regression fixture into adapter unit tests.
 transport-proof = ["dep:cc"]
+# Private application-owned TLS feasibility/measurement harness; never a public C capability.
+tls-connector-proof = ["dep:cc", "use-native-tls", "http-proxy"]
 
 [dependencies]
 async-http-proxy = { version = "1.2.5", default-features = false, optional = true }

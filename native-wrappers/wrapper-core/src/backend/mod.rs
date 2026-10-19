@@ -603,3 +603,6 @@ pub const fn test_v4_puback(packet_id: u16) -> PreparedAck {
         packet_id,
     )))
 }
+
+#[cfg(all(test, feature = "tls-connector-proof"))]
+mod tls_connector_proof;

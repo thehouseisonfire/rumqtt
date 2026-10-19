@@ -1,4 +1,23 @@
 fn main() {
+    println!("cargo:rerun-if-changed=tests/fixtures/tls_connector.c");
+    #[cfg(feature = "tls-connector-proof")]
+    {
+        let mut build = cc::Build::new();
+        build
+            .file("tests/fixtures/tls_connector.c")
+            .warnings_into_errors(true);
+        if build.get_compiler().is_like_msvc() {
+            build.flag("/std:c11");
+        } else {
+            build.flag("-std=c11").flag("-Wextra").flag("-Wpedantic");
+        }
+        if let Some(include) = std::env::var_os("DEP_OPENSSL_INCLUDE") {
+            build.include(include);
+        }
+        build.compile("rumqttc_tls_connector_proof");
+        println!("cargo:rustc-link-lib=ssl");
+        println!("cargo:rustc-link-lib=crypto");
+    }
     println!("cargo:rustc-check-cfg=cfg(native_tls_version_bounds)");
     for key in [
         "DEP_OPENSSL_VERSION_NUMBER",

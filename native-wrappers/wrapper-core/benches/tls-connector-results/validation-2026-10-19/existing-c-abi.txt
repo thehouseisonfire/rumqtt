@@ -1,0 +1,60 @@
+    Blocking waiting for file lock on package cache
+   Compiling serde_core v1.0.229
+   Compiling log v0.4.34
+   Compiling rustls v0.23.46
+   Compiling utf8parse v0.2.2
+   Compiling syn v2.0.119
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle-query v1.1.5
+   Compiling getrandom v0.4.3
+   Compiling anstyle v1.0.14
+   Compiling colorchoice v1.0.5
+   Compiling zmij v1.0.23
+   Compiling serde v1.0.229
+   Compiling clap_lex v1.1.1
+   Compiling strsim v0.11.1
+   Compiling winnow v1.0.4
+   Compiling serde_json v1.0.154
+   Compiling anstyle-parse v1.0.0
+   Compiling serde_derive v1.0.229
+   Compiling cbindgen v0.29.4
+   Compiling winnow v0.7.15
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling heck v0.5.0
+   Compiling rumqttc-wrapper-core-next v0.34.0-alpha (/home/eagle/MQTT/letsgo/rumqtt/native-wrappers/wrapper-core)
+   Compiling anstream v1.0.0
+   Compiling tempfile v3.27.0
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling clap_builder v4.6.7
+   Compiling indexmap v2.14.2
+   Compiling serde_spanned v1.1.2
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling clap v4.6.7
+   Compiling tokio-rustls v0.26.6
+   Compiling tungstenite v0.30.0
+   Compiling async-tungstenite v0.35.0
+   Compiling rumqttc-core-next v0.34.0-alpha (/home/eagle/MQTT/letsgo/rumqtt/rumqttc-core)
+   Compiling synstructure v0.13.2
+   Compiling asn1-rs-impl v0.2.0
+   Compiling asn1-rs-derive v0.6.0
+   Compiling rumqttc-v5-next v0.34.0-alpha (/home/eagle/MQTT/letsgo/rumqtt/rumqttc-v5)
+   Compiling rumqttc-v4-next v0.34.0-alpha (/home/eagle/MQTT/letsgo/rumqtt/rumqttc-v4)
+   Compiling asn1-rs v0.7.2
+   Compiling der-parser v10.0.0
+   Compiling oid-registry v0.8.1
+   Compiling x509-parser v0.18.1
+   Compiling rumqttc-c-next v0.1.0-alpha (/home/eagle/MQTT/letsgo/rumqtt/native-wrappers/c)
+    Finished `dev` profile [unoptimized] target(s) in 10.83s
+-- The C compiler identification is GNU 16.2.1
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Configuring done (0.4s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/eagle/MQTT/letsgo/rumqtt/native-wrappers/target/debug/pkgconfig-check
+prefix=${pcfiledir}/../..
+Libs.private: -lpthread -ldl -lm
