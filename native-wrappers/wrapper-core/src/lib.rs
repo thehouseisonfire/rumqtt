@@ -147,5 +147,5 @@ mod file_store;
 #[cfg(feature = "file-session-store")]
 pub use file_store::{
     FileStore, FileStoreClientLease, FileStoreContext, FileStoreContextOptions, FileStoreError,
-    FileStoreFailure, FileStoreOperation, FileStoreOptions, FileStoreResult,
+    FileStoreFailure, FileStoreOperation, FileStoreOptions, FileStoreResult, FileStoreValue,
 };

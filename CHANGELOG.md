@@ -2,6 +2,10 @@
 
 ### Changed
 
+- Wrapper-core/C: Account for all peak administration key buffers in optional file
+  stores. Rust operation results now return `FileStoreValue<T>`, retaining byte
+  reservations until the final shared result owner releases them. The C ABI is unchanged.
+
 - Wrapper development: Park TODO49's external-TLS C API and further bridge
   redesign after corrected performance measurements and targeted profiling.
   Retain the private experiment and reproducible evidence; reopening requires a

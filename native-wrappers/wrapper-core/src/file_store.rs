@@ -284,8 +284,32 @@ impl Drop for Observation {
         c.observations -= 1;
     }
 }
+struct BudgetedValue<T> {
+    value: T,
+    _bytes: Arc<ByteReservation>,
+}
+/// Shared operation result that retains its byte reservation until its final owner is dropped.
+///
+/// Dereferencing borrows the result without detaching it from its reservation.
+pub struct FileStoreValue<T>(Arc<BudgetedValue<T>>);
+impl<T> Clone for FileStoreValue<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl<T> std::ops::Deref for FileStoreValue<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0.value
+    }
+}
+impl<T: std::fmt::Debug> std::fmt::Debug for FileStoreValue<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.value.fmt(f)
+    }
+}
 struct Outcome<T> {
-    value: Mutex<Option<Result<Arc<T>>>>,
+    value: Mutex<Option<Result<FileStoreValue<T>>>>,
     changed: Condvar,
     notify: tokio::sync::Notify,
     _reservation: Observation,
@@ -298,10 +322,10 @@ impl<T> Clone for FileStoreOperation<T> {
     }
 }
 impl<T> FileStoreOperation<T> {
-    pub fn poll(&self) -> Option<Result<Arc<T>>> {
+    pub fn poll(&self) -> Option<Result<FileStoreValue<T>>> {
         lock(&self.0.value).clone()
     }
-    pub fn wait(&self, timeout: Duration) -> crate::Result<Option<Result<Arc<T>>>> {
+    pub fn wait(&self, timeout: Duration) -> crate::Result<Option<Result<FileStoreValue<T>>>> {
         crate::execution::check_wait(timeout)?;
         let deadline = Instant::now()
             .checked_add(timeout)
@@ -418,13 +442,19 @@ impl FileStoreContext {
         let output = state.clone();
         // Submission and shutdown are serialized by counts. No foreign code runs under it.
         let job = Box::new(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(budget)))
-                .unwrap_or_else(|payload| {
-                    std::mem::forget(payload);
-                    Err(error(FileStoreFailure::Panic))
-                });
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(budget.clone())))
+                    .unwrap_or_else(|payload| {
+                        std::mem::forget(payload);
+                        Err(error(FileStoreFailure::Panic))
+                    });
             drop(admission);
-            *lock(&output.value) = Some(result.map(Arc::new));
+            *lock(&output.value) = Some(result.map(|value| {
+                FileStoreValue(Arc::new(BudgetedValue {
+                    value,
+                    _bytes: budget,
+                }))
+            }));
             output.changed.notify_all();
             output.notify.notify_waiters();
         });
@@ -887,11 +917,15 @@ impl FileStore {
         work: impl FnOnce(Arc<StoreOwner>, Arc<ByteReservation>) -> Result<T> + Send + 'static,
     ) -> Result<FileStoreOperation<T>> {
         let _publication = lock(&self.0.context.0.submissions);
+        // Peak key storage: closure, lease, work map, native key, encoded key,
+        // and (for exclusive operations) the exclusive set.
         let key_bytes = key.as_ref().map_or(0, |k| {
             k.scope
                 .len()
                 .saturating_add(k.client_id.len())
-                .saturating_mul(4)
+                .saturating_mul(if exclusive { 6 } else { 5 })
+                // The adapter encoding adds a version, protocol and two lengths.
+                .saturating_add(10)
         });
         let path_bytes = self
             .0
@@ -1397,8 +1431,11 @@ async fn wait_owned<T: Send + Sync + 'static>(op: FileStoreOperation<T>) -> Resu
         notified.as_mut().enable();
         if let Some(result) = op.poll() {
             lock(&op.0.value).take();
-            return result
-                .and_then(|v| Arc::try_unwrap(v).map_err(|_| error(FileStoreFailure::Panic)));
+            return result.and_then(|v| {
+                Arc::try_unwrap(v.0)
+                    .map(|v| v.value)
+                    .map_err(|_| error(FileStoreFailure::Panic))
+            });
         }
         notified.await;
     }

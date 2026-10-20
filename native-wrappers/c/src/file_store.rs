@@ -11,7 +11,7 @@ use crate::error::ErrorHandle;
 #[cfg(feature = "file-session-store")]
 use rumqttc_wrapper_core::{
     FileStore, FileStoreContext, FileStoreContextOptions, FileStoreError, FileStoreOperation,
-    FileStoreOptions, FileStoreResult, ProtocolVersion,
+    FileStoreOptions, FileStoreResult, FileStoreValue, ProtocolVersion,
 };
 use std::{ffi::c_void, ptr, time::Duration};
 
@@ -738,7 +738,7 @@ fn timestamp(time: std::time::SystemTime) -> Option<(i64, u32)> {
 #[cfg(feature = "file-session-store")]
 unsafe fn result(
     handle: *const rumqttc_file_store_operation,
-) -> Result<std::sync::Arc<FileStoreResult>, ErrorHandle> {
+) -> Result<FileStoreValue<FileStoreResult>, ErrorHandle> {
     let Operation::Admin(op) = unsafe { operation(handle) }? else {
         return Err(ErrorHandle::argument(
             "operation has no administration result",

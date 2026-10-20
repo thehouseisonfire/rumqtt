@@ -3,7 +3,7 @@ const DEADLINE: Duration = Duration::from_secs(5);
 fn context() -> FileStoreContext {
     FileStoreContext::new(FileStoreContextOptions::default()).unwrap()
 }
-fn complete<T>(op: FileStoreOperation<T>) -> Arc<T> {
+fn complete<T>(op: FileStoreOperation<T>) -> FileStoreValue<T> {
     op.wait(DEADLINE)
         .unwrap()
         .expect("operation did not finish")
@@ -590,4 +590,60 @@ fn context_shutdown_rejects_configuration_before_its_close_worker_runs() {
     tx.send(()).unwrap();
     complete(blocked);
     assert!(c.join(DEADLINE).unwrap());
+}
+
+#[test]
+fn exported_results_keep_bytes_reserved_after_operation_and_worker_exit() {
+    let c = FileStoreContext::new(FileStoreContextOptions {
+        byte_capacity: 4096,
+        ..FileStoreContextOptions::default()
+    })
+    .unwrap();
+    let op = c.operation(4096, || Ok(vec![0u8; 4096])).unwrap();
+    let waited = op.wait(DEADLINE).unwrap().unwrap().unwrap();
+    let polled = op.poll().unwrap().unwrap();
+    let retained = polled.clone();
+    drop(op);
+    assert!(matches!(
+        c.operation(1, || Ok(())),
+        Err(e) if e.kind == FileStoreFailure::Resources
+    ));
+    // Joining removes worker ownership, making reservation lifetime deterministic.
+    stop(&c);
+    assert_eq!(lock(&c.0.shared.counts).observations, 0);
+    assert_eq!(lock(&c.0.shared.counts).bytes, 4096);
+    assert_eq!(retained.len(), 4096);
+    drop(waited);
+    drop(polled);
+    assert_eq!(lock(&c.0.shared.counts).bytes, 4096);
+    drop(retained);
+    assert_eq!(lock(&c.0.shared.counts).bytes, 0);
+}
+
+#[test]
+fn long_administrative_keys_reserve_the_full_peak_before_execution() {
+    for protocol in [ProtocolVersion::V4, ProtocolVersion::V5] {
+        let root = tempfile::tempdir().unwrap();
+        let c = FileStoreContext::new(FileStoreContextOptions {
+            byte_capacity: 5 * 1024 * 1024 + 512 * 1024,
+            ..FileStoreContextOptions::default()
+        })
+        .unwrap();
+        let store = open(&c, root.path(), protocol);
+        let scope = "s".repeat(1024 * 1024);
+        for op in [
+            store.clear(scope.clone(), "client".into()),
+            store.quarantine(scope.clone(), "client".into()),
+        ] {
+            assert!(matches!(op, Err(e) if e.kind == FileStoreFailure::Resources));
+        }
+        // Rejected admission releases exclusive authority; inspection needs only
+        // five simultaneous copies and fits the same budget.
+        assert!(matches!(
+            *complete(store.inspect(scope, "client".into()).unwrap()),
+            FileStoreResult::Inspection { present: false, .. }
+        ));
+        complete(store.close().unwrap());
+        stop(&c);
+    }
 }

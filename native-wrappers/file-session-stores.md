@@ -55,7 +55,9 @@ Decoding enforces the smaller of four times the configured serialized bound and
 allocations. Collection lengths must also be justified by remaining input before
 allocation. Streaming reads are bounded by the preflight size even if an excluded
 external writer changes the file. Encoders stop before growing past their bound.
-Reservations include copied keys/paths and remain charged while results are held.
+Reservations include all simultaneous copied keys/paths and remain charged while results are held.
+Rust operation polling and waiting return `FileStoreValue<T>` handles that borrow the
+result through `Deref` and retain its byte reservation independently of the operation.
 These are logical storage bounds, excluding allocator, engine and thread overhead.
 Worker counts, active engine operations and owned store counts are bounded separately.
 Windows cleanup reserves report storage and rejects namespaces whose directory
