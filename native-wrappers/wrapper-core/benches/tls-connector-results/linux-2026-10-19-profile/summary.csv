@@ -1,0 +1,10 @@
+profile,process_cpu_us_per_message,voluntary_switches_per_message,involuntary_switches_per_message,cpu_samples,bridge_sample_pct,runtime_channels_locks_sample_pct,allocator_sample_pct,memory_copy_fill_sample_pct,syscall_stubs_sample_pct,tls_crypto_sample_pct,unresolved_sample_pct,other_sample_pct
+native-single-1024,9.988,8e-05,0.00104,367,0.0,22.343,5.995,13.896,1.09,22.616,0.272,33.787
+threaded-single-1024,45.557,9.23327,0.00428,1284,17.056,29.283,5.841,6.231,5.14,18.224,0.0,18.224
+inline-single-1024,14.607,8e-05,0.00189,606,18.152,24.092,5.941,9.076,0.825,19.802,0.0,22.112
+native-nested-1024,12.461,7e-05,0.00062,446,0.0,13.901,8.072,9.865,2.018,41.48,0.224,24.439
+threaded-nested-1024,73.443,15.62265,0.00528,2272,19.146,31.382,5.282,4.93,5.194,17.121,0.0,16.945
+inline-nested-1024,22.124,7e-05,0.00104,980,20.0,26.02,6.633,6.122,1.224,24.286,0.0,15.714
+native-nested-16384,34.35,0.0001,0.00029,1370,0.0,5.401,4.38,9.051,1.095,54.38,0.0,25.693
+threaded-nested-16384,126.679,18.19686,0.0098,4081,13.134,22.029,3.7,13.306,3.798,27.346,0.0,16.687
+inline-nested-16384,47.168,7e-05,0.00035,2063,10.664,14.493,4.023,10.567,0.436,41.154,0.0,18.662

@@ -1,0 +1,60 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 2K of event 'cpu-clock:u'
+# Event count (approx.): 4553106176
+#
+# Children      Self  Symbol                                                                                                                                                                                              IPC   [IPC Coverage]
+# ........  ........  ..................................................................................................................................................................................................  ....................
+#
+     6.65%     6.65%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit                                                                                                                            -      -
+     5.41%     0.22%  [.] SSL_read_ex                                                                                                                                                                                     -      -
+     5.19%     0.04%  [.] SSL_write_ex2                                                                                                                                                                                   -      -
+     5.15%     5.15%  [.] 0x00000000000b5a22                                                                                                                                                                              -      -
+     5.15%     0.97%  [.] epoll_wait                                                                                                                                                                                      -      -
+     5.15%     0.00%  [.] 0x00007f96270b5a22                                                                                                                                                                              -      -
+     5.02%     0.00%  [.] internal_syscall_cancel (inlined)                                                                                                                                                               -      -
+     5.02%     0.00%  [.] syscall_cancel (inlined)                                                                                                                                                                        -      -
+     5.02%     0.00%  [.] 0x00007f9627c9e4e2                                                                                                                                                                              -      -
+     4.80%     0.00%  [.] 0x00007f9627d2c002                                                                                                                                                                              -      -
+     4.23%     0.00%  [.] 0x00007f9627d2ae84                                                                                                                                                                              -      -
+     3.96%     0.00%  [.] 0x00007f9627d2fff7                                                                                                                                                                              -      -
+     3.79%     0.00%  [.] 0x00007f9627d2de89                                                                                                                                                                              -      -
+     3.39%     3.39%  [.] tokio::runtime::scheduler::inject::Inject<T>::pop                                                                                                                                               -      -
+     3.35%     0.35%  [.] clock_gettime                                                                                                                                                                                   -      -
+     3.30%     3.30%  [.] <flume::async::RecvStream<T> as futures_core::stream::Stream>::poll_next                                                                                                                        -      -
+     2.99%     2.99%  [.] __vdso_clock_gettime                                                                                                                                                                            -      -
+     2.77%     2.77%  [.] tokio::runtime::scheduler::current_thread::<impl tokio::runtime::task::Schedule for alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::schedule                              -      -
+     2.73%     0.00%  [.] 0x00007f9627d2f7f8                                                                                                                                                                              -      -
+     2.64%     2.64%  [.] flume::Shared<T>::recv                                                                                                                                                                          -      -
+     2.55%     2.51%  [.] tokio::runtime::time::Driver::park_internal                                                                                                                                                     -      -
+     2.55%     0.00%  [.] 0x00007f962771d30c                                                                                                                                                                              -      -
+     2.51%     2.51%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit::{{closure}}                                                                                                               -      -
+     2.51%     1.28%  [.] ERR_clear_error                                                                                                                                                                                 -      -
+     2.46%     2.38%  [.] <rumqttc_wrapper_core::backend::tls_connector_proof::HostDriver as core::future::future::Future>::poll                                                                                          -      -
+     2.29%     0.00%  [.] 0x00007f9627d2849b                                                                                                                                                                              -      -
+     1.89%     1.89%  [.] tokio::sync::oneshot::Sender<T>::send                                                                                                                                                           -      -
+     1.89%     0.00%  [.] 0x00007f9627d2385f                                                                                                                                                                              -      -
+     1.85%     0.00%  [.] 0x00007f962772bf4d                                                                                                                                                                              -      -
+     1.80%     1.80%  [.] tokio::runtime::task::waker::wake_by_ref                                                                                                                                                        -      -
+     1.63%     0.00%  [.] EVP_EncryptUpdate                                                                                                                                                                               -      -
+     1.54%     1.54%  [.] tokio::runtime::time::<impl tokio::runtime::time::handle::Handle>::process_at_time                                                                                                              -      -
+     1.41%     1.41%  [.] core::ptr::drop_in_place<rumqttc_wrapper_core::backend::tls_connector_proof::Ticket>                                                                                                            -      -
+     1.36%     1.36%  [.] tokio::runtime::task::raw::poll                                                                                                                                                                 -      -
+     1.36%     0.44%  [.] write                                                                                                                                                                                           -      -
+     1.28%     0.48%  [.] BIO_read                                                                                                                                                                                        -      -
+     1.28%     0.00%  [.] internal_syscall_cancel (inlined)                                                                                                                                                               -      -
+     1.28%     0.00%  [.] syscall_cancel (inlined)                                                                                                                                                                        -      -
+     1.14%     1.14%  [.] <rumqttc_wrapper_core::backend::tls_connector_proof::LowerDriver as core::future::future::Future>::poll                                                                                         -      -
+     1.14%     1.14%  [.] cfree                                                                                                                                                                                           -      -
+     1.10%     1.10%  [.] std::sys::backtrace::__rust_begin_short_backtrace                                                                                                                                               -      -
+     1.10%     0.13%  [.] BIO_write                                                                                                                                                                                       -      -
+     1.06%     1.06%  [.] 0x00000000001b2453                                                                                                                                                                              -      -
+     1.06%     0.00%  [.] 0x00007f96271b2453                                                                                                                                                                              -      -
+
+
+#
+# (Tip: Profiling branch (mis)predictions with: perf record -b / perf report)
+#

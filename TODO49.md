@@ -1,7 +1,8 @@
 # C Application-Owned TLS Layer Connectors
 
-Status: private composition prototype implemented and measured on Linux;
-the agreed performance gate is unmet. Public C ABI delivery remains pending.
+Status: parked after corrected Linux measurements and bounded profiling.
+There is no confirmed application consumer, and the agreed performance gate
+is unmet. Public C ABI implementation and further bridge redesign are deferred.
 
 ## Goal
 
@@ -31,6 +32,7 @@ profile updates remain available under [TODO35.md](TODO35.md).
 The selected reference consumer owns its OpenSSL context and TLS policy while
 retaining native HTTPS-proxy and WebSocket composition. This is the agreed
 reference workload, not a claim about an existing production deployment.
+The user confirmed that no real application is currently blocked on this feature.
 Acceptance requires every measured configuration to reach at least 75% of
 equivalent native TLS throughput and no more than 1.5 times its p99 latency.
 Retain the current native TLS feature gates; backend-free builds remain deferred.
@@ -38,10 +40,11 @@ The private prototype uses limits of 64 chains, 256 live reservations, 8 MiB of
 buffer reservations, and 16 KiB transfers. Metadata/host-allocation accounting
 boundaries are described in the evidence below; these are not public ABI types.
 
-- [x] Record a concrete consumer requirement for an application-owned TLS engine
+- [ ] Confirm a real application requirement for an application-owned TLS engine
   that existing profile, verifier, external-signing, and Established-transport
-  APIs do not adequately meet. Define resource/overhead acceptance budgets for
-  that workload before treating the prototype as evidence for a public ABI.
+  APIs do not adequately meet. A reference workload alone does not satisfy this gate.
+- [x] Define a reference workload and resource/overhead acceptance budgets before
+  treating prototype measurements as evidence for a public ABI.
 - [x] Prototype a C TLS engine using memory BIOs or an equivalent portable byte
   interface over the native connector boundary. Prove both host-initiated I/O on
   a Rust-owned lower stream and native-initiated I/O on the returned host-owned
@@ -60,6 +63,9 @@ boundaries are described in the evidence below; these are not public ABI types.
   design/scope before finalizing public types. Retain the evidence with the plan.
 
 ## Implementation requirements
+
+These requirements remain a design record. They are not the next implementation
+phase while this task is parked.
 
 - [ ] Add an explicit external-connector policy alongside existing backend-built
   profiles. A connector is the TLS authentication authority for its selected
@@ -140,32 +146,34 @@ boundary, independently polled owned lower I/O, and returned plaintext streams.
 It exposes no new C ABI or external-TLS capability bit. See the
 [method, coverage and retained evidence](native-wrappers/wrapper-core/benches/tls-connector.md).
 
-The retained Linux matrix, before the buffered-stream flush fix, uses seven
-interleaved repetitions of 10,000 tracked QoS 1 publications per configuration. Threaded host scheduling
-passes 0/16 workload gates; scheduling host work on the native runtime passes
-8/16. The latter reaches 52.1–86.3% of native throughput, with p99 latency ratios
-of 0.67–1.85. Small-message nested TLS remains below the agreed budget.
-Buffer reservations remain bounded; observed peaks do not establish a total
-heap/RSS bound or account for host OpenSSL allocations.
+The corrected baseline includes the buffered-stream flush fix and retains
+seven interleaved repetitions of 10,000 tracked QoS 1 publications for every
+configuration. Threaded scheduling passes 0/16 workload gates; native-runtime
+scheduling passes 8/16. The gate remains unchanged at 75% native throughput and
+at most 1.5 times native p99 latency in every configuration. Earlier measurements
+are retained as historical evidence, not substituted for the corrected baseline.
 
-The retained validation passed 421 wrapper-core tests (three intentional ignores),
-all 12 focused checks under threaded/inline scheduling with default and native-only
-builds, and strict pedantic/nursery Clippy with the readiness feature enabled.
-A forced key-update policy verifies that control writes wait for an existing
-lower flush; removing serialization makes that regression fail.
+Separate CPU profiles cover single/nested TLS with 1 KiB messages and nested TLS
+with 16 KiB messages. In the selected nested-TLS/1 KiB case, process CPU time per
+publication is approximately 12.5 us native, 73.4 us threaded, and 22.1 us inline.
+Threaded work incurs about 15.6 voluntary context switches per publication;
+inline work still performs roughly 120 Rust allocations versus 16 native.
+These whole-process observations include the fixture/client and do not isolate
+each cost. They support investigating operation/actor overhead if a real need
+emerges; they do not establish a small optimization that meets every gate.
 
-The buffered-stream fix automatically flushes drained TLS output through the
-serialized lower writer and waits for the final handshake flush before success.
-Regressions cover buffered handshakes/control traffic, a blocked or failing final
-flush, and timeout cleanup. The retained performance matrix predates this change
-and must be rerun before assessing the current bridge's overhead.
-Validation after this fix passes 424 wrapper-core tests (three intentional
-ignores), all 15 focused tests in both scheduling modes with default and
-native-only features, strict pedantic/nursery Clippy, and formatting checks.
+No bridge algorithm or public API was changed during this investigation. The
+only added Rust entry point is an ignored single-workload profiling test.
+Buffered-stream, control-write serialization, deadline, cancellation, and owned
+operation correctness coverage remains in place. Observed reservation peaks do
+not establish a total heap/RSS bound or include host OpenSSL allocations.
 
-The measurement requirement above remains unchecked because its full delivery
-gate has not passed. Public profile/registration APIs, typed failure/provenance
-propagation, runtime-update rejection, C completion ownership, redirect/SRV
-integration and public join/unload/package/ABI validation remain unimplemented.
-Publishing the current bridge would bypass this plan's gate. Further bridge
-design work is required before public ABI implementation.
+The measurement requirement remains unchecked because its full delivery gate
+has not passed. Public profiles/registrations, typed failure/provenance,
+runtime-update rejection, C completion ownership, redirect/SRV integration and
+public join/unload/package/ABI validation remain unimplemented.
+
+Reopen only with a confirmed application need that the existing APIs cannot
+adequately serve, representative acceptance workloads, and evidence supporting
+a bounded improvement or a justified redesign. Do not lower the agreed gate to
+promote this prototype, or publish an ABI in anticipation of later optimization.

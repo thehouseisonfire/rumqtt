@@ -1557,6 +1557,64 @@ async fn native_v4_v5_compose_nested_external_tls_wss_and_custom_base_streams() 
 }
 
 #[test]
+#[ignore = "manual CPU profiling; run benches/profile_tls_connector.py"]
+fn profile_external_tls_workload() {
+    assert!(std::env::var_os("RUMQTTC_TLS_PROOF_COUNT_ALLOCATIONS").is_none());
+    let messages = std::env::var("RUMQTTC_TLS_PROOF_MESSAGES")
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let mqtt = std::env::var("RUMQTTC_TLS_PROOF_PROFILE_MQTT").unwrap();
+    assert!(matches!(mqtt.as_str(), "4" | "5"));
+    let execution = std::env::var("RUMQTTC_TLS_PROOF_PROFILE_EXECUTION").unwrap();
+    let runtime = match execution.as_str() {
+        "dedicated" => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap(),
+        "shared" => tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap(),
+        _ => panic!("profiling execution must be dedicated or shared"),
+    };
+    let nested = std::env::var("RUMQTTC_TLS_PROOF_PROFILE_NESTED")
+        .unwrap()
+        .parse::<bool>()
+        .unwrap();
+    let payload = std::env::var("RUMQTTC_TLS_PROOF_PROFILE_PAYLOAD")
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let external = std::env::var("RUMQTTC_TLS_PROOF_PROFILE_EXTERNAL")
+        .unwrap()
+        .parse::<bool>()
+        .unwrap();
+    assert!(messages > 0 && matches!(payload, 1024 | 16384));
+    let scenario = Scenario {
+        mqtt5: mqtt == "5",
+        nested,
+        websocket: false,
+        memory: false,
+        payload,
+        messages,
+    };
+    let result = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(120), sample(scenario, external))
+            .await
+            .unwrap()
+    });
+    println!(
+        "TLS_PROFILE,execution,mqtt,nested,payload,external,messages,messages_per_second,p99_us"
+    );
+    println!(
+        "TLS_PROFILE,{execution},{mqtt},{nested},{payload},{external},{messages},{:.3},{:.3}",
+        result.throughput, result.p99_us
+    );
+}
+
+#[test]
 #[ignore = "release-only measurement; emits private prototype CSV"]
 fn measure_external_tls_delivery_gate() {
     let messages: usize =

@@ -1,0 +1,7 @@
+incorrect scenario rejected
+failed process rejected
+lost CPU samples rejected
+incomplete matrix rejected
+all 18 completed profile workloads match recorded parameters
+all profile source hashes match
+analysis script hash matches

@@ -2,6 +2,11 @@
 
 ### Changed
 
+- Wrapper development: Park TODO49's external-TLS C API and further bridge
+  redesign after corrected performance measurements and targeted profiling.
+  Retain the private experiment and reproducible evidence; reopening requires a
+  confirmed application need and renewed acceptance evidence.
+
 - Wrapper-core/C: Size optional readiness subscriber storage to observed fan-out.
   Preserve registration, revision/rearm, close, and cancellation behavior without
   adding APIs or notification machinery. The C host-loop example bounds event

@@ -1,0 +1,748 @@
+   Compiling rumqttc-wrapper-core-next v0.34.0-alpha (/home/eagle/MQTT/letsgo/rumqtt/native-wrappers/wrapper-core)
+    Finished `test` profile [unoptimized] target(s) in 42.77s
+     Running unittests src/lib.rs (native-wrappers/target/debug/deps/rumqttc_wrapper_core-af4cf6f19ea98cf2)
+
+running 148 tests
+test backend::native_failure::tests::error_layout_stays_within_existing_large_error_limit ... ok
+test backend::native_failure::tests::count_mismatches_have_expected_counts_not_maxima ... ok
+test backend::native_failure::tests::http_proxy_status_and_nested_io_have_safe_typed_mappings ... ok
+test backend::native_failure::tests::dedicated_failures_are_preserved_without_chasing_store_causes ... ok
+test backend::diagnostics::tests::complete_native_mapping_preserves_distinct_counts_and_protocol_absence ... ok
+test backend::native_failure::tests::origin_absence_and_revision_survive_later_context_and_exhaustion ... ok
+test backend::native_failure::tests::packet_limits_preserve_partial_v4_and_full_v5_evidence ... ok
+test acknowledgement::tests::explicit_v5_defaults_are_rejected_on_v4 ... ok
+test acknowledgement::tests::dropped_reservation_restores_single_use_token ... ok
+test acknowledgement::tests::insertion_deduplicates_retransmissions_until_reservation ... ok
+test acknowledgement::tests::reconnect_changes_limits_and_dropped_old_reservations_stay_invalid ... ok
+test acknowledgement::tests::reservation_keeps_retransmission_aliases_on_one_authority ... ok
+test acknowledgement::tests::matching_packet_ids_do_not_authorize_foreign_or_stale_tokens ... ok
+test acknowledgement::tests::tracking_completion_and_rollback_preserve_exactly_once_resolution ... ok
+test acknowledgement::tests::connection_invalidation_stales_tokens_and_fails_tracked_acks ... ok
+test backend::native_failure::tests::reconnect_snapshot_equality_includes_native_evidence ... ok
+test backend::native_failure::tests::redirects_and_nested_sources_share_one_extraction_budget ... ok
+test backend::native_failure::tests::source_cycles_stop_at_the_shared_budget ... ok
+test backend::native_failure::tests::state_failures_preserve_evidence_and_legacy_classification ... ok
+test backend::native_failure::tests::tls_inside_io_retains_outer_domain_and_specific_safe_cause ... ok
+test backend::observation::tests::outgoing_kinds_are_exact_and_contents_are_unavailable ... ok
+test backend::observation::tests::protocol_specific_fields_and_existing_packet_exclusions ... ok
+test backend::reconnect::tests::a_store_error_with_a_transport_cause_remains_terminal_persistence ... ok
+test backend::reconnect::tests::broker_disconnect_policy_does_not_create_takeover_retry_loops ... ok
+test backend::reconnect::tests::broker_refusals_distinguish_unavailability_from_authentication ... ok
+test backend::reconnect::tests::certificate_failures_inside_io_remain_terminal ... ok
+test backend::reconnect::tests::nested_transport_and_ping_failures_are_not_protocol_violations ... ok
+test backend::reconnect::tests::tls_transport_failures_retry_but_configuration_failures_stop ... ok
+test backend::reconnect::tests::websocket_errors_wrapped_as_io_retain_their_typed_classification ... ok
+test backend::reconnect::tests::websocket_http_refusals_distinguish_transient_and_permanent_failures ... ok
+test backend::session::tests::mismatched_native_keys_are_rejected_before_host_io ... ok
+test backend::session::tests::load_receives_each_clients_checkpoint_limit ... ok
+test backend::session::tests::mutations_preserve_typed_host_failures_for_both_protocols ... ok
+test backend::session::tests::checkpoints_round_trip_full_protocol_models_across_adapter_recreation ... ok
+test backend::native_failure::tests::native_tls_opaque_backend_errors_remain_unknown_without_backend_text ... ok
+test backend::native_failure::tests::opaque_tls_causes_have_explicit_unknown_classification_without_text ... ok
+test backend::native_failure::tests::io_kinds_and_os_codes_have_independent_presence ... ok
+test backend::native_failure::tests::reconnect_retention_and_exhaustion_strip_opaque_source_owners ... ok
+test backend::native_failure::tests::sanitized_summaries_retain_scalars_and_release_nested_owners ... ok
+test backend::observation::tests::raw_auth_is_an_owned_redacted_snapshot_without_authority ... ok
+test backend::native_failure::tests::malformed_packets_and_handshake_packet_kinds_are_sanitized ... ok
+test backend::native_failure::tests::websocket_http_and_established_stream_errors_keep_safe_evidence ... ok
+test backend::native_failure::tests::redirect_target_causes_supplement_dedicated_terminal_failures ... ok
+test backend::observation::tests::intermediate_pubrec_retains_order_presence_and_redacts_properties ... ok
+test backend::session::tests::scoped_factory_reuses_live_adapters_and_releases_obsolete_leases ... ok
+test acknowledgement::tests::dropping_customized_reservation_restores_default_contents ... ok
+test acknowledgement::tests::invalid_content_does_not_reserve_token_or_allocate_operation ... ok
+test backend::tls_connector_proof::cancelled_unpolled_work_retains_capacity_until_final_release ... ok
+test backend::tls_connector_proof::measure_external_tls_delivery_gate ... ignored, release-only measurement; emits private prototype CSV
+test backend::tls_connector_proof::profile_external_tls_workload ... ignored, manual CPU profiling; run benches/profile_tls_connector.py
+test backend::tls_connector_proof::retained_cancelled_operations_exhaust_registration_capacity ... ok
+test backend::transport::tests::socket_connectors_do_not_retain_startup_password_owners ... ok
+test backend::v4::config_tests::options_preserve_operational_controls_and_will ... ok
+test backend::v5::config_tests::connack_conversion_preserves_every_owned_property ... ok
+test backend::v5::config_tests::connack_without_properties_still_identifies_mqtt5 ... ok
+test backend::v5::config_tests::options_preserve_all_connect_properties_and_operational_controls ... ok
+test backend::v5::config_tests::unrecoverable_alias_notice_retains_the_native_terminal_reason ... ok
+test completion::tests::async_waiter_cancellation_and_deadline_do_not_change_terminal_result ... ok
+test completion::tests::completion_is_repeatable_for_clones_and_blocking_waiters ... ok
+test completion::tests::filter_ack_mapping_retains_packet_properties_and_order_for_both_protocols ... ok
+test completion::tests::mixed_waiters_and_dropped_clones_share_one_result ... ok
+test completion::tests::publish_ack_mapping_preserves_success_rejection_and_native_recovery ... ok
+test completion::tests::rejected_ack_snapshots_share_storage_and_release_the_final_owner ... ok
+test completion::tests::rejected_callback_observation_does_not_complete_or_cancel_an_operation ... ok
+test completion::tests::timeout_outcome_distinguishes_wait_deadline_from_terminal_error ... ok
+test backend::tls_connector_proof::lower_read_does_not_block_writer_and_cancellation_retires_both ... ok
+test configuration_update::tests::admission_reservations_bound_count_bytes_and_release_without_a_driver ... ok
+test backend::tls_connector_proof::hostname_rejection_is_terminal_and_releases_chain ... ok
+test configuration_update::tests::permanent_redirect_retains_the_prepared_profile_until_a_target_attempt_succeeds ... ok
+test backend::tls_connector_proof::lower_eof_without_close_notify_is_truncation ... ok
+test configuration_update::tests::receipts_are_independent_and_terminal_activation_does_not_regress ... ok
+test backend::tls_connector_proof::shutdown_sends_close_notify_with_an_application_read_pending ... ok
+test connection::tests::blocking_and_async_waiters_share_immutable_success_or_failure ... ok
+test backend::tls_connector_proof::untrusted_certificate_chain_is_terminal ... ok
+test connection::tests::first_connection_is_repeatable ... ok
+test connection::tests::forbidden_waits_reject_before_observing_pending_or_completed_results ... ok
+test configuration_update::tests::retained_size_includes_tls_catalog_and_alpn_entry_storage ... ok
+test connection::tests::terminal_failure_wakes_waiters ... ok
+test error::tests::absent_native_details_and_origin_capture_allocate_no_detail_record ... ok
+test error::tests::diagnostic_copy_drops_opaque_source_owners_and_free_form_text ... ok
+test configuration_update::tests::partial_updates_clear_defaults_and_keep_password_only_protocol_rules ... ok
+test error::tests::sourced_error_preserves_display_and_source_chain ... ok
+test execution::tests::callback_boundaries_reject_blocking_waits_and_allow_polling ... ok
+test configuration_update::tests::tuning_prepared_before_a_permanent_move_cannot_restore_origin_owners ... ok
+test execution::tests::final_owner_release_stops_the_management_thread ... ok
+test execution::tests::dedicated_blocking_workers_reject_native_progress_waits ... ok
+test execution::tests::management_loss_reconciles_clients_and_never_reports_successful_quiescence ... ok
+test handle::acknowledgement_tests::backpressure_restores_original_ack_for_custom_and_default_retries ... ok
+test handle::acknowledgement_tests::cancelled_capacity_wait_restores_token_and_options_retry_wakes ... ok
+test handle::acknowledgement_tests::observation_generation_tracks_accepted_connections_independently_of_ack_invalidation ... ok
+test handle::diagnostics_tests::diagnostics_cost_measurements ... ignored, manual release-mode diagnostics cost measurement
+test backend::tls_connector_proof::handshake_waits_for_final_lower_flush_and_propagates_its_failure ... ok
+test handle::pending_tests::admission_wins_cancellation_between_native_send_and_result_publication ... ok
+test connection::tests::publication_racing_a_deadline_is_retained_for_the_next_observation ... ok
+test backend::tls_connector_proof::buffered_lower_stream_flushes_handshake_and_read_generated_control_output ... ok
+test handle::pending_tests::dropping_unpolled_admission_owner_settles_results_and_releases_storage ... ok
+test handle::pending_tests::pending_observer_deadlines_make_no_delivery_claim_and_callback_waits_are_rejected ... ok
+test handle::pending_tests::cancellation_before_poll_proves_no_admission_and_restores_ack_authority ... ok
+test handle::pending_tests::reservation_bounds_are_shared_checked_and_rolled_back_without_registration ... ok
+test backend::transport::tests::expired_attempts_do_not_invoke_hosts_or_accept_immediately_ready_late_results ... ok
+test operations::tests::completion_is_resolved_exactly_once ... ok
+test operations::tests::queued_completion_does_not_keep_its_registry_or_future_alive_after_teardown ... ok
+test operations::tests::queued_diagnostics_does_not_keep_its_registry_alive_after_teardown ... ok
+test handle::pending_tests::recovery_epoch_failure_wins_cancellation_before_result_publication ... ok
+test reconnect::tests::backoff_caps_and_injected_jitter_cover_both_bounds ... ok
+test handle::pending_tests::pending_reservations_enforce_one_budget_across_concurrent_producers ... ok
+test reconnect::tests::deferred_failure_cannot_extend_connection_stability ... ok
+test reconnect::tests::idle_stability_resets_once_but_short_connections_do_not ... ok
+test reconnect::tests::initial_cycle_is_free_and_exhaustion_preserves_last_failure ... ok
+test reconnect::tests::invalid_ranges_and_saturating_growth_are_checked ... ok
+test operations::tests::ready_results_leave_backlog_and_do_not_wait_for_unready_results ... ok
+test reconnect::tests::zero_stability_and_zero_backoff_are_explicit ... ok
+test reconnect::tests::legacy_and_unlimited_policies_never_exhaust ... ok
+test runtime::tests::join_coordination_honors_the_timeout_budget ... ok
+test runtime::tests::overflow_has_stable_non_retryable_classification ... ok
+test operations::tests::ready_registrations_leave_backlog_for_later_arbitration ... ok
+test runtime::tests::cancelling_an_unpolled_driver_reconciles_operations_and_terminal_status ... ok
+test runtime::tests::rejected_update_owners_can_reenter_admission_after_the_gate_is_released ... ok
+test runtime::tests::unstarted_driver_closure_can_drop_runtime_in_async_context ... ok
+test shutdown::tests::failed_reconciliation_fails_the_shutdown_operation_once ... ok
+test shutdown::tests::failed_shutdown_never_allows_an_initial_connection ... ok
+test runtime::tests::unpolled_driver_cancellation_retains_initial_diagnostic_capture ... ok
+test shutdown::tests::graceful_reconciliation_resolves_once_and_notifies_waiters ... ok
+test shutdown::tests::immediate_escalation_supersedes_graceful_reconciliation ... ok
+test shutdown::tests::graceful_timeout_fails_the_operation_and_reconciles_as_immediate ... ok
+test shutdown::tests::immediate_reconciliation_resolves_the_committed_operation ... ok
+test transport::host_future_tests::future_destruction_panics_are_contained_on_completion_and_unpolled_cancellation ... ok
+test websocket::response_tests::authority_validation_accepts_hosts_ports_and_ipv6_without_user_info ... ok
+test runtime::tests::tuning_updates_stage_while_the_blocking_pool_is_busy ... ok
+test websocket::tests::expired_native_deadline_skips_the_authority ... ok
+test websocket::tests::authority_and_host_change_together_with_path_while_endpoint_metadata_is_preserved ... ok
+test websocket::response_tests::replacing_authority_releases_its_previous_byte_budget_and_failures_are_atomic ... ok
+test websocket::tests::rejection_and_final_header_limits_preserve_typed_attempt_results ... ok
+test websocket::tests::final_request_budget_counts_authority_in_both_uri_and_host ... ok
+test execution::tests::shutdown_waits_for_startup_reservations_and_timeout_is_retryable ... ok
+test backend::tls_connector_proof::tls_control_writes_wait_for_an_existing_lower_flush ... ok
+test backend::tls_connector_proof::handshake_timeout_does_not_stall_shared_execution ... ok
+test handle::diagnostics_tests::publication_keeps_only_the_latest_capture_and_caller_retention_is_independent ... ok
+test execution::tests::client_tracks_auxiliary_work_and_context_also_waits_for_untracked_runtime_work ... ok
+test connection::tests::deadlines_spurious_wakeups_and_terminal_timeouts_are_distinct ... ok
+test backend::tls_connector_proof::c_tls_handshake_traffic_and_authenticated_shutdown ... ok
+test websocket::tests::ready_results_after_the_native_deadline_are_timeouts ... ok
+test acknowledgement::tests::size_validation_matches_codec_at_variable_integer_boundaries ... ok
+test backend::tls_connector_proof::handshake_timeout_retires_a_pending_lower_flush ... ok
+test configuration_update::tests::abandoned_preparation_keeps_work_reserved_through_owner_destruction ... ok
+test runtime::tests::shutdown_resolves_configuration_requests_before_draining_completions ... ok
+test backend::tls_connector_proof::native_v4_v5_compose_nested_external_tls_wss_and_custom_base_streams ... ok
+test backend::tls_connector_proof::established_stream_does_not_expire_with_handshake_deadline ... ok
+
+test result: ok. 145 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 1.15s
+
+     Running tests/authentication.rs (native-wrappers/target/debug/deps/authentication-589aaa5508f99af2)
+
+running 30 tests
+test async_authentication_panic_payload_is_not_printed_by_the_host_hook ... ok
+test authenticator_panics_are_terminal_redacted_and_release_driver_ownership ... ok
+test explicit_callback_rejection_is_terminal_and_releases_owner ... ok
+test async_authentication_panics_are_typed_and_release_the_authority ... ok
+test failed_async_continuation_retains_broker_auth_details ... ok
+test broker_authentication_method_change_retains_typed_failure ... ok
+test immediate_close_cancels_pending_async_reauthentication_and_forwards_connect_user_properties ... ok
+test initial_auth_success_is_rejected_before_notifying_the_async_authority ... ok
+test immediate_close_with_idle_async_authenticator_sends_disconnect ... ok
+test overlapping_reauthentication_is_rejected_before_the_active_exchange_closes ... ok
+test isolated_redirect_restores_origin_authentication_and_session_expiry_admission ... ok
+test owned_authentication_rejects_caller_properties_and_handles_tracked_reauthentication ... ok
+test async_failure_callback_distinguishes_broker_refusal_from_transport_loss ... ok
+test initial_broker_refusal_keeps_native_authentication_events_typed ... ok
+test tracked_reauthentication_retains_broker_rejection_code ... ok
+test immediate_close_notifies_pending_initial_authentication_once ... ok
+test rejected_connack_and_broker_disconnect_preserve_properties ... ok
+test authentication_reconnect_and_pending_challenge_shutdown_release_exchange ... ok
+test rejected_overlap_preserves_success_and_releases_admission_for_the_next_exchange ... ok
+test broker_refusal_preserves_authentication_failures_from_previous_attempts ... ok
+test enhanced_authentication_deadline_terminates_stalled_exchange ... ok
+test redirect_policy_preserves_reference_and_isolates_target_credentials ... ok
+test authentication_timeout_during_session_save_notifies_the_authority_with_timeout ... ok
+test authentication_future_destruction_panics_do_not_print_private_payloads ... ok
+test authentication_future_destruction_panics_are_typed_on_completion_timeout_and_close ... ok
+test async_exchange_deadline_expires_while_waiting_for_initial_or_reauthentication_broker_packets ... ok
+test failed_async_reauthentication_delivers_broker_details_and_lifecycle_before_termination ... ok
+test ready_async_callbacks_cannot_accept_responses_after_the_exchange_deadline ... ok
+test deferred_reauthentication_survives_publish_and_keepalive_read_arbitration ... ok
+test overlapping_reauthentication_traffic_preserves_mqtt_deadlines_and_shutdown ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.93s
+
+     Running tests/close_races.rs (native-wrappers/target/debug/deps/close_races-2808ba6cfe99286f)
+
+running 2 tests
+test mqtt5_disconnect_options_on_v4_do_not_admit_or_close ... ok
+test close_callers_keep_independent_deadlines_and_escalation_preserves_payload ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/config.rs (native-wrappers/target/debug/deps/config-2a7556315a5a4dcc)
+
+running 9 tests
+test rejects_lossy_duration_conversion ... ok
+test rejects_null_characters_in_connect_strings ... ok
+test rejects_password_without_username ... ok
+test accepts_password_without_username_for_mqtt5 ... ok
+test rejects_unpaired_client_tls_material ... ok
+test accepts_maximum_connect_field_lengths ... ok
+test rejects_protocol_inappropriate_websocket_scheme ... ok
+test rejects_oversized_connect_fields ... ok
+test malformed_tls_material_fails_before_driver_start ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/config_wire.rs (native-wrappers/target/debug/deps/config_wire-ae790ad8ffc0ac23)
+
+running 8 tests
+test mqtt5_connect_and_will_properties_reach_the_wire_without_loss ... ok
+test mqtt4_binary_will_is_encoded_and_graceful_close_sends_disconnect ... ok
+test mqtt5_batched_publishes_arrive_before_broker_disconnect ... ok
+test concurrent_close_selects_one_payload_and_coalesces_only_matching_callers ... ok
+test mqtt5_disconnect_payload_is_exact_for_graceful_and_immediate_close ... ok
+test unix_targets_connect_and_close_for_both_protocols ... ok
+test proxy_authentication_and_remote_broker_address_are_preserved ... ok
+test websocket_headers_preserve_order_and_are_reapplied_on_reconnect ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/configuration_update.rs (native-wrappers/target/debug/deps/configuration_update-049c79087776d278)
+
+running 16 tests
+test configuration_stages_during_classified_backoff_and_close_finalizes_the_receipt ... ok
+test closing_an_idle_client_finalizes_staged_receipts_and_rejects_new_updates ... ok
+test current_attempt_keeps_its_credentials_and_next_attempt_gets_the_coherent_profile ... ok
+test concurrent_updates_are_serialized_and_do_not_starve_a_shared_execution_peer ... ok
+test idle_poll_stages_and_supersedes_tuning_without_cancelling_protocol_work ... ok
+test failed_rotated_attempts_retain_the_profile_and_failure_revision_across_retries ... ok
+test origin_rotation_survives_temporary_redirect_and_never_reaches_the_isolated_target ... ok
+test permanent_redirect_retires_origin_rotation_only_after_target_connack ... ok
+test shutdown_racing_updates_reconciles_every_admitted_completion_and_receipt ... ok
+test superseding_staged_tls_profiles_releases_retired_callback_owners ... ok
+test rotated_tls_identity_cannot_resume_the_previous_identity ... ok
+test permanent_redirect_releases_origin_owners_and_preserves_tuning_and_summaries ... ok
+test tls_preparation_failure_rolls_back_and_trust_rotation_selects_a_fresh_connection_profile ... ok
+test event_backpressure_closes_unactivated_receipts_without_losing_staged_completions ... ok
+test custom_connectors_release_retired_startup_tls_owners_after_rotation ... ok
+test permanent_redirect_retires_origin_before_connected_event_backpressure ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.07s
+
+     Running tests/custom_transport.rs (native-wrappers/target/debug/deps/custom_transport-8685a2f9ab1cf744)
+
+running 7 tests
+test established_streams_reject_native_layers_before_calling_the_connector ... ok
+test failed_native_client_construction_releases_its_only_connector_owner ... ok
+test terminal_stream_failures_stop_the_driver_and_fail_pending_publishes ... ok
+test retryable_connector_failures_reconnect_before_a_terminal_failure_stops_the_driver ... ok
+test terminal_connector_failures_stop_the_driver_and_fail_pending_operations ... ok
+test custom_streams_reconnect_with_fresh_attempts_and_keep_native_tracking ... ok
+test native_attempt_timeout_cancels_host_work_and_failed_construction_releases_owners ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.01s
+
+     Running tests/custom_transport_memory.rs (native-wrappers/target/debug/deps/custom_transport_memory-facb15a5887e64b7)
+
+running 2 tests
+test custom_base_streams_do_not_bypass_broker_trust_validation ... ok
+test native_client_composes_and_reconnects_over_short_memory_io ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+
+     Running tests/custom_transport_native_tls.rs (native-wrappers/target/debug/deps/custom_transport_native_tls-e9ed8e850eb1df7d)
+
+running 1 test
+test native_tls_handshake_preserves_transport_failures_and_driver_policy ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/custom_transport_redirect.rs (native-wrappers/target/debug/deps/custom_transport_redirect-f34a482669cd57fe)
+
+running 3 tests
+test redirects_preserve_transport_failures_and_srv_fallback_policy ... ok
+test srv_fallback_stops_on_terminal_native_tls_stream_failures ... ok
+test srv_fallback_stops_on_terminal_rustls_stream_failures ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/diagnostics.rs (native-wrappers/target/debug/deps/diagnostics-8a2973dcd883dcd1)
+
+running 4 tests
+test stalled_attempt_and_immediate_abort_keep_initial_native_capture_without_completion_claim ... ok
+test idle_native_capture_stays_dated_while_configuration_stages_and_advances_with_mqtt ... ok
+test full_event_queue_keeps_reads_responsive_and_preserves_overflow_deadline_and_events ... ok
+test concurrent_reads_preserve_peer_keepalive_and_close_in_both_execution_modes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.03s
+
+     Running tests/execution.rs (native-wrappers/target/debug/deps/execution-588314f2657586e4)
+
+running 6 tests
+test releasing_context_references_does_not_stop_clients ... ok
+test context_capacity_is_atomic_and_failed_start_returns_its_reservation ... ok
+test panic_is_terminal_once_and_does_not_stop_a_peer ... ok
+test both_protocols_complete_qos_work_and_graceful_close_on_shared_execution ... ok
+test shutdown_racing_start_closes_every_accepted_client_and_rejects_later_starts ... ok
+test one_worker_keeps_mqtt_progress_under_control_flood_and_slow_reconnect_callbacks ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.12s
+
+     Running tests/first_connection.rs (native-wrappers/target/debug/deps/first_connection-f6c34ae41fefb7c7)
+
+running 4 tests
+test handshake_redirect_remains_pending_until_the_target_accepts ... ok
+test terminal_connack_refusal_is_repeatable_after_client_destruction ... ok
+test first_success_survives_retries_loss_shutdown_and_client_destruction_without_consuming_events ... ok
+test event_overflow_before_success_fails_observer_and_after_acceptance_preserves_success ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/incoming_publish.rs (native-wrappers/target/debug/deps/incoming_publish-42d88980425421d2)
+
+running 2 tests
+test zero_qos1_and_qos2_identifiers_are_rejected_before_publish_observation ... ok
+test incoming_identifiers_are_owned_observations_across_ack_modes_and_reconnects ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+     Running tests/lifecycle.rs (native-wrappers/target/debug/deps/lifecycle-5aa0215c5cf9de35)
+
+running 6 tests
+test bounded_request_channel_reports_backpressure ... ok
+test immediate_cleanup_is_idempotent ... ok
+test immediate_close_after_graceful_close_preserves_graceful_result ... ok
+test v5_lifecycle_uses_owned_boundary ... ok
+test v4_lifecycle_uses_owned_boundary ... ok
+test sustained_diagnostics_and_completions_do_not_starve_either_protocol_loop ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/logging.rs (native-wrappers/target/debug/deps/logging-697f6585316cc203)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/logging_fallback.rs (native-wrappers/target/debug/deps/logging_fallback-a0d18ad7876be93d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/logging_host.rs (native-wrappers/target/debug/deps/logging_host-25dd40d036f0aaab)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/logging_tls.rs (native-wrappers/target/debug/deps/logging_tls-7b422e099c1125b5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/manual_ack.rs (native-wrappers/target/debug/deps/manual_ack-4440a258b6f346d3)
+
+running 3 tests
+test reconnect_binds_ack_validation_to_the_new_limit_and_generation ... ok
+test client_ack_contents_round_trip_and_negative_pubrec_releases_the_exchange ... ok
+test acknowledgement_completion_waits_for_flush_and_retains_ambiguous_failures ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/native_failure.rs (native-wrappers/target/debug/deps/native_failure-a9ac048bb12fa639)
+
+running 1 test
+test retained_failure_keeps_its_origin_after_profile_update_and_reconnection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/ordered_shutdown.rs (native-wrappers/target/debug/deps/ordered_shutdown-c065896cb9dbf6ee)
+
+running 1 test
+test disabled_ordered_commands_leave_the_client_running ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/overload.rs (native-wrappers/target/debug/deps/overload-6ae93496513073ab)
+
+running 2 tests
+test boundary_panic_interrupts_full_event_buffer_for_both_protocols ... ok
+test full_event_buffer_terminates_through_reserved_status_path_for_both_protocols ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+
+     Running tests/parity_inventory.rs (native-wrappers/target/debug/deps/parity_inventory-d64cd31d3b85a0c0)
+
+running 1 test
+test every_native_setter_operation_and_event_has_a_reviewed_parity_entry ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/platform_network.rs (native-wrappers/target/debug/deps/platform_network-21e102c00bf9b969)
+
+running 8 tests
+test unsupported_network_controls_fail_before_driver_start ... ok
+test unix::permission_child ... ok
+test unix::unix_missing_path_is_a_network_failure ... ok
+test bind_address_reaches_broker_for_both_protocols ... ok
+test bind_device_failure_reaches_socket_and_mptcp_can_connect ... ok
+test unix::unix_reconnect_and_both_shutdown_modes ... ok
+test unix::unix_permission_denial_is_a_network_failure ... ok
+test unix::unix_connack_timeout_and_immediate_shutdown_are_bounded ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.01s
+
+     Running tests/protocol_compatibility.rs (native-wrappers/target/debug/deps/protocol_compatibility-01fc57066bf2ffac)
+
+running 1 test
+test accepted_v4_mismatch_preserves_raw_connection_flags_and_reports_effective_fresh_session ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/protocol_observations.rs (native-wrappers/target/debug/deps/protocol_observations-0b1fccee30fd7102)
+
+running 3 tests
+test ready_completions_remain_observable_while_diagnostics_fill_the_queue ... ok
+test blocked_observations_do_not_starve_another_client_on_a_single_worker ... ok
+test selected_observations_keep_the_existing_overflow_failure_contract ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running tests/protocol_parity.rs (native-wrappers/target/debug/deps/protocol_parity-3bd57490c530aa3d)
+
+running 16 tests
+test mqtt5_no_local_on_shared_subscription_is_not_admitted ... ok
+test incoming_mqtt5_subscription_identifiers_are_preserved ... ok
+test mqtt5_unsubscribe_properties_are_not_admitted_to_v4_clients ... ok
+test mqtt5_subscribe_properties_are_not_admitted_to_v4_clients ... ok
+test rejects_unmapped_topic_alias_with_empty_topic ... ok
+test mqtt5_invalid_subscription_identifiers_are_not_admitted ... ok
+test mqtt5_publish_options_are_not_admitted_to_v4_clients ... ok
+test mqtt5_invalid_subscribe_user_properties_are_not_admitted ... ok
+test mqtt5_subscription_options_are_not_admitted_to_v4_clients ... ok
+test mqtt5_invalid_unsubscribe_user_properties_are_not_admitted ... ok
+test mqtt5_publish_rejection_preserves_reason_code ... ok
+test accepts_topic_alias_within_broker_advertised_maximum ... ok
+test rejects_invalid_client_originated_mqtt5_publish_properties ... ok
+test mqtt5_subscribe_and_unsubscribe_extensions_reach_the_wire ... ok
+test mqtt5_payload_content_is_checked_under_both_admission_policies ... ok
+test manual_ack_token_is_single_use ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/provider.rs (native-wrappers/target/debug/deps/provider-199ea3b79fe87488)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/publish_admission.rs (native-wrappers/target/debug/deps/publish_admission-b798475d7e99cf21)
+
+running 12 tests
+test qos2_keeps_its_reservation_until_pubcomp ... ok
+test deferred_local_rejections_complete_without_broker_reasons_and_release_budget ... ok
+test deferred_registration_racing_client_join_leaves_only_terminal_observers ... ok
+test replay_keeps_capacity_and_previously_sent_rejection_is_ambiguous ... ok
+test deferred_publish_larger_than_native_limit_fails_during_creation ... ok
+test strict_waits_for_connack_and_known_rejections_are_not_admitted ... ok
+test deferred_publish_waits_for_checkpoint_loading_before_admission ... ok
+test recovery_gates_admission_and_over_budget_restore_preserves_checkpoint_for_retry ... ok
+test shutdown_wakes_blocked_publish_admission ... ok
+test cancelled_wait_and_dropped_observer_do_not_change_admitted_work ... ok
+test deferred_publish_budgets_allow_control_and_shared_peer_progress ... ok
+test active_producers_and_failed_connections_preserve_large_publish_budgets ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running tests/readiness.rs (native-wrappers/target/debug/deps/readiness-7742fe8d602885cd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reconnect.rs (native-wrappers/target/debug/deps/reconnect-e0ed45a11ca340cc)
+
+running 1 test
+test recoverable_poll_error_is_reported_and_reconnects ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reconnect_policy.rs (native-wrappers/target/debug/deps/reconnect_policy-64a0befce25dd89a)
+
+running 7 tests
+test authentication_refusal_is_terminal_under_classified_policy ... ok
+test backoff_services_diagnostics_and_immediate_or_graceful_close ... ok
+test native_srv_fallback_and_buffered_redirect_events_share_one_connection_cycle ... ok
+test exhaustion_resolves_pending_operations_and_first_connection_without_replacing_wait_timeout ... ok
+test one_shared_worker_keeps_other_clients_progressing_during_backoff_and_idle_reset ... ok
+test broker_recovery_replays_native_pending_publish_and_retains_completed_outcomes ... ok
+test established_redirect_obeys_the_next_cycle_budget_and_backoff ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/reconnect_stability.rs (native-wrappers/target/debug/deps/reconnect_stability-64eaea4829f3937a)
+
+running 1 test
+test broker_disconnect_ends_stability_before_backpressured_event_delivery ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.02s
+
+     Running tests/reconnect_startup.rs (native-wrappers/target/debug/deps/reconnect_startup-e42e65e9968f4101)
+
+running 1 test
+test shutdown_admitted_before_first_poll_drains_graceful_work_but_immediate_close_does_not_dial ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/redirect_policy.rs (native-wrappers/target/debug/deps/redirect_policy-11eeae70fb12711a)
+
+running 18 tests
+test reentrant_shutdown_from_redirect_callback_prevents_target_dial ... ok
+test isolated_redirect_never_reads_or_writes_the_origin_store_scope ... ok
+test application_target_lease_conflict_is_typed_and_never_dials_the_target ... ok
+test same_session_redirect_invalidates_manual_ack_tokens_for_the_previous_connection ... ok
+test redirect_loops_and_attempt_exhaustion_are_terminal ... ok
+test temporary_nested_scoped_redirect_restores_origin_and_releases_target_leases ... ok
+test reused_authentication_authority_observes_effective_redirect_and_assigned_identities ... ok
+test application_authentication_and_websocket_network_reuse_are_independent ... ok
+test rejected_redirects_preserve_context_and_resolve_pending_operations ... ok
+test websocket_redirect_uses_target_uri_and_clears_origin_header_edits ... ok
+test application_rejection_failures_and_expired_decisions_are_terminal_before_target_dial ... ok
+test application_redirect_selects_second_reference_with_copied_credentials_and_scoped_store ... ok
+test failed_followed_srv_connection_retains_terminal_redirect_diagnostics ... ok
+test server_moved_reports_resolved_srv_diagnostics_before_resetting_redirect_state ... ok
+test srv_priority_precedes_weight_and_selected_endpoint_is_reported ... ok
+test approved_same_session_redirect_preserves_tracked_qos_flows_and_packet_ids ... ok
+test redirect_reference_forms_select_isolated_endpoints_for_both_sources ... ok
+test srv_lookup_failures_have_no_origin_revision_and_release_owner ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s
+
+     Running tests/runtime_limits.rs (native-wrappers/target/debug/deps/runtime_limits-c0b41360c914fa9b)
+
+running 3 tests
+test oversized_outgoing_publish_reports_protocol_failure_and_resolves_on_close ... ok
+test incoming_decoder_limit_is_independent_of_advertised_maximum ... ok
+test outgoing_inflight_obeys_local_and_broker_limits ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.72s
+
+     Running tests/session_recovery.rs (native-wrappers/target/debug/deps/session_recovery-07dd5039c0d2e050)
+
+running 17 tests
+test recovery_uses_remaining_reconnect_budget_without_an_extra_free_attempt ... ok
+test fresh_recovery_rejects_redirects_before_invoking_or_applying_another_profile ... ok
+test recovery_admitted_during_connection_loss_preserves_backoff ... ok
+test failed_checkpoint_clear_is_terminal_and_retains_partial_progress ... ok
+test racing_producers_are_either_discarded_or_definitely_not_admitted ... ok
+test recovery_overtaking_a_classified_terminal_connack_does_not_abandon_or_retry ... ok
+test immediate_shutdown_cancels_recovery_after_connection_loss ... ok
+test recovery_admitted_during_connection_loss_preserves_the_retry_budget ... ok
+test shutdown_during_clear_retains_progress_and_never_reopens_admission ... ok
+test recovery_overtaking_a_terminal_transport_failure_does_not_abandon_or_retry ... ok
+test unexpected_session_present_is_terminal_at_each_fresh_boundary ... ok
+test recovery_hides_candidate_connections_discards_queues_and_preserves_session_policy ... ok
+test failed_abandonment_preserves_the_transport_error_without_retrying_establishment ... ok
+test shutdown_during_recovery_handshakes_retires_candidates_with_committed_options ... ok
+test failed_recovery_candidate_retirement_fails_graceful_shutdown ... ok
+test retrying_fresh_establishment_preserves_transient_and_long_term_session_policy ... ok
+test abandonment_retires_inflight_qos2_subscriptions_and_incoming_ownership ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+     Running tests/session_store.rs (native-wrappers/target/debug/deps/session_store-b03f3573ce11c2ad)
+
+running 8 tests
+test pending_load_is_cancelled_by_immediate_shutdown ... ok
+test duplicate_key_is_rejected_until_driver_releases_lease ... ok
+test checkpoint_and_clear_failures_terminate_and_release_the_store ... ok
+test malformed_envelopes_are_rejected_without_network_io ... ok
+test restart_replays_unacknowledged_publish_with_original_packet_identifier ... ok
+test callback_failure_panic_and_timeout_are_typed_and_release_the_owner ... ok
+test store_completion_races_shutdown_and_abandonment_without_retaining_owner ... ok
+test restart_recovers_mixed_subscriptions_publishes_and_incoming_qos2 ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/shutdown.rs (native-wrappers/target/debug/deps/shutdown-73ef5de68cfd3c34)
+
+running 7 tests
+test dropping_owner_escalates_an_unbounded_graceful_shutdown ... ok
+test immediate_shutdown_interrupts_connection_establishment_for_both_protocols ... ok
+test graceful_shutdown_resolves_protocol_admitted_work_for_both_protocols ... ok
+test immediate_shutdown_keeps_unfinished_publish_ambiguous_for_both_protocols ... ok
+test repeated_start_and_close_cycles_join_every_driver_thread ... ok
+test immediate_shutdown_bypasses_repeated_event_backpressure_for_both_protocols ... ok
+test graceful_timeout_closes_immediately_for_both_protocols ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/socks_reconnect.rs (native-wrappers/target/debug/deps/socks_reconnect-6c94822175d0c4c3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/tls.rs (native-wrappers/target/debug/deps/tls-585e0530077da0dc)
+
+running 8 tests
+test platform_roots_child ... ok
+test malformed_roots_return_startup_errors_inside_async_callers ... ok
+test malformed_tls_credentials_and_alpn_fail_without_network_or_secret_disclosure ... ok
+test valid_pkcs12_with_wrong_password_fails_without_disclosing_identity ... ok
+test platform_roots_validate_an_isolated_process_trust_store ... ok
+test tls_input_ownership_is_released_on_every_driver_exit ... ok
+test tls_failure_panic_output_is_redacted ... ok
+test tls_and_wss_enforce_roots_hostname_identity_and_alpn ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+
+     Running tests/tls_advanced.rs (native-wrappers/target/debug/deps/tls_advanced-be041db18cae5a32)
+
+running 24 tests
+test cipher_and_policy_validation_is_enforceable_and_transactional ... ok
+test deferred_worker_cancels_network_waits_before_runtime_shutdown ... ok
+test deferred_verification_cannot_override_pins_and_conflicting_policies_fail_eagerly ... ok
+test deferred_pending_destructor_failures_reach_driver_from_redirects ... ok
+test deferred_pending_destructor_failures_reach_driver_from_https_proxies ... ok
+test deferred_pending_destructor_failures_are_terminal_on_close ... ok
+test explicit_resumption_policy_is_enforced_on_reconnect ... ok
+test external_signatures_are_checked_and_failed_selection_cannot_become_anonymous_tls ... ok
+test tls_destructor_failures_are_isolated_between_clients_sharing_a_profile ... ok
+test supplemental_verification_preserves_trust_and_reports_terminal_failures ... ok
+test mixed_profiles_invoke_synchronous_and_deferred_hooks_on_the_same_driver ... ok
+test terminal_verification_failure_stops_srv_redirect_fallback ... ok
+test deferred_future_panics_are_contained_during_construction_polling_and_destruction ... ok
+test deferred_handshakes_preserve_custom_transport_short_reads_and_writes ... ok
+test deferred_hooks_accept_immediate_and_delayed_answers_and_preserve_authentication ... ok
+test deferred_graceful_timeout_destructor_failures_reach_driver_from_redirects ... ok
+test sni_and_cipher_selection_affect_the_wire_without_changing_certificate_authority ... ok
+test every_advertised_external_algorithm_signs_with_its_selected_certificate ... ok
+test deferred_pending_destructor_failures_are_terminal_on_graceful_close_timeout ... ok
+test deferred_graceful_timeout_destructor_failures_reach_driver_from_https_proxies ... ok
+test deferred_cancelled_destructor_panics_do_not_print_private_payloads ... ok
+test callbacks_cannot_accept_results_after_the_original_attempt_deadline ... ok
+test deferred_pending_destructor_failures_override_retryable_timeouts ... ok
+test deferred_pending_hooks_cancel_without_blocking_driver_join_and_drop_owned_work ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.70s
+
+     Running tests/tls_profiles.rs (native-wrappers/target/debug/deps/tls_profiles-44fe069102bf2d15)
+
+running 6 tests
+test unsupported_pins_and_malformed_combined_roots_fail_before_networking ... ok
+test matching_pins_preserve_handshake_signature_verification ... ok
+test disabling_sni_preserves_hostname_verification_for_each_backend ... ok
+test matching_pins_do_not_bypass_names_chains_or_expiry ... ok
+test pinning_revalidates_rotated_certificates_on_ticket_enabled_reconnects ... ok
+test advertised_version_policies_enforce_the_allowed_set ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/topic_alias.rs (native-wrappers/target/debug/deps/topic_alias-ac464ccbb0d5b7b2)
+
+running 3 tests
+test alias_rejection_retains_broker_reason_and_connection_generation ... ok
+test rejected_connect_properties_preserve_reason_before_first_generation ... ok
+test automatic_and_explicit_aliases_replay_concrete_topics_under_new_connack_limits ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/tracing.rs (native-wrappers/target/debug/deps/tracing-df0a598284c2297a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/transport_composition.rs (native-wrappers/target/debug/deps/transport_composition-a44f4ae09b119959)
+
+running 8 tests
+test disabled_transports_fail_before_opening_a_socket ... ok
+test disabled_redirect_transports_fail_before_driver_start ... ok
+test proxy_and_broker_tls_trust_policies_are_independent ... ok
+test proxy_tls_and_websocket_compositions_reconnect_for_both_protocols ... ok
+test proxy_negotiation_failures_and_shutdown_resolve_pending_work ... ok
+test proxy_failure_process_output_is_redacted ... ok
+test dynamic_handshakes_preserve_proxy_tls_and_custom_connector_composition ... ok
+test custom_connectors_preserve_proxy_tls_and_websocket_composition ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.69s
+
+     Running tests/value_config.rs (native-wrappers/target/debug/deps/value_config-e2c086d84d1617db)
+
+running 8 tests
+test endpoint_transport_mismatches_are_rejected ... ok
+test connect_property_singletons_and_authentication_pairing_are_validated ... ok
+test limits_and_timer_ranges_fail_without_panicking ... ok
+test sensitive_debug_and_tls_pairing ... ok
+test websocket_headers_reject_protected_names_and_injection ... ok
+test will_protocol_is_checked_before_start ... ok
+test will_topics_and_binary_boundaries_are_validated ... ok
+test will_property_boundaries_preserve_legal_empty_and_zero_values ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/websocket_handshake.rs (native-wrappers/target/debug/deps/websocket_handshake-3ee8833e4841757c)
+
+running 7 tests
+test builders_protect_upgrade_fields_and_reject_invalid_or_oversized_edits ... ok
+test panicking_handshake_authorities_terminate_with_a_typed_failure ... ok
+test ipv6_handshake_snapshots_match_direct_and_proxy_connector_targets ... ok
+test dynamic_tokens_and_request_targets_refresh_across_ws_and_wss_reconnects ... ok
+test pending_handshakes_use_native_deadline_and_close_cancels_them ... ok
+test pending_handshake_destructor_failures_are_terminal_on_timeout_and_close ... ok
+test handshake_panic_payloads_do_not_reach_process_output ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s
+
+     Running tests/websocket_reconnect.rs (native-wrappers/target/debug/deps/websocket_reconnect-2837186e660731a7)
+
+running 2 tests
+test websocket_protocol_violations_stop_classified_clients_and_preserve_legacy_retries ... ok
+test websocket_peer_closure_reconnects_for_both_protocols ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.83s
+
+     Running tests/websocket_redaction.rs (native-wrappers/target/debug/deps/websocket_redaction-7bce856fd59a55a4)
+
+running 1 test
+test wrapper_diagnostics_redact_handshake_credentials ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/will_broker.rs (native-wrappers/target/debug/deps/will_broker-6164aac8d79913e6)
+
+running 1 test
+test real_broker_publishes_will_only_after_ungraceful_disconnect ... ignored, requires the mosquitto executable (or MOSQUITTO_BIN)
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rumqttc_wrapper_core
+
+running 1 test
+test wrapper-core/src/command.rs - command::V5OutgoingPublishProperties (line 12) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

@@ -1,0 +1,71 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 980  of event 'cpu-clock:u'
+# Event count (approx.): 1963927840
+#
+# Children      Self  Symbol                                                                                                                                                                                                    IPC   [IPC Coverage]
+# ........  ........  ........................................................................................................................................................................................................  ....................
+#
+     7.86%     0.82%  [.] SSL_read_ex                                                                                                                                                                                           -      -
+     6.73%     0.20%  [.] SSL_write_ex2                                                                                                                                                                                         -      -
+     6.43%     0.00%  [.] 0x00007f16eb927002                                                                                                                                                                                    -      -
+     6.12%     0.00%  [.] 0x00007f16eb8994e2                                                                                                                                                                                    -      -
+     6.02%     6.02%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit                                                                                                                                  -      -
+     5.51%     0.00%  [.] 0x00007f16eb925e84                                                                                                                                                                                    -      -
+     5.41%     0.00%  [.] 0x00007f16eb92aff7                                                                                                                                                                                    -      -
+     5.10%     0.00%  [.] 0x00007f16eb928e89                                                                                                                                                                                    -      -
+     4.29%     0.00%  [.] 0x00007f16eb92a7f8                                                                                                                                                                                    -      -
+     4.18%     4.18%  [.] <flume::async::RecvStream<T> as futures_core::stream::Stream>::poll_next                                                                                                                              -      -
+     4.18%     0.00%  [.] 0x00007f16eb31d30c                                                                                                                                                                                    -      -
+     3.78%     3.27%  [.] <rumqttc_wrapper_core::backend::tls_connector_proof::HostDriver as core::future::future::Future>::poll                                                                                                -      -
+     3.37%     1.73%  [.] ERR_clear_error                                                                                                                                                                                       -      -
+     3.37%     0.00%  [.] 0x00007f16eb91e85f                                                                                                                                                                                    -      -
+     3.27%     3.06%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit::{{closure}}                                                                                                                     -      -
+     3.27%     0.00%  [.] 0x00007f16eb32bf4d                                                                                                                                                                                    -      -
+     3.16%     0.10%  [.] EVP_EncryptUpdate                                                                                                                                                                                     -      -
+     2.86%     2.86%  [.] cfree                                                                                                                                                                                                 -      -
+     2.55%     2.55%  [.] flume::Shared<T>::recv                                                                                                                                                                                -      -
+     2.35%     0.82%  [.] BIO_read                                                                                                                                                                                              -      -
+     2.04%     2.04%  [.] tokio::runtime::task::raw::poll                                                                                                                                                                       -      -
+     1.84%     1.84%  [.] _aesni_ctr32_ghash_6x                                                                                                                                                                                 -      -
+     1.84%     1.84%  [.] flume::async::RecvFut<T>::poll_inner                                                                                                                                                                  -      -
+     1.84%     0.00%  [.] 0x00007f16eb922f1e                                                                                                                                                                                    -      -
+     1.84%     0.00%  [.] 0x00007f16eb92349b                                                                                                                                                                                    -      -
+     1.73%     1.73%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Budget::reserve                                                                                                                                   -      -
+     1.63%     1.63%  [.] flume::async::RecvFut<T>::reset_hook                                                                                                                                                                  -      -
+     1.53%     0.00%  [.] 0x00007f16eb0843ea                                                                                                                                                                                    -      -
+     1.53%     0.00%  [.] 0x00007f16eb2fd1df                                                                                                                                                                                    -      -
+     1.43%     1.43%  [.] malloc                                                                                                                                                                                                -      -
+     1.43%     1.43%  [.] tokio::sync::oneshot::Sender<T>::send                                                                                                                                                                 -      -
+     1.43%     1.33%  [.] <rumqttc_wrapper_core::backend::tls_connector_proof::LowerDriver as core::future::future::Future>::poll                                                                                               -      -
+     1.33%     1.33%  [.] tokio::runtime::task::waker::clone_waker                                                                                                                                                              -      -
+     1.33%     1.33%  [.] tokio::runtime::task::waker::wake_by_ref                                                                                                                                                              -      -
+     1.33%     1.33%  [.] 0x00000000001b2453                                                                                                                                                                                    -      -
+     1.33%     0.51%  [.] SSL_get_error                                                                                                                                                                                         -      -
+     1.33%     0.00%  [.] aws_lc_0_46_0_jent_measure_jitter                                                                                                                                                                     -      -
+     1.33%     0.00%  [.] 0x00007f16eadb2453                                                                                                                                                                                    -      -
+     1.22%     1.22%  [.] __vdso_clock_gettime                                                                                                                                                                                  -      -
+     1.22%     1.22%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::puback                                                                                                                                            -      -
+     1.22%     1.22%  [.] 0x00000000000b5a22                                                                                                                                                                                    -      -
+     1.22%     0.10%  [.] EVP_DecryptUpdate                                                                                                                                                                                     -      -
+     1.22%     0.00%  [.] clock_gettime                                                                                                                                                                                         -      -
+     1.22%     0.00%  [.] 0x00007f16eacb5a22                                                                                                                                                                                    -      -
+     1.12%     1.12%  [.] tokio::runtime::task::raw::poll                                                                                                                                                                       -      -
+     1.12%     0.00%  [.] jent_hash_time                                                                                                                                                                                        -      -
+     1.02%     1.02%  [.] core::ptr::drop_in_place<rumqttc_wrapper_core::backend::tls_connector_proof::Observation>                                                                                                             -      -
+     1.02%     1.02%  [.] core::ptr::drop_in_place<rumqttc_wrapper_core::backend::tls_connector_proof::Ticket>                                                                                                                  -      -
+     1.02%     1.02%  [.] flume::Shared<T>::recv                                                                                                                                                                                -      -
+     1.02%     0.92%  [.] core::ptr::drop_in_place<rumqttc_wrapper_core::backend::tls_connector_proof::Operation>                                                                                                               -      -
+     1.02%     0.92%  [.] rumqttc::eventloop::EventLoop::select::{{closure}}                                                                                                                                                    -      -
+     1.02%     0.00%  [.] jent_keccakp_1600                                                                                                                                                                                     -      -
+     1.02%     0.00%  [.] tcache_get (inlined)                                                                                                                                                                                  -      -
+     1.02%     0.00%  [.] tcache_get_n (inlined)                                                                                                                                                                                -      -
+     1.02%     0.00%  [.] 0x00007f16eb91e83d                                                                                                                                                                                    -      -
+
+
+#
+# (Tip: To show IPC for sampling periods use perf record -e '{cycles,instructions}:S' and then browse context)
+#

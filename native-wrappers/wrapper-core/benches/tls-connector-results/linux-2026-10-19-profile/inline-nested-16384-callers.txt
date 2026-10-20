@@ -1,0 +1,58 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 2K of event 'cpu-clock:u'
+# Event count (approx.): 4134268504
+#
+# Children      Self  Symbol                                                                                                                                                                                                     IPC   [IPC Coverage]
+# ........  ........  .........................................................................................................................................................................................................  ....................
+#
+    20.41%     0.00%  [.] SSL_write_ex2                                                                                                                                                                                          -      -
+    20.02%     0.00%  [.] 0x00007fdf4f7a2002                                                                                                                                                                                     -      -
+    18.13%     0.00%  [.] 0x00007fdf4f7a5ff7                                                                                                                                                                                     -      -
+    15.46%     0.00%  [.] 0x00007fdf4f7a57f8                                                                                                                                                                                     -      -
+    13.77%     0.00%  [.] 0x00007fdf4f31d30c                                                                                                                                                                                     -      -
+    13.62%     0.05%  [.] EVP_EncryptUpdate                                                                                                                                                                                      -      -
+    13.52%     0.00%  [.] 0x00007fdf4f79985f                                                                                                                                                                                     -      -
+    13.48%     0.00%  [.] 0x00007fdf4f32bf4d                                                                                                                                                                                     -      -
+    12.85%     0.00%  [.] 0x00007fdf4f2fd1df                                                                                                                                                                                     -      -
+    12.70%     0.00%  [.] 0x00007fdf4f4bd85c                                                                                                                                                                                     -      -
+    12.02%    12.02%  [.] _aesni_ctr32_ghash_6x                                                                                                                                                                                  -      -
+    11.00%    11.00%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::puback                                                                                                                                             -      -
+     6.79%     6.79%  [.] 0x00000000001b1c87                                                                                                                                                                                     -      -
+     6.35%     0.00%  [.] 0x00007fdf4edb1c87                                                                                                                                                                                     -      -
+     3.93%     0.34%  [.] SSL_read_ex                                                                                                                                                                                            -      -
+     3.39%     0.00%  [.] 0x00007fdf4f7144e2                                                                                                                                                                                     -      -
+     3.05%     3.05%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit                                                                                                                                   -      -
+     3.01%     2.91%  [.] <flume::async::RecvStream<T> as futures_core::stream::Stream>::poll_next                                                                                                                               -      -
+     2.86%     1.55%  [.] ERR_clear_error                                                                                                                                                                                        -      -
+     2.81%     0.00%  [.] 0x00007fdf4f7a0e84                                                                                                                                                                                     -      -
+     2.62%     0.00%  [.] 0x00007fdf4f7a3e89                                                                                                                                                                                     -      -
+     1.79%     0.05%  [.] BIO_write                                                                                                                                                                                              -      -
+     1.79%     0.00%  [.] 0x00007fdf4f7a5c22                                                                                                                                                                                     -      -
+     1.75%     0.44%  [.] BIO_read                                                                                                                                                                                               -      -
+     1.75%     0.00%  [.] 0x00007fdf4f0843ba                                                                                                                                                                                     -      -
+     1.65%     1.26%  [.] <rumqttc_wrapper_core::backend::tls_connector_proof::HostDriver as core::future::future::Future>::poll                                                                                                 -      -
+     1.55%     1.45%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit::{{closure}}                                                                                                                      -      -
+     1.55%     0.00%  [.] proof_tls_write                                                                                                                                                                                        -      -
+     1.50%     1.50%  [.] 0x00000000001b2453                                                                                                                                                                                     -      -
+     1.45%     0.00%  [.] 0x00007fdf4edb2453                                                                                                                                                                                     -      -
+     1.31%     1.31%  [.] cfree                                                                                                                                                                                                  -      -
+     1.31%     0.00%  [.] 0x00007fdf4f0843ea                                                                                                                                                                                     -      -
+     1.21%     1.21%  [.] tokio::runtime::task::raw::poll                                                                                                                                                                        -      -
+     1.21%     0.00%  [.] EVP_CipherInit_ex                                                                                                                                                                                      -      -
+     1.21%     0.00%  [.] 0x00007fdf4f7997fd                                                                                                                                                                                     -      -
+     1.21%     0.00%  [.] 0x00007fdf4f7a572b                                                                                                                                                                                     -      -
+     1.16%     0.00%  [.] aws_lc_0_46_0_gcm_init_avx                                                                                                                                                                             -      -
+     1.16%     0.00%  [.] 0x000055ea24ea9a1f                                                                                                                                                                                     -      -
+     1.11%     1.11%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Budget::reserve                                                                                                                                    -      -
+     1.11%     0.00%  [.] 0x00007fdf4f09bd5e                                                                                                                                                                                     -      -
+     1.07%     0.10%  [.] proof_tls_read                                                                                                                                                                                         -      -
+     1.02%     0.00%  [.] 0x00007fdf4f79e49b                                                                                                                                                                                     -      -
+
+
+#
+# (Tip: To see list of saved events and attributes: perf evlist -v)
+#

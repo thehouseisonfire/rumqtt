@@ -472,6 +472,8 @@ Registration requires WebSocket support and a WS/WSS transport.
 Application-owned TLS layers have a separate
 [private composition prototype and delivery gate](benches/tls-connector.md).
 The `tls-connector-proof` development feature exposes no public C connector API.
+The experiment is parked: the performance gate remains unmet and no application
+consumer is confirmed. See the linked evidence and reopening criteria.
 
 Set `CommonConfig::connector` to an owned `TransportConnectorConfig`. Its
 `TransportConnector::connect` returns a `TransportConnection` containing an

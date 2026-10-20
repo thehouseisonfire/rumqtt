@@ -1,5 +1,11 @@
 # Application-owned TLS composition prototype
 
+**Decision: park TODO49's public C API and further bridge redesign.** The user
+confirmed there is no application currently blocked on this extension. Corrected
+measurements still fail the agreed gate, and bounded profiling has not established
+a small change that would close every failing case. Keep the private experiment
+and its correctness coverage; reopen only for a confirmed need and justified cost.
+
 This is the private delivery gate for [TODO49](../../../TODO49.md). The reference
 consumer owns its OpenSSL TLS context, trust and negotiation policy while retaining
 native socket creation, HTTPS CONNECT, WebSocket framing and MQTT. It is a reference
@@ -99,6 +105,10 @@ RUMQTTC_TLS_PROOF_HOST_MODE=inline cargo test --locked \
   --lib --no-default-features --features tls-connector-proof tls_connector_proof
 python3 native-wrappers/wrapper-core/benches/tls_connector_matrix.py \
   --allocations --output native-wrappers/target/tls-connector-measurements
+python3 native-wrappers/wrapper-core/benches/profile_tls_connector.py \
+  --baseline native-wrappers/target/tls-connector-measurements/environment.json \
+  --output native-wrappers/target/tls-connector-profile-reports \
+  --data-output native-wrappers/target/tls-connector-profile-data
 ```
 
 Use a fresh output directory. The runner builds once before measurement and writes
@@ -108,52 +118,118 @@ Both scheduling variants use the same executable. Preserve evidence outside
 published wrapper-core package. The measured source hashes, rather than later
 documentation edits, identify the executable's implementation.
 
-Retained results: [final Linux 2026-10-19](tls-connector-results/linux-2026-10-19-final/).
-The [initial measurements](tls-connector-results/linux-2026-10-19/) precede the
-blocked-flush/control-write correction; their source hashes distinguish them.
-The [validation logs](tls-connector-results/validation-2026-10-19/) cover that
-measured source, including the forced key-update regression. These retained
-measurements and logs predate the buffered-stream flush fix. That fix adds
-automatic lower flushes after drained ciphertext flights; the matrix must be
-rerun before using its results to assess the current implementation's overhead.
+Current evidence: [corrected baseline](tls-connector-results/linux-2026-10-19-buffered-flush/)
+and [separate profiles](tls-connector-results/linux-2026-10-19-profile/). The baseline
+includes automatic lower flushing and final-handshake flush completion. Its exact
+source hashes were checked before adding the ignored single-workload profiling
+entry point; the bridge algorithm was unchanged during this investigation.
 
-## Retained Linux result before the buffered-stream flush fix
+The [initial measurements](tls-connector-results/linux-2026-10-19/) and the
+[previous final matrix](tls-connector-results/linux-2026-10-19-final/) predate the
+buffered-stream fix. Their source hashes distinguish them. The earlier
+[validation logs](tls-connector-results/validation-2026-10-19/) likewise describe
+the earlier implementation and its then-existing tests.
 
-Neither scheduling variant passes every agreed workload gate:
+## Corrected Linux result and decision
+
+Neither scheduling variant passes the unchanged all-configurations gate:
 
 | Host scheduling | Passing configurations | Native throughput fraction | Native p99 latency ratio |
 | --- | --- | --- | --- |
-| Separate reactor thread | 0/16 | 0.249–0.499 | 1.719–5.843 |
-| Native-runtime task | 8/16 | 0.521–0.863 | 0.674–1.846 |
+| Separate reactor thread | 0/16 | 0.152–0.531 | 1.636–9.617 |
+| Native-runtime task | 8/16 | 0.523–1.438 | 0.663–1.877 |
 
-Ranges are minima/maxima of the 16 per-configuration median comparisons. The
-largest remaining throughput gap is nested TLS with 1 KiB publications. The
-native-runtime variant removes thread handoffs but retains owned-operation
-allocation and scheduling between stream drivers. These observations motivate
-further bridge design work; they do not isolate each source of overhead.
+These are ranges across the 16 per-configuration median comparisons from seven
+repetitions, not confidence intervals. CPU placement, frequency and desktop
+activity remain uncontrolled. Differences from earlier runs do not isolate the
+effect of the flushing fix. The runner exited 1 because the gate failed; all
+448 timing and 64 separate allocation samples completed successfully.
 
-Observed instrumented buffer reservations peak at 200 KiB with threaded host
-work and 216 KiB with native-runtime scheduling. Reservation counts peak at
-11 and 10 respectively; the nested workloads retain two TLS chains. These are
-workload observations, not worst-case bounds. Allocation samples report roughly
-66–160 external-path Rust allocation/reallocation calls per publication across
-the matrix, including the peer and native client. Inspect the separate allocation
-CSVs for native comparisons and cumulative byte counts.
+For MQTT 5 on the current-thread runtime, nested TLS with 1 KiB publications reaches
+15.2% native throughput and 9.62 times native p99 with threaded hosting. Inline
+hosting reaches 54.0% throughput and 1.87 times p99. Large-message inline workloads
+can amortize the overhead; this does not satisfy the every-configuration gate.
 
-The retained full wrapper-core suite passed 421 tests with three intentional
-ignores (this manual release benchmark, a manual diagnostics benchmark, and the
-Mosquitto-dependent will test). All 12 then-existing focused tests passed in
-threaded and inline mode, with default features and with native TLS only. Strict
-Clippy with pedantic and nursery checks passed with `tls-connector-proof,readiness`;
-readiness avoids an existing unrelated feature-dependent const suggestion in the
-runtime.
+Across timing/allocation runs, observed buffer-reservation peaks are 209.4 KiB
+threaded and 216 KiB inline, with 11 and 10 reservations respectively. Nested
+samples retain two TLS chains. These are workload peaks, not total-memory bounds.
 
-After the buffered-stream fix, the full suite passes 424 tests with the same
-three intentional ignores. All 15 focused tests pass in both scheduling modes
-with default and native-only features; strict Clippy and formatting checks pass.
-These correctness checks do not replace the pending performance remeasurement.
+## Bounded profiling
+
+After the timing matrix, profile MQTT 5 on the current-thread runtime with single
+TLS/1 KiB, nested TLS/1 KiB, and nested TLS/16 KiB. Each of the nine native,
+threaded, and inline cases publishes 100,000 messages after the usual warm-up.
+Separate process runs collect CPU/resource counters and 499 Hz userspace CPU
+samples with DWARF user callchains. The build retains release optimization/LTO
+and adds debug information without stripping symbols. No profiler runs or builds
+compete with the acceptance timing matrix.
+
+| TLS / payload | Native CPU us/msg | Threaded CPU us/msg | Inline CPU us/msg | Threaded voluntary switches/msg |
+| --- | ---: | ---: | ---: | ---: |
+| Single / 1 KiB | 10.0 | 45.6 | 14.6 | 9.23 |
+| Nested / 1 KiB | 12.5 | 73.4 | 22.1 | 15.62 |
+| Nested / 16 KiB | 34.4 | 126.7 | 47.2 | 18.20 |
+
+CPU includes user and system time for the whole workload process, plus the small
+`perf stat` parent. It includes setup, the fixture and native MQTT client, and
+teardown. Native/inline voluntary switches are approximately 0.0001/message.
+They still perform asynchronous task scheduling within the runtime. These are
+single profiling observations, not acceptance timings or isolated wrapper costs.
+
+For nested TLS/1 KiB, inline userspace samples land approximately 20.0% in bridge
+functions, 26.0% in runtime/channel/lock functions, 6.6% in allocator functions,
+and 6.1% in memory copy/fill functions. TLS/crypto functions account for 24.3%.
+Leading bridge frames include `Endpoint::submit`, `HostDriver::poll`,
+`Budget::reserve`, and operation destruction; runtime/channel frames include
+Flume polling and Tokio task/oneshot handling. Sample counts range from 367 to
+4,081 across the nine profiles, with no lost samples.
+
+The separate allocation run for that case records about 120 Rust allocation calls
+per publication inline versus 16 native, and about 49.4 kB of cumulative
+requested bytes versus 6.3 kB native (decimal units). Selected bridge copy
+counters record 4,324 bytes/publication. These counters exclude OpenSSL's C
+allocations and do not count every dependency copy.
+
+Together, the observations identify expensive thread handoffs and persistent
+operation/channel overhead after removing those handoffs. They do not identify
+one dominant copy routine whose replacement would close the gate. Sample buckets
+describe flat function labels: inlined allocation or synchronization work can
+remain inside a bridge label. Kernel work is absent from userspace samples, and
+the categories are not an additive causal decomposition of the extra CPU time.
+Unresolved libc addresses were resolved with matching build-ID debug symbols;
+the symbol map, analysis script hash and debug-file hash are retained.
+
+The profile reports and [summary CSV](tls-connector-results/linux-2026-10-19-profile/summary.csv)
+are retained. Large binary `perf.data` files stay under `target/`. The profiling
+entry point is ignored by normal tests and uses the same fixture/client path as
+the matrix. Its timings cannot be substituted into the acceptance summary.
+
+No optimization or public ABI work followed. Pooling operation state, reducing
+boxed futures/channel round trips, or collapsing actor boundaries are possible
+future hypotheses, with ownership/cancellation/serialization consequences. There
+is no confirmed consumer benefit to justify that redesign now.
+
+## Historical measurements and validation
+
+Earlier timing/allocation matrices and the 421-test validation record remain in
+separate historical directories linked above. They describe the implementation
+before the buffered-stream flush fix and its then-existing tests. Use the
+corrected baseline and current profiling evidence for the decision recorded here.
+
+## Validation
+
+With the profiling entry point added, the full suite passes 424 tests with four
+intentional ignores: three manual measurement/profiling tests and the
+Mosquitto-dependent will test. All 15 focused tests pass in both scheduling modes
+with default and native-only features; strict pedantic/nursery Clippy passes.
 
 ## Promotion boundary
+
+Reopening requires an application whose requirements existing TLS profiles,
+verification/signing hooks and Established transports cannot adequately serve.
+Document representative workloads and acceptable cost, then validate a bounded
+change or justify a redesign. Keep the agreed gate; do not publish an ABI on an
+assumption that overhead can be fixed later.
 
 Composition feasibility alone does not authorize publishing an ABI. TODO49's
 public profile/registration types, reverse-I/O C completions, typed failure and

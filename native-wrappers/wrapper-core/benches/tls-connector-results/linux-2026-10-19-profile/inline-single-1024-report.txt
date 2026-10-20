@@ -1,0 +1,1060 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 606  of event 'cpu-clock:u'
+# Event count (approx.): 1214428848
+#
+# Overhead;     Samples;Symbol                                                                                                                            ;Shared Object                        ;IPC   [IPC Coverage]
+ 6.44%  ; 39         ;[.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit                                                          ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            |--0.17%--core::sync::atomic::atomic_add (inlined)
+            |          <core::sync::atomic::Atomic<usize>>::fetch_add (inlined)
+            |          <alloc::sync::Arc<T,A> as core::clone::Clone>::clone (inlined)
+            |          tokio::sync::oneshot::channel (inlined)
+            |          rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit::{{closure}} (inlined)
+            |          rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit
+            |
+             --0.17%--<alloc::sync::Arc<T,A> as core::clone::Clone>::clone (inlined)
+                       rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit::{{closure}} (inlined)
+                       rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit
+
+ 3.14%  ; 19         ;[.] <flume::async::RecvStream<T> as futures_core::stream::Stream>::poll_next                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--<alloc::sync::Arc<T,A> as core::clone::Clone>::clone (inlined)
+                       flume::Shared<T>::recv (inlined)
+                       flume::async::RecvFut<T>::poll_inner (inlined)
+                       <flume::async::RecvStream<T> as futures_core::stream::Stream>::poll_next
+
+ 2.97%  ; 18         ;[.] cfree                                                                                                                         ;libc.so.6                            ;-      -
+            |
+            |--2.81%--cfree
+            |          |
+            |          |--1.16%--ERR_clear_error
+            |          |
+            |           --0.17%--rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit::{{closure}}
+            |
+             --0.17%--tcache_put_n (inlined)
+                       tcache_put (inlined)
+                       cfree
+
+ 2.81%  ; 17         ;[.] flume::async::RecvFut<T>::poll_inner                                                                                          ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--<alloc::sync::Arc<T,A> as core::clone::Clone>::clone (inlined)
+                       core::ops::function::FnOnce::call_once (inlined)
+                       core::option::Option<T>::map (inlined)
+                       flume::async::RecvFut<T>::poll_inner
+
+ 2.48%  ; 15         ;[.] __vdso_clock_gettime                                                                                                          ;[vdso]                               ;-      -
+            |
+            ---clock_gettime
+               |
+                --0.17%--<std::sys::pal::unix::time::Timespec>::now
+                          <std::sys::time::unix::Instant>::now (inlined)
+                          <std::time::Instant>::now (inlined)
+                          tokio::runtime::metrics::batch::now (inlined)
+                          tokio::runtime::metrics::batch::MetricsBatch::start_processing_scheduled_tasks (inlined)
+                          tokio::runtime::scheduler::current_thread::CoreGuard::block_on::{{closure}} (inlined)
+                          tokio::runtime::scheduler::current_thread::CoreGuard::enter::{{closure}} (inlined)
+                          tokio::runtime::context::scoped::Scoped<T>::set (inlined)
+                          tokio::runtime::context::set_scheduler::{{closure}} (inlined)
+                          std::thread::local::LocalKey<T>::try_with (inlined)
+                          std::thread::local::LocalKey<T>::with (inlined)
+                          tokio::runtime::context::set_scheduler (inlined)
+                          tokio::runtime::scheduler::current_thread::CoreGuard::enter (inlined)
+                          tokio::runtime::scheduler::current_thread::CoreGuard::block_on (inlined)
+                          tokio::runtime::scheduler::current_thread::CurrentThread::block_on::{{closure}} (inlined)
+                          tokio::runtime::context::runtime::enter_runtime (inlined)
+                          tokio::runtime::scheduler::current_thread::CurrentThread::block_on (inlined)
+                          tokio::runtime::runtime::Runtime::block_on_inner (inlined)
+                          tokio::runtime::runtime::Runtime::block_on (inlined)
+                          rumqttc_wrapper_core::backend::tls_connector_proof::profile_external_tls_workload (inlined)
+                          rumqttc_wrapper_core::backend::tls_connector_proof::profile_external_tls_workload::{{closure}} (inlined)
+                          core::ops::function::FnOnce::call_once
+                          <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          test::__rust_begin_short_backtrace::<core::result::Result<(), alloc::string::String>, fn() -> core::result::Result<(), alloc::string::String>>
+                          <test::types::RunnableTest>::run (inlined)
+                          test::run_test_in_process::{closure#0} (inlined)
+                          <core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>> (inlined)
+                          std::panicking::catch_unwind::<core::result::Result<(), alloc::string::String>, core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>> (inlined)
+                          std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>> (inlined)
+                          test::run_test_in_process (inlined)
+                          test::run_test::{closure#0}
+                          test::run_test::{closure#1} (inlined)
+                          std::sys::backtrace::__rust_begin_short_backtrace::<test::run_test::{closure#1}, ()>
+                          std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0} (inlined)
+                          <core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()> (inlined)
+                          std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>> (inlined)
+                          std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()> (inlined)
+                          std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1} (inlined)
+                          <std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          0x7ff361eac93e
+                          0x7ff361f4eeeb
+
+ 2.48%  ; 15         ;[.] rumqttc_wrapper_core::backend::tls_connector_proof::puback                                                                    ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--rumqttc_wrapper_core::backend::tls_connector_proof::puback
+
+ 2.15%  ; 13         ;[.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit::{{closure}}                                             ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 2.15%  ; 13         ;[.] tokio::runtime::task::raw::poll                                                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 2.15%  ; 13         ;[.] 0x00000000001b1b24                                                                                                            ;libc.so.6                            ;-      -
+ 1.98%  ; 12         ;[.] flume::Shared<T>::recv                                                                                                        ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 1.82%  ; 11         ;[.] rumqttc_wrapper_core::backend::tls_connector_proof::Budget::reserve                                                           ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            |--0.17%--rumqttc_wrapper_core::backend::tls_connector_proof::Budget::reserve
+            |
+            |--0.17%--<std::sys::sync::mutex::futex::Mutex>::lock (inlined)
+            |          std::sync::poison::mutex::Mutex<T>::lock (inlined)
+            |          rumqttc_wrapper_core::backend::tls_connector_proof::Budget::reserve
+            |
+             --0.17%--<alloc::sync::Arc<T,A> as core::clone::Clone>::clone (inlined)
+                       rumqttc_wrapper_core::backend::tls_connector_proof::Budget::reserve
+
+ 1.82%  ; 11         ;[.] 0x00000000001b1991                                                                                                            ;libc.so.6                            ;-      -
+ 1.65%  ; 10         ;[.] <rumqttc_wrapper_core::backend::tls_connector_proof::HostDriver as core::future::future::Future>::poll                        ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--futures_core::task::__internal::atomic_waker::AtomicWaker::register (inlined)
+                       rumqttc_wrapper_core::backend::tls_connector_proof::HostDriver::step (inlined)
+                       <rumqttc_wrapper_core::backend::tls_connector_proof::HostDriver as core::future::future::Future>::poll
+
+ 1.65%  ; 10         ;[.] rumqttc::eventloop::EventLoop::select::{{closure}}                                                                            ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 1.32%  ; 8          ;[.] _aesni_ctr32_ghash_6x                                                                                                         ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 1.32%  ; 8          ;[.] core::ptr::drop_in_place<rumqttc_wrapper_core::backend::tls_connector_proof::Ticket>                                          ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 1.32%  ; 8          ;[.] flume::async::RecvFut<T>::reset_hook                                                                                          ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            |--0.17%--<std::sys::sync::mutex::futex::Mutex>::unlock (inlined)
+            |          <std::sync::poison::mutex::MutexGuard<T> as core::ops::drop::Drop>::drop (inlined)
+            |          core::ptr::drop_in_place<std::sync::poison::mutex::MutexGuard<flume::Chan<rumqttc_wrapper_core::backend::tls_connector_proof::Request>>> (inlined)
+            |          flume::async::RecvFut<T>::reset_hook
+            |
+             --0.17%--<std::sys::sync::mutex::futex::Mutex>::lock (inlined)
+                       std::sync::poison::mutex::Mutex<T>::lock (inlined)
+                       flume::wait_lock (inlined)
+                       flume::async::RecvFut<T>::reset_hook
+
+ 1.32%  ; 8          ;[.] malloc                                                                                                                        ;libc.so.6                            ;-      -
+            |
+            |--0.99%--malloc
+            |          |
+            |           --0.33%--CRYPTO_malloc
+            |                     CRYPTO_zalloc
+            |                     |
+            |                     |--0.17%--0x7ff36297d44f
+            |                     |          0x7ff3629897f8
+            |                     |          0x7ff362989ff7
+            |                     |          0x7ff362986002
+            |                     |          SSL_write_ex2
+            |                     |
+            |                      --0.17%--0x7ff3628f2c93
+            |                                0x7ff362988e87
+            |                                0x7ff3629895cc
+            |                                0x7ff362989ff7
+            |                                0x7ff362986002
+            |                                SSL_write_ex2
+            |
+            |--0.17%--tcache_get_n (inlined)
+            |          tcache_get (inlined)
+            |          malloc
+            |
+             --0.17%--checked_request2size (inlined)
+                       malloc
+
+ 1.16%  ; 7          ;[.] <rumqttc_wrapper_core::backend::tls_connector_proof::LowerDriver as core::future::future::Future>::poll                       ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--futures_core::task::__internal::atomic_waker::AtomicWaker::register (inlined)
+                       <rumqttc_wrapper_core::backend::tls_connector_proof::LowerDriver as core::future::future::Future>::poll
+
+ 1.16%  ; 7          ;[.] flume::Shared<T>::recv                                                                                                        ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.99%  ; 6          ;[.] <flume::async::AsyncSignal as flume::signal::Signal>::fire                                                                    ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.99%  ; 6          ;[.] aws_lc_0_46_0_aes_hw_encrypt                                                                                                  ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.99%  ; 6          ;[.] core::ptr::drop_in_place<flume::async::RecvFut<rumqttc::eventloop::RequestEnvelope>>                                          ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.99%  ; 6          ;[.] tokio::runtime::task::waker::drop_waker                                                                                       ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--tokio::runtime::task::state::Snapshot::ref_count (inlined)
+                       tokio::runtime::task::state::State::ref_dec (inlined)
+                       tokio::runtime::task::harness::<impl tokio::runtime::task::raw::RawTask>::drop_reference (inlined)
+                       tokio::runtime::task::waker::drop_waker
+
+ 0.99%  ; 6          ;[.] tokio::runtime::time::Driver::park_internal                                                                                   ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.99%  ; 6          ;[.] tokio::sync::oneshot::Sender<T>::send                                                                                         ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--<alloc::sync::Arc<T,A> as core::ops::drop::Drop>::drop (inlined)
+                       core::ptr::drop_in_place<alloc::sync::Arc<tokio::sync::oneshot::Inner<core::result::Result<rumqttc_wrapper_core::backend::tls_connector_proof::Value,std::io::error::Error>>>> (inlined)
+                       tokio::sync::oneshot::Sender<T>::send
+
+ 0.83%  ; 5          ;[.] ERR_clear_error                                                                                                               ;libcrypto.so.3                       ;-      -
+ 0.83%  ; 5          ;[.] aws_lc_0_46_0_gcm_gmult_clmul                                                                                                 ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--aws_lc_0_46_0_gcm_gmult_clmul
+                       0xfff73be9fa1e0ff2
+
+ 0.83%  ; 5          ;[.] bytes::bytes::shallow_clone_vec                                                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--bytes::bytes::shallow_clone_vec
+
+ 0.83%  ; 5          ;[.] core::ptr::drop_in_place<rumqttc_wrapper_core::backend::tls_connector_proof::Operation>                                       ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.83%  ; 5          ;[.] rol64                                                                                                                         ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            |--0.50%--jent_keccakp_rho
+            |          jent_keccakp_1600
+            |          aws_lc_0_46_0_jent_sha3_update
+            |          jent_hash_time
+            |          aws_lc_0_46_0_jent_measure_jitter
+            |          |
+            |          |--0.33%--aws_lc_0_46_0_jent_random_data
+            |          |          |
+            |          |          |--0.17%--_jent_entropy_collector_alloc
+            |          |          |
+            |          |           --0.17%--aws_lc_0_46_0_jent_read_entropy
+            |          |
+            |           --0.17%--aws_lc_0_46_0_jent_time_entropy_init
+            |
+            |--0.17%--jent_keccakp_1600
+            |          aws_lc_0_46_0_jent_sha3_update
+            |          jent_hash_time
+            |          aws_lc_0_46_0_jent_measure_jitter
+            |          aws_lc_0_46_0_jent_random_data
+            |          aws_lc_0_46_0_jent_read_entropy
+            |
+             --0.17%--jent_keccakp_theta
+                       jent_keccakp_1600
+                       aws_lc_0_46_0_jent_sha3_update
+                       jent_hash_time
+                       aws_lc_0_46_0_jent_measure_jitter
+                       aws_lc_0_46_0_jent_time_entropy_init
+
+ 0.83%  ; 5          ;[.] rumqttc::client::AsyncClient::publish_tracked::{{closure}}                                                                    ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.83%  ; 5          ;[.] 0x00000000000b5a22                                                                                                            ;libc.so.6                            ;-      -
+            |
+            ---internal_syscall_cancel (inlined)
+               syscall_cancel (inlined)
+               |
+               |--0.50%--send
+               |
+               |--0.17%--recv
+               |
+                --0.17%--epoll_wait
+
+ 0.83%  ; 5          ;[.] 0x00000000001b2453                                                                                                            ;libc.so.6                            ;-      -
+ 0.66%  ; 4          ;[.] BIO_read                                                                                                                      ;libcrypto.so.3                       ;-      -
+            |
+             --0.17%--0x7ff36297b7f9
+                       0x7ff362981f1e
+                       0x7ff362987e89
+                       0x7ff362984e84
+                       0x7ff3628f84e2
+                       SSL_read_ex
+
+ 0.66%  ; 4          ;[.] CRYPTO_free                                                                                                                   ;libcrypto.so.3                       ;-      -
+            |
+            |--0.50%--ERR_clear_error
+            |
+             --0.17%--0x7ff3629892ce
+                       0x7ff36298988f
+                       0x7ff362989ff7
+                       0x7ff362986002
+                       SSL_write_ex2
+
+ 0.66%  ; 4          ;[.] alloc::sync::Arc<T,A>::drop_slow                                                                                              ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.66%  ; 4          ;[.] core::ptr::drop_in_place<rumqttc_wrapper_core::backend::tls_connector_proof::Observation>                                     ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.66%  ; 4          ;[.] epoll_wait                                                                                                                    ;libc.so.6                            ;-      -
+            |
+            ---syscall_cancel (inlined)
+               epoll_wait
+
+ 0.66%  ; 4          ;[.] rumqttc::eventloop::EventLoop::handle_request_internal_inner::{{closure}}                                                     ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.66%  ; 4          ;[.] rumqttc::eventloop::EventLoop::poll::{{closure}}                                                                              ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.66%  ; 4          ;[.] rumqttc::notice::PublishNotice::wait_outcome_async::{{closure}}                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.66%  ; 4          ;[.] rumqttc_wrapper_core::backend::tls_connector_proof::Request::finish                                                           ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--<alloc::sync::Arc<T,A> as core::ops::drop::Drop>::drop (inlined)
+                       core::ptr::drop_in_place<alloc::sync::Arc<rumqttc_wrapper_core::backend::tls_connector_proof::Operation>> (inlined)
+                       rumqttc_wrapper_core::backend::tls_connector_proof::Request::finish
+                       0x1cfa5
+
+ 0.66%  ; 4          ;[.] rumqttc_wrapper_core::backend::tls_connector_proof::sample::{{closure}}                                                       ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.66%  ; 4          ;[.] tokio::runtime::task::raw::poll                                                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.66%  ; 4          ;[.] tokio::runtime::task::waker::clone_waker                                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--tokio::runtime::task::state::State::ref_inc (inlined)
+                       tokio::runtime::task::waker::clone_waker
+
+ 0.66%  ; 4          ;[.] tokio::runtime::task::waker::wake_by_ref                                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--tokio::runtime::task::state::State::fetch_update_action (inlined)
+                       tokio::runtime::task::state::State::transition_to_notified_by_ref (inlined)
+                       tokio::runtime::task::harness::<impl tokio::runtime::task::raw::RawTask>::wake_by_ref (inlined)
+                       tokio::runtime::task::waker::wake_by_ref
+
+ 0.50%  ; 3          ;[.] <rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint as rumqttc_wrapper_core::transport::OwnedIo>::flush             ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.50%  ; 3          ;[.] <tokio_rustls::server::TlsStream<IO> as tokio::io::async_read::AsyncRead>::poll_read                                          ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.50%  ; 3          ;[.] SSL_get_error                                                                                                                 ;libssl.so.3                          ;-      -
+ 0.50%  ; 3          ;[.] alloc::collections::vec_deque::VecDeque<T,A>::truncate                                                                        ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.50%  ; 3          ;[.] flume::Shared<T>::len                                                                                                         ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+             --0.17%--<std::sys::sync::mutex::futex::Mutex>::lock (inlined)
+                       std::sync::poison::mutex::Mutex<T>::lock (inlined)
+                       flume::wait_lock (inlined)
+                       flume::Shared<T>::len
+
+ 0.50%  ; 3          ;[.] jent_memaccess                                                                                                                ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            ---aws_lc_0_46_0_jent_measure_jitter
+               |
+               |--0.33%--aws_lc_0_46_0_jent_random_data
+               |          |
+               |          |--0.17%--_jent_entropy_collector_alloc
+               |          |
+               |           --0.17%--aws_lc_0_46_0_jent_read_entropy
+               |
+                --0.17%--aws_lc_0_46_0_jent_time_entropy_init
+
+ 0.50%  ; 3          ;[.] rustls::common_state::CommonState::send_appdata_encrypt                                                                       ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.50%  ; 3          ;[.] rustls::conn::ConnectionCore<Data>::process_new_packets                                                                       ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.50%  ; 3          ;[.] tokio::runtime::io::registration::Registration::poll_ready                                                                    ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.50%  ; 3          ;[.] tokio::runtime::scheduler::current_thread::Context::run_task                                                                  ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.50%  ; 3          ;[.] tokio::runtime::scheduler::current_thread::Core::next_task                                                                    ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.50%  ; 3          ;[.] 0x00000000000bd653                                                                                                            ;libc.so.6                            ;-      -
+ 0.50%  ; 3          ;[.] 0x00000000001b1980                                                                                                            ;libc.so.6                            ;-      -
+            |
+             --0.17%--0x7ff362985468
+                       0x7ff3628f84e2
+                       SSL_read_ex
+
+ 0.50%  ; 3          ;[.] 0x0000000000097925                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3622843ea
+               BIO_read
+               |
+                --0.17%--0x7ff36297b7f9
+                          0x7ff362981f1e
+                          0x7ff362987e89
+                          0x7ff362984e84
+                          0x7ff3628f84e2
+                          SSL_read_ex
+                          proof_tls_read
+
+ 0.33%  ; 2          ;[.] <rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint as rumqttc_wrapper_core::transport::OwnedIo>::write::{{closure}};rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] CRYPTO_gcm128_finish                                                                                                          ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff36252c34e
+               EVP_DecryptFinal_ex
+               0x7ff36297d87e
+               0x7ff36298249b
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.33%  ; 2          ;[.] __errno_location                                                                                                              ;libc.so.6                            ;-      -
+            |
+            |--0.17%--0x7ff36237f8b7
+            |          ERR_peek_error
+            |          SSL_get_error
+            |
+             --0.17%--0x7ff3628f84a0
+                       SSL_read_ex
+
+ 0.33%  ; 2          ;[.] alloc::sync::Arc<T,A>::drop_slow                                                                                              ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] core::ops::function::FnOnce::call_once                                                                                        ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] flume::Shared<T>::len                                                                                                         ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] jent_keccakp_chi                                                                                                              ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            ---jent_keccakp_1600
+               aws_lc_0_46_0_jent_sha3_update
+               jent_hash_time
+               aws_lc_0_46_0_jent_measure_jitter
+               |
+               |--0.17%--aws_lc_0_46_0_jent_random_data
+               |          aws_lc_0_46_0_jent_read_entropy
+               |
+                --0.17%--aws_lc_0_46_0_jent_time_entropy_init
+
+ 0.33%  ; 2          ;[.] recv                                                                                                                          ;libc.so.6                            ;-      -
+            |
+            |--0.17%--recv
+            |
+             --0.17%--internal_syscall_cancel (inlined)
+                       syscall_cancel (inlined)
+                       recv
+
+ 0.33%  ; 2          ;[.] rumqttc_wrapper_core::backend::tls_connector_proof::Request::read_result                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] rustls::vecbuf::ChunkVecBuffer::write_to                                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] tokio::runtime::io::driver::Driver::turn                                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] tokio::runtime::io::scheduled_io::ScheduledIo::wake                                                                           ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] tokio::runtime::task::raw::poll                                                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] tokio::runtime::task::raw::poll                                                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.33%  ; 2          ;[.] writev                                                                                                                        ;libc.so.6                            ;-      -
+            |
+            ---syscall_cancel (inlined)
+               writev
+
+ 0.33%  ; 2          ;[.] 0x00000000000bd639                                                                                                            ;libc.so.6                            ;-      -
+ 0.33%  ; 2          ;[.] 0x00000000001b1afe                                                                                                            ;libc.so.6                            ;-      -
+ 0.33%  ; 2          ;[.] 0x00000000001b1b2e                                                                                                            ;libc.so.6                            ;-      -
+ 0.33%  ; 2          ;[.] 0x00000000001b1b3b                                                                                                            ;libc.so.6                            ;-      -
+ 0.33%  ; 2          ;[.] 0x00000000000843d0                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---BIO_read
+               0x7ff36297b7f9
+               0x7ff362981f1e
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.33%  ; 2          ;[.] 0x00000000000843e8                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---BIO_read
+
+ 0.33%  ; 2          ;[.] 0x0000000000325522                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---EVP_CipherInit_ex
+               0x7ff36297d7fd
+               0x7ff36298249b
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.33%  ; 2          ;[.] 0x00000000003e68c0                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---CRYPTO_gcm128_encrypt_ctr32
+               0x7ff3624fd0bc
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.33%  ; 2          ;[.] 0x00000000004bd2b1                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+               |
+                --0.17%--proof_tls_write
+
+ 0.17%  ; 1          ;[.] <flume::async::AsyncSignal as flume::signal::Signal>::as_ptr                                                                  ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <mqttbytes_v5::v5::publish::Publish as core::clone::Clone>::clone.7878                                                        ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint as rumqttc_wrapper_core::transport::OwnedIo>::read              ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint as rumqttc_wrapper_core::transport::OwnedIo>::read::{{closure}} ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            ---0x560df1c3f72a
+
+ 0.17%  ; 1          ;[.] <rumqttc_wrapper_core::transport::HostFuture<T,E> as core::future::future::Future>::poll                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <rumqttc_wrapper_core::transport::HostFuture<T,E> as core::future::future::Future>::poll                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <rustls::conn::connection::Reader as std::io::BufRead>::consume                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <rustls::msgs::deframer::DeframerIter as core::iter::traits::iterator::Iterator>::next                                        ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <rustls::msgs::message::Message as core::convert::TryFrom<rustls::msgs::message::inbound::InboundPlainMessage>>::try_from     ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <std::sys::pal::unix::time::Timespec>::now                                                                                    ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <tokio::time::sleep::Sleep as core::future::future::Future>::poll                                                             ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <tokio_rustls::common::SyncWriteAdapter<T> as std::io::Write>::write_vectored                                                 ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] <tokio_rustls::server::TlsStream<IO> as tokio::io::async_buf_read::AsyncBufRead>::poll_fill_buf                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] BIO_write                                                                                                                     ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff362989c22
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] CRYPTO_THREAD_get_local                                                                                                       ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3624192eb
+               0x7ff36237f8d7
+               ERR_clear_last_mark
+               0x7ff362982726
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] CRYPTO_THREAD_run_once                                                                                                        ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3624192da
+               0x7ff36237f8d7
+               ERR_clear_error
+
+ 0.17%  ; 1          ;[.] CRYPTO_gcm128_decrypt_ctr32                                                                                                   ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3624fd105
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_DecryptUpdate
+               0x7ff36297d85f
+               0x7ff36298249b
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] CRYPTO_malloc                                                                                                                 ;libcrypto.so.3                       ;-      -
+            |
+            ---CRYPTO_zalloc
+               0x7ff3628f2c93
+               0x7ff362988e87
+               0x7ff3629895cc
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] EVP_CIPHER_get_flags                                                                                                          ;libcrypto.so.3                       ;-      -
+            |
+            ---EVP_CIPHER_get_mode
+               0x7ff36297d7e3
+               0x7ff36298249b
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] EVP_EncryptUpdate                                                                                                             ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff36297d83d
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] SSL_get_wbio                                                                                                                  ;libssl.so.3                          ;-      -
+ 0.17%  ; 1          ;[.] alloc::collections::vec_deque::VecDeque<T,A>::insert_mut                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] alloc::sync::Arc<T,A>::drop_slow                                                                                              ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] alloc::sync::Arc<T,A>::drop_slow                                                                                              ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] aws_lc_0_46_0_EVP_AEAD_CTX_open                                                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] aws_lc_0_46_0_aes_hw_ctr32_encrypt_blocks                                                                                     ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] bytes::bytes::owned_drop                                                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] bytes::bytes::promotable_even_clone                                                                                           ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] bytes::bytes::promotable_even_drop                                                                                            ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] bytes::bytes::shared_clone                                                                                                    ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] bytes::bytes::shared_drop                                                                                                     ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] bytes::bytes_mut::BytesMut::split_to                                                                                          ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] core::ptr::drop_in_place<mqttbytes_v5::v5::Packet>                                                                            ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] core::ptr::drop_in_place<rumqttc::framed::Network::readb::{{closure}}>                                                        ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] core::ptr::drop_in_place<rumqttc::notice::PublishResult>                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] core::ptr::drop_in_place<rumqttc_wrapper_core::transport::HostFuture<usize,std::io::error::Error>>                            ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] core::ptr::drop_in_place<tokio::sync::oneshot::Inner<rumqttc::notice::PublishNoticeOutcome>>                                  ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] jent_keccakp_rho                                                                                                              ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            ---aws_lc_0_46_0_jent_sha3_update
+               jent_hash_time
+               aws_lc_0_46_0_jent_measure_jitter
+               aws_lc_0_46_0_jent_random_data
+               _jent_entropy_collector_alloc
+
+ 0.17%  ; 1          ;[.] jent_keccakp_theta                                                                                                            ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            ---0x18350c6a71cd10f4
+
+ 0.17%  ; 1          ;[.] proof_tls_read                                                                                                                ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] pthread_getspecific                                                                                                           ;libc.so.6                            ;-      -
+            |
+            ---0x7ff3624192eb
+               0x7ff36237f8d7
+               ERR_peek_error
+               SSL_get_error
+
+ 0.17%  ; 1          ;[.] ptr_to_le32                                                                                                                   ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            ---jent_sha3_fill_state
+               aws_lc_0_46_0_jent_sha3_final
+               jent_hash_time
+               aws_lc_0_46_0_jent_measure_jitter
+               aws_lc_0_46_0_jent_random_data
+               aws_lc_0_46_0_jent_read_entropy
+
+ 0.17%  ; 1          ;[.] rumqttc::eventloop::EventLoop::complete_read_batch::{{closure}}                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc::eventloop::EventLoop::complete_read_batch_inner::{{closure}}                                                         ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc::eventloop::EventLoop::flush_network::{{closure}}                                                                     ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc::eventloop::EventLoop::flush_request_batch::{{closure}}                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc::eventloop::EventLoop::handle_request_internal::{{closure}}                                                           ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc::eventloop::classify_envelope                                                                                         ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc::framed::Network::readb::{{closure}}                                                                                  ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc::state::MqttState::handle_outgoing_packet_with_notice_internal                                                        ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc::state::MqttState::next_free_outbound_pkid_after                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc::state::remove_ordered_pkid                                                                                           ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc_core::session_recovery::SessionRecoveryGate::requested                                                                ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rumqttc_wrapper_core::transport::StreamState::drive_write                                                                     ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] rustls::msgs::message::outbound::PrefixedPayload::with_capacity                                                               ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] send                                                                                                                          ;libc.so.6                            ;-      -
+            |
+            ---syscall_cancel (inlined)
+               send
+
+ 0.17%  ; 1          ;[.] tokio::runtime::scheduler::current_thread::Context::park                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] tokio::runtime::task::waker::wake_by_val                                                                                      ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] tokio::runtime::time::wheel::Wheel::next_expiration                                                                           ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] tokio_util::util::poll_buf::poll_read_buf                                                                                     ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+ 0.17%  ; 1          ;[.] xoshiro128starstar                                                                                                            ;rumqttc_wrapper_core-83c59366ee06663b;-      -
+            |
+            ---jent_memaccess
+               aws_lc_0_46_0_jent_measure_jitter
+               aws_lc_0_46_0_jent_random_data
+               aws_lc_0_46_0_jent_read_entropy
+
+ 0.17%  ; 1          ;[.] 0x00000000000ba767                                                                                                            ;libc.so.6                            ;-      -
+            |
+            ---0x7ff361ebbc0a
+               0x7ff361ebbd03
+
+ 0.17%  ; 1          ;[.] 0x00000000000bbaf6                                                                                                            ;libc.so.6                            ;-      -
+            |
+            ---0x7ff361ebbd03
+
+ 0.17%  ; 1          ;[.] 0x00000000000bbcf4                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000000bbd0d                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000000bcb63                                                                                                            ;libc.so.6                            ;-      -
+            |
+            ---0x7ff361ebd649
+
+ 0.17%  ; 1          ;[.] 0x00000000001b19c6                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b19e1                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1a5b                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1a69                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1a6e                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1a8a                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1a8f                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1a9f                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1ab1                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1af7                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1b29                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1b33                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1b4a                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b1b4e                                                                                                            ;libc.so.6                            ;-      -
+ 0.17%  ; 1          ;[.] 0x00000000001b23aa                                                                                                            ;libc.so.6                            ;-      -
+            |
+            ---0x7ff36297d44f
+               0x7ff36298249b
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000001b23c7                                                                                                            ;libc.so.6                            ;-      -
+            |
+            ---BUF_MEM_grow_clean
+               0x7ff36229bd3e
+               0x7ff3622843ba
+               BIO_write
+               0x7ff362989c22
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000001b23d2                                                                                                            ;libc.so.6                            ;-      -
+            |
+            ---BUF_MEM_grow_clean
+               0x7ff36229bd3e
+               0x7ff3622843ba
+               BIO_write
+               0x7ff362989c22
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x000000000009793a                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3622843ea
+               BIO_read
+
+ 0.17%  ; 1          ;[.] 0x000000000009bd6b                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3622843ba
+               BIO_write
+               0x7ff362989c22
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000001b0df8                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---EVP_CipherInit_ex
+               0x7ff36297d7fd
+               0x7ff36298249b
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000002192c0                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff36237f8d7
+               ERR_clear_error
+
+ 0.17%  ; 1          ;[.] 0x00000000002192f1                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff36237f8d7
+               ERR_peek_error
+               SSL_get_error
+
+ 0.17%  ; 1          ;[.] 0x0000000000265d60                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3623b80e5
+               0x7ff362400892
+               EVP_CIPHER_fetch
+               0x7ff3625b52bd
+               0x7ff3625afde8
+               EVP_RAND_instantiate
+               0x7ff362466aae
+               0x7ff362467d78
+               RAND_bytes_ex
+               SSL_CTX_new_ex
+               proof_tls_new
+
+ 0.17%  ; 1          ;[.] 0x000000000031d319                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---EVP_DecryptUpdate
+               0x7ff36297d83d
+               0x7ff36298249b
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x0000000000324d62                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---EVP_CIPHER_CTX_ctrl
+               0x7ff36297d960
+               0x7ff36298249b
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000003e7fab                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---CRYPTO_gcm128_encrypt_ctr32
+               0x7ff3624fd0bc
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bcfa0                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd208                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd215                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd23c                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd2d3                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd2dd                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd2e7                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd2f1                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd324                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd417                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd85c
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd66a                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3626bd83e
+               0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bd945                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---0x7ff3624fd1df
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004be76b                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---CRYPTO_gcm128_encrypt
+               0x7ff3624fd1a4
+               0x7ff36252bf4d
+               0x7ff36251d30c
+               EVP_EncryptUpdate
+               0x7ff36297d85f
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bf460                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---CRYPTO_gcm128_finish
+               CRYPTO_gcm128_tag
+               0x7ff36252c2e2
+               EVP_EncryptFinal_ex
+               0x7ff36297d87e
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bf466                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---CRYPTO_gcm128_finish
+               CRYPTO_gcm128_tag
+               0x7ff36252c2e2
+               EVP_EncryptFinal_ex
+               0x7ff36297d87e
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000004bf479                                                                                                            ;libcrypto.so.3                       ;-      -
+            |
+            ---CRYPTO_gcm128_finish
+               CRYPTO_gcm128_tag
+               0x7ff36252c2e2
+               EVP_EncryptFinal_ex
+               0x7ff36297d87e
+               0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x0000000000017070                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff36297d64c
+               0x7ff36298249b
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x000000000001b31f                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x000000000001b4e3                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x000000000009e744                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff362981f1e
+               0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000000a0267                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff3629897f8
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000000a4ec8                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff362987e89
+               0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000000a5b9b                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff362989443
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000000a5cc5                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff362989443
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000000a7a00                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000000a7a04                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000000a7a1c                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000000a7e20                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000000a83d4                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000000a8eb4                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000000a8f9c                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000000aae40                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff362984e84
+               0x7ff3628f84e2
+               SSL_read_ex
+
+ 0.17%  ; 1          ;[.] 0x00000000000abf81                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff36298988f
+               0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+ 0.17%  ; 1          ;[.] 0x00000000000ac3a5                                                                                                            ;libssl.so.3                          ;-      -
+            |
+            ---0x7ff362989ff7
+               0x7ff362986002
+               SSL_write_ex2
+
+
+
+#
+# (Tip: When collecting LBR backtraces use --stitch-lbr to handle more than 32 deep entries: perf record --call-graph lbr ; perf report --stitch-lbr)
+#

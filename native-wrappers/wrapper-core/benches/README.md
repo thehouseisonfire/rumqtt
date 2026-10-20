@@ -1,6 +1,6 @@
 # Wrapper ordered shutdown measurements
 
-Application-owned TLS has a separate [private composition and delivery gate](tls-connector.md).
+Application-owned TLS remains a [parked private experiment](tls-connector.md).
 
 Explicit shared execution has a separate [method, decision and results](execution.md).
 Optional C readiness has a separate [contract, harness and evidence](readiness.md).

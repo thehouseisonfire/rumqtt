@@ -1,0 +1,68 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1K of event 'cpu-clock:u'
+# Event count (approx.): 2573146272
+#
+# Children      Self  Symbol                                                                                                                                                                                                     IPC   [IPC Coverage]
+# ........  ........  .........................................................................................................................................................................................................  ....................
+#
+     6.46%     0.70%  [.] SSL_read_ex                                                                                                                                                                                            -      -
+     5.53%     0.00%  [.] 0x00007f9e7a4a94e2                                                                                                                                                                                     -      -
+     5.06%     0.00%  [.] SSL_write_ex2                                                                                                                                                                                          -      -
+     4.98%     4.98%  [.] 0x00000000000b5a22                                                                                                                                                                                     -      -
+     4.91%     0.00%  [.] 0x00007f9e798b5a22                                                                                                                                                                                     -      -
+     4.83%     1.01%  [.] epoll_wait                                                                                                                                                                                             -      -
+     4.75%     0.00%  [.] internal_syscall_cancel (inlined)                                                                                                                                                                      -      -
+     4.75%     0.00%  [.] syscall_cancel (inlined)                                                                                                                                                                               -      -
+     4.67%     4.67%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit                                                                                                                                   -      -
+     4.67%     0.00%  [.] 0x00007f9e7a537002                                                                                                                                                                                     -      -
+     4.60%     0.00%  [.] 0x00007f9e7a535e84                                                                                                                                                                                     -      -
+     4.44%     0.00%  [.] 0x00007f9e7a53aff7                                                                                                                                                                                     -      -
+     4.36%     0.00%  [.] 0x00007f9e7a538e89                                                                                                                                                                                     -      -
+     4.21%     0.31%  [.] clock_gettime                                                                                                                                                                                          -      -
+     3.89%     3.89%  [.] __vdso_clock_gettime                                                                                                                                                                                   -      -
+     3.27%     0.00%  [.] 0x00007f9e7a53a7f8                                                                                                                                                                                     -      -
+     2.88%     2.80%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Endpoint::submit::{{closure}}                                                                                                                      -      -
+     2.80%     2.80%  [.] tokio::runtime::scheduler::current_thread::<impl tokio::runtime::task::Schedule for alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>>::schedule                                     -      -
+     2.65%     2.65%  [.] tokio::runtime::time::Driver::park_internal                                                                                                                                                            -      -
+     2.57%     1.40%  [.] ERR_clear_error                                                                                                                                                                                        -      -
+     2.49%     2.41%  [.] <rumqttc_wrapper_core::backend::tls_connector_proof::HostDriver as core::future::future::Future>::poll                                                                                                 -      -
+     2.41%     0.00%  [.] 0x00007f9e7a53349b                                                                                                                                                                                     -      -
+     2.26%     2.26%  [.] <flume::async::RecvStream<T> as futures_core::stream::Stream>::poll_next                                                                                                                               -      -
+     2.26%     2.26%  [.] tokio::runtime::time::<impl tokio::runtime::time::handle::Handle>::process_at_time                                                                                                                     -      -
+     2.26%     2.18%  [.] flume::Shared<T>::recv                                                                                                                                                                                 -      -
+     2.26%     0.00%  [.] 0x00007f9e79f1d30c                                                                                                                                                                                     -      -
+     2.18%     2.18%  [.] tokio::runtime::scheduler::inject::Inject<T>::pop                                                                                                                                                      -      -
+     2.10%     0.78%  [.] write                                                                                                                                                                                                  -      -
+     2.10%     0.00%  [.] 0x00007f9e7a52e85f                                                                                                                                                                                     -      -
+     1.95%     0.00%  [.] internal_syscall_cancel (inlined)                                                                                                                                                                      -      -
+     1.95%     0.00%  [.] syscall_cancel (inlined)                                                                                                                                                                               -      -
+     1.95%     0.00%  [.] 0x00007f9e79f2bf4d                                                                                                                                                                                     -      -
+     1.87%     1.87%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::Budget::reserve                                                                                                                                    -      -
+     1.79%     0.00%  [.] EVP_EncryptUpdate                                                                                                                                                                                      -      -
+     1.71%     1.71%  [.] cfree                                                                                                                                                                                                  -      -
+     1.71%     1.71%  [.] tokio::runtime::task::waker::wake_by_ref                                                                                                                                                               -      -
+     1.40%     1.40%  [.] tokio::sync::oneshot::Sender<T>::send                                                                                                                                                                  -      -
+     1.32%     0.31%  [.] SSL_get_error                                                                                                                                                                                          -      -
+     1.25%     1.25%  [.] rumqttc_wrapper_core::backend::tls_connector_proof::puback                                                                                                                                             -      -
+     1.25%     0.00%  [.] 0x00007f9e7a532f1e                                                                                                                                                                                     -      -
+     1.17%     1.17%  [.] <rumqttc_wrapper_core::backend::tls_connector_proof::LowerDriver as core::future::future::Future>::poll                                                                                                -      -
+     1.17%     1.17%  [.] flume::async::RecvFut<T>::reset_hook                                                                                                                                                                   -      -
+     1.09%     1.09%  [.] 0x00000000000bd639                                                                                                                                                                                     -      -
+     1.09%     1.09%  [.] 0x00000000001b2453                                                                                                                                                                                     -      -
+     1.09%     0.00%  [.] 0x00007f9e798bd639                                                                                                                                                                                     -      -
+     1.09%     0.00%  [.] 0x00007f9e799b2453                                                                                                                                                                                     -      -
+     1.09%     0.00%  [.] 0x00007f9e79efd1df                                                                                                                                                                                     -      -
+     1.01%     1.01%  [.] <flume::async::AsyncSignal as flume::signal::Signal>::fire                                                                                                                                             -      -
+     1.01%     1.01%  [.] core::ptr::drop_in_place<rumqttc_wrapper_core::backend::tls_connector_proof::Ticket>                                                                                                                   -      -
+     1.01%     1.01%  [.] tokio::runtime::task::raw::poll                                                                                                                                                                        -      -
+     1.01%     0.93%  [.] core::ops::function::FnOnce::call_once                                                                                                                                                                 -      -
+     1.01%     0.00%  [.] aws_lc_0_46_0_jent_measure_jitter                                                                                                                                                                      -      -
+
+
+#
+# (Tip: If you have debuginfo enabled, try: perf report -s sym,srcline)
+#

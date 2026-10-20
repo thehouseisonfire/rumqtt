@@ -1,0 +1,8 @@
+
+running 1 test
+TLS_PROFILE,execution,mqtt,nested,payload,external,messages,messages_per_second,p99_us
+TLS_PROFILE,dedicated,5,true,16384,false,100000,27569.061,44.313
+test backend::tls_connector_proof::profile_external_tls_workload ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 147 filtered out; finished in 3.68s
+

@@ -1,0 +1,7 @@
+{
+  "summary_script_sha256": "ae6b1468663384bdbd4e8f9c1f5a91561120f76387ebd884f4b92f3b755fdb44",
+  "libc_build_id": "e363db7c8fcc7c06c6f0d2839b2a8ad875b75406",
+  "libc_debug_sha256": "7141d32de0529a8a9d57b102e9ee30c460130d14a48f7b40179d50aa6d5d49cb",
+  "libc_debug_path": "/home/eagle/.cache/debuginfod_client/e363db7c8fcc7c06c6f0d2839b2a8ad875b75406/debuginfo",
+  "limitations": "Flat sample labels include inlined work; CPU and switches include perf, setup, peer and client. Buckets do not isolate causal costs. Profile timings do not establish the acceptance gate."
+}
