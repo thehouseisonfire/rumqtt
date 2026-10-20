@@ -30,6 +30,7 @@ add_test(NAME rumqttc-thread-join-contract COMMAND rumqttc-thread-join-contract)
 set_tests_properties(rumqttc-thread-join-contract PROPERTIES LABELS "native;concurrency" TIMEOUT 10)
 
 set(RUMQTTC_C_EXAMPLES
+    file_session_store
     websocket_tokens
     event_polling
     protocol_observations
@@ -65,7 +66,7 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
     target_link_libraries(${target} PRIVATE rumqttc_example_common)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX)
-        if(example STREQUAL "tls_profile" OR example STREQUAL "configuration_rotation")
+        if(example STREQUAL "tls_profile" OR example STREQUAL "configuration_rotation" OR example STREQUAL "file_session_store")
             target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
         endif()
         if(example STREQUAL "deferred_admission" OR example STREQUAL "multithreaded_publishing" OR example STREQUAL "authenticator"
@@ -97,7 +98,7 @@ foreach(example IN LISTS RUMQTTC_C_EXAMPLES)
             COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:${target}>)
     endif()
     set_tests_properties(${target} PROPERTIES LABELS "native;example" TIMEOUT 30)
-    if(example STREQUAL "websocket_tokens" OR example STREQUAL "ordered_shutdown" OR example STREQUAL "logging" OR example STREQUAL "readiness")
+    if(example STREQUAL "file_session_store" OR example STREQUAL "websocket_tokens" OR example STREQUAL "ordered_shutdown" OR example STREQUAL "logging" OR example STREQUAL "readiness")
         set_tests_properties(${target} PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endforeach()

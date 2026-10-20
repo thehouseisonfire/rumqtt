@@ -85,6 +85,16 @@ pub trait SessionStore: std::fmt::Debug + Send + Sync + 'static {
         key: &'a SessionStoreKey,
     ) -> SessionStoreFuture<'a, Option<PersistedSession>>;
 
+    /// Loads with a limit on canonical serialized checkpoint bytes.
+    /// Existing stores may rely on the default; managed file stores enforce it before decoding.
+    fn load_with_limit<'a>(
+        &'a self,
+        key: &'a SessionStoreKey,
+        _limit: usize,
+    ) -> SessionStoreFuture<'a, Option<PersistedSession>> {
+        self.load(key)
+    }
+
     /// Saves a complete session checkpoint.
     ///
     /// Return only after the checkpoint is durable enough for the backend's
@@ -94,6 +104,16 @@ pub trait SessionStore: std::fmt::Debug + Send + Sync + 'static {
         key: &'a SessionStoreKey,
         session: &'a PersistedSession,
     ) -> SessionStoreFuture<'a, ()>;
+
+    /// Saves an owned snapshot. The default forwards to `save`; managed stores
+    /// can move the snapshot to owned execution without another deep clone.
+    fn save_owned<'a>(
+        &'a self,
+        key: &'a SessionStoreKey,
+        session: PersistedSession,
+    ) -> SessionStoreFuture<'a, ()> {
+        Box::pin(async move { self.save(key, &session).await })
+    }
 
     /// Clears any checkpoint associated with `key`.
     ///
@@ -280,8 +300,20 @@ impl PersistedSession {
     /// Returns [`SessionEncodeError::FieldTooLarge`] if a persisted string,
     /// binary value, or collection exceeds the session format limits.
     pub fn encode(&self) -> Result<Vec<u8>, SessionEncodeError> {
-        let mut writer = SessionWriter { bytes: Vec::new() };
-        writer.bytes.extend_from_slice(SESSION_MAGIC);
+        self.encode_with_limit(usize::MAX)
+    }
+
+    /// Encodes the canonical format without growing output capacity beyond `limit` bytes.
+    ///
+    /// # Errors
+    /// Returns `SessionEncodeError::FieldTooLarge` if a field or the output exceeds its bound.
+    pub fn encode_with_limit(&self, limit: usize) -> Result<Vec<u8>, SessionEncodeError> {
+        let mut writer = SessionWriter {
+            bytes: Vec::new(),
+            limit,
+            excess: None,
+        };
+        writer.append(SESSION_MAGIC);
         writer.u8(SESSION_PROTOCOL);
         writer.u16(SESSION_CODEC_VERSION);
         writer.u16(self.format_version);
@@ -294,7 +326,45 @@ impl PersistedSession {
             writer.u16(incoming.pkid);
             Ok(())
         })?;
+        if let Some(len) = writer.excess {
+            return Err(SessionEncodeError::FieldTooLarge {
+                field: "checkpoint",
+                len,
+            });
+        }
         Ok(writer.bytes)
+    }
+
+    /// Logical owned buffer storage, including collection capacities and nested strings.
+    /// Allocator overhead is excluded. Saturates on overflow.
+    #[must_use]
+    pub fn allocated_size(&self) -> usize {
+        fn vec_size<T>(v: &Vec<T>) -> usize {
+            v.capacity().saturating_mul(std::mem::size_of::<T>())
+        }
+        fn strings(v: &Vec<String>) -> usize {
+            v.iter()
+                .fold(vec_size(v), |n, s| n.saturating_add(s.capacity()))
+        }
+        let mut size = std::mem::size_of::<Self>()
+            .saturating_add(self.client_id.capacity())
+            .saturating_add(vec_size(&self.replay))
+            .saturating_add(vec_size(&self.incoming_qos2));
+        for request in &self.replay {
+            size = size.saturating_add(match request {
+                PersistedRequest::Publish(p) => {
+                    p.topic.capacity().saturating_add(p.payload.capacity())
+                }
+                PersistedRequest::PubRel(_) => 0,
+                PersistedRequest::Subscribe(s) => {
+                    s.filters.iter().fold(vec_size(&s.filters), |n, f| {
+                        n.saturating_add(f.path.capacity())
+                    })
+                }
+                PersistedRequest::Unsubscribe(s) => strings(&s.topics),
+            });
+        }
+        size
     }
 
     /// Decodes a checkpoint emitted by [`PersistedSession::encode`].
@@ -304,7 +374,23 @@ impl PersistedSession {
     /// Returns [`SessionDecodeError`] if the checkpoint is malformed,
     /// unsupported, truncated, or exceeds the session format limits.
     pub fn decode(bytes: &[u8]) -> Result<Self, SessionDecodeError> {
-        let mut reader = SessionReader { bytes, position: 0 };
+        Self::decode_with_memory_limit(bytes, usize::MAX)
+    }
+
+    /// Decodes with an allocation budget for owned collection and byte buffers.
+    /// This counts logical storage, excluding allocator overhead and stack values.
+    ///
+    /// # Errors
+    /// Returns `SessionDecodeError` for malformed/unsupported input or exceeded format/allocation bounds.
+    pub fn decode_with_memory_limit(
+        bytes: &[u8],
+        memory_limit: usize,
+    ) -> Result<Self, SessionDecodeError> {
+        let mut reader = SessionReader {
+            bytes,
+            position: 0,
+            remaining_memory: memory_limit,
+        };
         reader.magic()?;
         let protocol = reader.u8("protocol")?;
         if protocol != SESSION_PROTOCOL {
@@ -337,23 +423,43 @@ impl PersistedSession {
 
 struct SessionWriter {
     bytes: Vec<u8>,
+    limit: usize,
+    excess: Option<usize>,
 }
 
 impl SessionWriter {
+    fn append(&mut self, value: &[u8]) {
+        let length = self.bytes.len().saturating_add(value.len());
+        if length > self.limit {
+            self.excess = Some(length);
+        } else if self.excess.is_none() {
+            if length > self.bytes.capacity() {
+                let capacity = self
+                    .bytes
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(length)
+                    .min(self.limit);
+                self.bytes.reserve_exact(capacity - self.bytes.len());
+            }
+            self.bytes.extend_from_slice(value);
+        }
+    }
+
     fn bool(&mut self, value: bool) {
         self.u8(u8::from(value));
     }
 
     fn u8(&mut self, value: u8) {
-        self.bytes.push(value);
+        self.append(&[value]);
     }
 
     fn u16(&mut self, value: u16) {
-        self.bytes.extend_from_slice(&value.to_be_bytes());
+        self.append(&value.to_be_bytes());
     }
 
     fn u32(&mut self, value: u32) {
-        self.bytes.extend_from_slice(&value.to_be_bytes());
+        self.append(&value.to_be_bytes());
     }
 
     fn bytes(&mut self, field: &'static str, value: &[u8]) -> Result<(), SessionEncodeError> {
@@ -368,7 +474,13 @@ impl SessionWriter {
             len: value.len(),
         })?;
         self.u32(len);
-        self.bytes.extend_from_slice(value);
+        self.append(value);
+        if let Some(len) = self.excess {
+            return Err(SessionEncodeError::FieldTooLarge {
+                field: "checkpoint",
+                len,
+            });
+        }
         Ok(())
     }
 
@@ -395,6 +507,12 @@ impl SessionWriter {
         self.u32(len);
         for value in values {
             write(self, value)?;
+            if let Some(len) = self.excess {
+                return Err(SessionEncodeError::FieldTooLarge {
+                    field: "checkpoint",
+                    len,
+                });
+            }
         }
         Ok(())
     }
@@ -403,9 +521,22 @@ impl SessionWriter {
 struct SessionReader<'a> {
     bytes: &'a [u8],
     position: usize,
+    remaining_memory: usize,
 }
 
 impl<'a> SessionReader<'a> {
+    fn reserve_memory(
+        &mut self,
+        field: &'static str,
+        len: usize,
+    ) -> Result<(), SessionDecodeError> {
+        self.remaining_memory = self
+            .remaining_memory
+            .checked_sub(len)
+            .ok_or(SessionDecodeError::LimitExceeded { field, len })?;
+        Ok(())
+    }
+
     fn magic(&mut self) -> Result<(), SessionDecodeError> {
         let magic = self.take("magic", SESSION_MAGIC.len())?;
         if magic != SESSION_MAGIC {
@@ -461,6 +592,7 @@ impl<'a> SessionReader<'a> {
         if len > MAX_BINARY_LEN {
             return Err(SessionDecodeError::LimitExceeded { field, len });
         }
+        self.reserve_memory(field, len)?;
         Ok(self.take(field, len)?.to_vec())
     }
 
@@ -477,6 +609,14 @@ impl<'a> SessionReader<'a> {
         if len > MAX_COLLECTION_LEN {
             return Err(SessionDecodeError::LimitExceeded { field, len });
         }
+        if len > self.bytes.len().saturating_sub(self.position) {
+            return Err(SessionDecodeError::Truncated { field });
+        }
+        self.reserve_memory(
+            field,
+            len.checked_mul(std::mem::size_of::<T>())
+                .ok_or(SessionDecodeError::LimitExceeded { field, len })?,
+        )?;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
             values.push(read(self)?);

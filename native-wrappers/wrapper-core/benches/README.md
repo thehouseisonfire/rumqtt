@@ -4,6 +4,7 @@ Application-owned TLS remains a [parked private experiment](tls-connector.md).
 
 Explicit shared execution has a separate [method, decision and results](execution.md).
 Optional C readiness has a separate [contract, harness and evidence](readiness.md).
+Optional maintained file stores have a separate [checkpoint cost harness and evidence](file_store.md).
 
 Keep `ordered-shutdown` disabled in standard wrapper packages. Enabling it changes
 native admission and publication tracking even when no fence is requested. The

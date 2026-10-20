@@ -137,7 +137,7 @@ pub struct Error {
     configuration_revision: u64,
     provenance_flags: u8,
     publish_failure: Option<crate::PublishFailure>,
-    store_failure: Option<crate::StoreFailure>,
+    store_failure: Option<std::num::NonZeroU8>,
     auth_failure: Option<crate::AuthFailure>,
     redirect_failure: Option<crate::RedirectFailure>,
     transport_failure: Option<crate::TransportFailure>,
@@ -154,6 +154,8 @@ pub struct Error {
 // Reuse the former exhaustion pointer so ordinary error/results do not grow.
 #[derive(Clone, Default)]
 struct ErrorDetails {
+    #[cfg(feature = "file-session-store")]
+    file: Option<crate::FileStoreError>,
     native: Option<crate::NativeFailureDetails>,
     exhaustion: Option<crate::ReconnectExhaustion>,
 }
@@ -190,12 +192,16 @@ impl Error {
         value.message = Arc::from(self.code.as_str());
         value.source = None;
         if value.reconnect_exhaustion().is_some() {
-            value.details = self.native_failure().copied().map(|native| {
-                Arc::new(ErrorDetails {
-                    native: Some(native),
-                    exhaustion: None,
-                })
-            });
+            let details = ErrorDetails {
+                native: self.native_failure().copied(),
+                exhaustion: None,
+                #[cfg(feature = "file-session-store")]
+                file: self.details.as_ref().and_then(|d| d.file),
+            };
+            let keep = details.native.is_some();
+            #[cfg(feature = "file-session-store")]
+            let keep = keep || details.file.is_some();
+            value.details = keep.then(|| Arc::new(details));
         }
         value
     }
@@ -358,19 +364,45 @@ impl Error {
 
     /// Structured terminal persistence failure, independent of diagnostic text.
     #[must_use]
+    #[cfg(not(feature = "file-session-store"))]
     pub const fn store_failure(&self) -> Option<crate::StoreFailure> {
-        self.store_failure
+        match self.store_failure {
+            Some(code) => crate::StoreFailure::from_code(code.get()),
+            None => None,
+        }
     }
 
+    /// Structured terminal persistence failure, including redacted file-store evidence.
+    #[must_use]
+    #[cfg(feature = "file-session-store")]
+    pub fn store_failure(&self) -> Option<crate::StoreFailure> {
+        if let Some(file) = self.details.as_ref().and_then(|d| d.file) {
+            return Some(crate::StoreFailure::File(file));
+        }
+        crate::StoreFailure::from_code(self.store_failure?.get())
+    }
+
+    #[cfg(not(feature = "file-session-store"))]
     pub(crate) const fn with_store_failure(mut self, failure: crate::StoreFailure) -> Self {
-        self.store_failure = Some(failure);
+        self.store_failure = std::num::NonZeroU8::new(failure.code());
+        self
+    }
+
+    #[cfg(feature = "file-session-store")]
+    pub(crate) fn with_store_failure(mut self, failure: crate::StoreFailure) -> Self {
+        self.store_failure = std::num::NonZeroU8::new(failure.code());
+        let file = match failure {
+            crate::StoreFailure::File(file) => Some(file),
+            _ => None,
+        };
+        if file.is_some() || self.details.as_ref().is_some_and(|d| d.file.is_some()) {
+            Arc::make_mut(self.details.get_or_insert_with(Default::default)).file = file;
+        }
         self
     }
 
     pub(crate) fn store(failure: crate::StoreFailure) -> Self {
-        let mut error = Self::new(ErrorKind::Persistence, failure.to_string());
-        error.store_failure = Some(failure);
-        error
+        Self::new(ErrorKind::Persistence, failure.to_string()).with_store_failure(failure)
     }
 
     #[must_use]
@@ -518,7 +550,7 @@ impl fmt::Debug for Error {
             .field("message", &self.message)
             .field("broker_reason", &self.broker_reason)
             .field("publish_failure", &self.publish_failure)
-            .field("store_failure", &self.store_failure)
+            .field("store_failure", &self.store_failure())
             .field("auth_failure", &self.auth_failure)
             .field("redirect_failure", &self.redirect_failure)
             .field("transport_failure", &self.transport_failure)

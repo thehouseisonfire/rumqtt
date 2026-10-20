@@ -21,6 +21,7 @@ features = ["use-rustls", "use-rustls-no-provider", "use-native-tls", "websocket
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+owned-session-store = []
 # Opt-in coordination for explicit session abandonment by a managed connection owner.
 session-recovery = ["rumqttc-core/session-recovery"]
 ordered-shutdown = ["rumqttc-core/ordered-shutdown"]

@@ -112,3 +112,43 @@ async fn envelope_and_codec_errors_remain_distinct() {
         ))
     ));
 }
+
+#[test]
+fn blocking_and_async_facades_share_checkpoints_and_close_all_clones() {
+    let root = tempfile::tempdir().unwrap();
+    let key = SessionStoreKey::new("scope", "client");
+    let blocking = BlockingSessionFileStore::open(root.path()).unwrap();
+    blocking.save(&key, &session(19)).unwrap();
+    assert!(matches!(
+        blocking.load_with_limits(&key, 1, 1024),
+        Err(SessionFileStoreError::FileStore(
+            AtomicBlobStoreError::BlobTooLarge { .. }
+        ))
+    ));
+    assert!(matches!(
+        blocking.load_with_limits(&key, 1024, 0),
+        Err(SessionFileStoreError::SessionDecode(
+            SessionDecodeError::LimitExceeded { .. }
+        ))
+    ));
+    let clone = blocking.clone();
+    blocking.close().unwrap();
+    assert!(matches!(
+        clone.load(&key),
+        Err(SessionFileStoreError::FileStore(
+            AtomicBlobStoreError::StoreClosed
+        ))
+    ));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let store = SessionFileStore::open(root.path()).await.unwrap();
+        assert_eq!(store.load(&key).await.unwrap(), Some(session(19)));
+        store.save(&key, &session(20)).await.unwrap();
+        store.close().await.unwrap();
+    });
+    let store = BlockingSessionFileStore::open(root.path()).unwrap();
+    assert_eq!(store.load(&key).unwrap(), Some(session(20)));
+    store.close().unwrap();
+}

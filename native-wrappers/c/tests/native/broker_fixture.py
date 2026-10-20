@@ -1983,6 +1983,7 @@ def main() -> int:
     )
     parser.add_argument("--binary", required=True)
     parser.add_argument("--atomic-restart", action="store_true")
+    parser.add_argument("--file-store-restart", action="store_true")
     parser.add_argument("--redact", action="store_true")
     parser.add_argument("--proxy-matrix", action="store_true")
     parser.add_argument("--tls-matrix", action="store_true")
@@ -2184,6 +2185,7 @@ def main() -> int:
             proxies.append(tunnel)
             environment["RUMQTTC_TEST_BYTE_TUNNEL_PORT"] = str(tunnel.port)
         try:
+            environment["RUMQTTC_SESSION_ROOT"] = directory
             launcher = shlex.split(environment.get("RUMQTTC_NATIVE_LAUNCHER", ""))
             address_arguments = [] if args.omit_address_arguments else ["127.0.0.1", str(broker.port)]
             if args.external_identity_example:
@@ -2191,6 +2193,17 @@ def main() -> int:
             if args.tls_profile_example:
                 address_arguments = ["localhost", str(tls_broker.port), ca_cert, environment["RUMQTTC_TEST_SPKI_PIN"]]
             child_arguments = args.argument[1:] if args.argument[:1] == ["--"] else args.argument
+            if args.file_store_restart:
+                environment["RUMQTTC_TEST_FILE_STORE_ROOT"] = directory
+                for stage in ("seed-v4", "resume-v4", "seed-v5", "resume-v5"):
+                    status = run_native(
+                        [*launcher, args.binary, stage, *child_arguments, *address_arguments],
+                        environment,
+                        args.redact,
+                    )
+                    if status:
+                        return status
+                return 0
             if args.atomic_restart:
                 environment["RUMQTTC_TEST_ATOMIC_FILE"] = os.path.join(directory, "checkpoint")
                 for stage in ("seed", "interrupt", "verify"):

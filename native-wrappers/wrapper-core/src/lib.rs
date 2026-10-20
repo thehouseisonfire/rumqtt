@@ -141,3 +141,11 @@ pub use protocol::{OperationId, ProtocolVersion, QoS};
 pub use runtime::{EventConsumer, NativeClient, NativeClientCloser};
 pub use shutdown::LifecycleState;
 pub use will::{LastWillConfig, LastWillProtocolOptions, V5WillProperties};
+
+#[cfg(feature = "file-session-store")]
+mod file_store;
+#[cfg(feature = "file-session-store")]
+pub use file_store::{
+    FileStore, FileStoreClientLease, FileStoreContext, FileStoreContextOptions, FileStoreError,
+    FileStoreFailure, FileStoreOperation, FileStoreOptions, FileStoreResult,
+};

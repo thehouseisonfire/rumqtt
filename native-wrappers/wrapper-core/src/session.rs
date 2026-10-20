@@ -35,6 +35,19 @@ impl std::fmt::Debug for SessionCheckpoint {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StoreFailure {
+    #[cfg(feature = "file-session-store")]
+    #[error("file session store failed: {0}")]
+    File(crate::FileStoreError),
+    #[error("file session store is closed")]
+    Closed,
+    #[error("file session store resource limit reached")]
+    Resources,
+    #[error("file session store I/O failed")]
+    Io,
+    #[error("file session store operation is unsupported")]
+    Unsupported,
+    #[error("file session store teardown failed")]
+    Shutdown,
     #[error("native session store key does not match its lease")]
     KeyMismatch,
     #[error("session replay exceeds the configured publish budget")]
@@ -61,6 +74,56 @@ pub enum StoreFailure {
     InUse,
 }
 
+impl StoreFailure {
+    /// Stable persistence classification used by the C error projection.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Load => 1,
+            Self::Save => 2,
+            Self::Clear => 3,
+            Self::Corrupt => 4,
+            Self::Version => 5,
+            Self::Protocol => 6,
+            Self::Oversized => 7,
+            Self::Timeout => 8,
+            Self::Panic => 9,
+            Self::InUse => 10,
+            Self::KeyMismatch => 11,
+            Self::PublishBudgetExceeded => 12,
+            Self::Closed => 13,
+            Self::Resources => 14,
+            Self::Io => 15,
+            Self::Unsupported => 16,
+            Self::Shutdown => 17,
+            #[cfg(feature = "file-session-store")]
+            Self::File(_) => 15,
+        }
+    }
+    pub(crate) const fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            1 => Self::Load,
+            2 => Self::Save,
+            3 => Self::Clear,
+            4 => Self::Corrupt,
+            5 => Self::Version,
+            6 => Self::Protocol,
+            7 => Self::Oversized,
+            8 => Self::Timeout,
+            9 => Self::Panic,
+            10 => Self::InUse,
+            11 => Self::KeyMismatch,
+            12 => Self::PublishBudgetExceeded,
+            13 => Self::Closed,
+            14 => Self::Resources,
+            15 => Self::Io,
+            16 => Self::Unsupported,
+            17 => Self::Shutdown,
+            _ => return None,
+        })
+    }
+}
+
 pub type StoreFuture<T> =
     Pin<Box<dyn Future<Output = std::result::Result<T, StoreFailure>> + Send + 'static>>;
 
@@ -84,6 +147,11 @@ pub type StoreFuture<T> =
 /// clones retain their own references. The in-process key lease lasts until the
 /// driver drops its adapter; cross-process exclusion remains the store's duty.
 pub trait SessionStore: Send + Sync + 'static {
+    #[cfg(feature = "file-session-store")]
+    fn file_store(&self) -> Option<crate::FileStore> {
+        None
+    }
+
     fn load(&self, key: SessionStoreKey) -> StoreFuture<Option<SessionCheckpoint>>;
 
     /// Load with the client's checkpoint limit. Implementations that copy an
@@ -99,6 +167,15 @@ pub trait SessionStore: Send + Sync + 'static {
     }
 
     fn save(&self, key: SessionStoreKey, checkpoint: SessionCheckpoint) -> StoreFuture<()>;
+    /// Saves with a wrapper-envelope bound. Managed bridges also bound decoded allocations.
+    fn save_with_limit(
+        &self,
+        key: SessionStoreKey,
+        checkpoint: SessionCheckpoint,
+        _limit: usize,
+    ) -> StoreFuture<()> {
+        self.save(key, checkpoint)
+    }
     fn clear(&self, key: SessionStoreKey) -> StoreFuture<()>;
 }
 

@@ -244,6 +244,13 @@ impl EventConsumer {
         self.readiness.clone()
     }
 
+    #[cfg_attr(
+        not(feature = "readiness"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "readiness-enabled terminal consumption performs runtime notification"
+        )
+    )]
     fn mark_terminal_seen(&mut self) {
         self.terminal_seen = true;
         #[cfg(feature = "readiness")]

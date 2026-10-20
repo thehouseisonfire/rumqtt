@@ -4,6 +4,11 @@
 
 ### Added
 
+- Add v4/v5 `BlockingSessionFileStore` for owned worker execution, bounded
+  serialized/decoded loads, and explicit ordered close that joins engine threads.
+  Add close to asynchronous stores. Both facades share the existing native
+  codec, namespaces, key encodings and atomic-blob-store 0.1.2 engine.
+
 - Depend on independently maintained `atomic-blob-store` 0.1.2.
 - Add `rumqttc-session-store-file-next`, whose independent additive `v4` and
   `v5` features support either or both clients while retaining their existing

@@ -34,6 +34,8 @@ pub trait Protocol: private::Sealed + Send + Sync + 'static {
 
     fn encode(session: &Self::Session) -> Result<Vec<u8>, Self::EncodeError>;
     fn decode(payload: &[u8]) -> Result<Self::Session, Self::DecodeError>;
+    fn encode_limited(session: &Self::Session, limit: usize) -> Result<Vec<u8>, Self::EncodeError>;
+    fn decode_limited(payload: &[u8], memory: usize) -> Result<Self::Session, Self::DecodeError>;
 }
 
 pub use private::Sealed;
@@ -114,19 +116,15 @@ impl<P: Protocol> Adapter<P> {
                 source,
             })
         })?;
-        let format = BlobFormatIdentity::new(
-            ENVELOPE_DOMAIN,
-            ENVELOPE_SUFFIX,
-            atomic_blob_store::ENVELOPE_VERSION_V1,
-        )
-        .expect("the adapter format identity is valid");
-        let core_options = AtomicBlobStoreOptions::new(format)
-            .with_max_blob_size(options.max_checkpoint_size)
-            .with_max_concurrent_operations(options.max_concurrent_operations);
+        let core_options = options_for(options);
         Ok(Self {
             core: AtomicBlobStore::open(&root, P::NAMESPACE, core_options).await?,
             protocol: PhantomData,
         })
+    }
+
+    pub(crate) async fn close(&self) -> Result<(), AdapterError<P>> {
+        Ok(self.core.close().await?)
     }
 
     pub(crate) fn checkpoint_path(
@@ -248,4 +246,162 @@ pub fn filename<P: Protocol>(scope: &str, client_id: &str) -> Result<String, Key
 
 pub fn namespace<P: Protocol>() -> &'static Path {
     Path::new(P::NAMESPACE)
+}
+
+fn options_for(options: FileStoreOptions) -> AtomicBlobStoreOptions {
+    let format = BlobFormatIdentity::new(
+        ENVELOPE_DOMAIN,
+        ENVELOPE_SUFFIX,
+        atomic_blob_store::ENVELOPE_VERSION_V1,
+    )
+    .expect("the adapter format identity is valid");
+    AtomicBlobStoreOptions::new(format)
+        .with_max_blob_size(options.max_checkpoint_size)
+        .with_max_concurrent_operations(options.max_concurrent_operations)
+}
+
+/// The same adapter and format driven by an explicitly owned blocking worker.
+pub struct BlockingAdapter<P: Protocol> {
+    core: atomic_blob_store::BlockingAtomicBlobStore,
+    limit: usize,
+    protocol: PhantomData<fn() -> P>,
+}
+impl<P: Protocol> Clone for BlockingAdapter<P> {
+    fn clone(&self) -> Self {
+        Self {
+            core: self.core.clone(),
+            limit: self.limit,
+            protocol: PhantomData,
+        }
+    }
+}
+impl<P: Protocol> fmt::Debug for BlockingAdapter<P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BlockingAdapter")
+            .field("core", &self.core)
+            .finish()
+    }
+}
+impl<P: Protocol> BlockingAdapter<P> {
+    pub(crate) fn open(
+        root: impl Into<PathBuf>,
+        options: FileStoreOptions,
+    ) -> Result<Self, AdapterError<P>> {
+        Ok(Self {
+            limit: usize::try_from(options.max_checkpoint_size).map_err(|_| {
+                AdapterError::FileStore(AtomicBlobStoreError::InvalidPayloadLength {
+                    declared: options.max_checkpoint_size,
+                })
+            })?,
+            core: atomic_blob_store::BlockingAtomicBlobStore::open(
+                root,
+                P::NAMESPACE,
+                options_for(options),
+            )?,
+            protocol: PhantomData,
+        })
+    }
+    pub(crate) fn checkpoint_path(&self, scope: &str, id: &str) -> Result<PathBuf, KeyEncodeError> {
+        Ok(self.core.blob_path(&encode_key::<P>(scope, id)?))
+    }
+    pub(crate) fn inspect(
+        &self,
+        scope: &str,
+        id: &str,
+    ) -> Result<CheckpointInspection, AdapterError<P>> {
+        let info = self.core.inspect(&encode_key::<P>(scope, id)?)?;
+        Ok(CheckpointInspection {
+            state: match info.state {
+                BlobState::Absent => CheckpointState::Absent,
+                BlobState::Present => CheckpointState::Present,
+            },
+            size: info.size,
+            modified: info.modified,
+        })
+    }
+    pub(crate) fn quarantine(
+        &self,
+        scope: &str,
+        id: &str,
+    ) -> Result<QuarantineInfo, AdapterError<P>> {
+        Ok(self.core.quarantine(&encode_key::<P>(scope, id)?)?)
+    }
+    pub(crate) fn clear(&self, scope: &str, id: &str) -> Result<(), AdapterError<P>> {
+        Ok(self.core.clear(&encode_key::<P>(scope, id)?)?)
+    }
+    pub(crate) fn cleanup(&self, age: Duration) -> Result<CleanupReport, AdapterError<P>> {
+        Ok(self.core.cleanup_stale_temporary_files(age)?)
+    }
+    pub(crate) fn load(
+        &self,
+        scope: &str,
+        id: &str,
+    ) -> Result<Option<P::Session>, AdapterError<P>> {
+        self.load_with_limits(scope, id, self.limit, usize::MAX)
+    }
+    pub(crate) fn load_with_limits(
+        &self,
+        scope: &str,
+        id: &str,
+        bytes: usize,
+        memory: usize,
+    ) -> Result<Option<P::Session>, AdapterError<P>> {
+        let mut output = LimitedOutput {
+            bytes: Vec::new(),
+            limit: bytes.min(self.limit),
+            exceeded: false,
+        };
+        let result = self
+            .core
+            .load_into(&encode_key::<P>(scope, id)?, &mut output);
+        if output.exceeded {
+            return Err(AdapterError::FileStore(
+                AtomicBlobStoreError::BlobTooLarge {
+                    size: output.limit.saturating_add(1) as u64,
+                    maximum: output.limit as u64,
+                },
+            ));
+        }
+        match result? {
+            None => Ok(None),
+            Some(_) => P::decode_limited(
+                &output.bytes,
+                memory.min(output.bytes.len().saturating_mul(512).saturating_add(1024)),
+            )
+            .map(Some)
+            .map_err(AdapterError::SessionDecode),
+        }
+    }
+    pub(crate) fn save(
+        &self,
+        scope: &str,
+        id: &str,
+        session: &P::Session,
+    ) -> Result<(), AdapterError<P>> {
+        let key = encode_key::<P>(scope, id)?;
+        let bytes = P::encode_limited(session, self.limit).map_err(AdapterError::SessionEncode)?;
+        Ok(self.core.save(&key, bytes)?)
+    }
+    pub(crate) fn close(&self) -> Result<(), AdapterError<P>> {
+        Ok(self.core.close()?)
+    }
+}
+
+struct LimitedOutput {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+impl std::io::Write for LimitedOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            self.exceeded = true;
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

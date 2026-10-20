@@ -111,3 +111,7 @@ Wrapper-core and C expose owned scalar native failure classifications, nested
 TLS/proxy/WebSocket causes, I/O kinds, target-specific OS codes, packet context,
 and size/count evidence. Existing retry/delivery behavior remains authoritative.
 See the [mapping, absence and lifetime contract](native-failures.md).
+
+C and wrapper-core optionally provide maintained file-backed session stores with
+explicit execution ownership and inactive-key administration. Enable
+`file-session-store`; see [the storage and teardown contract](file-session-stores.md).

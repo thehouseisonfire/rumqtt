@@ -82,6 +82,10 @@ pub use execution::*;
 mod logging;
 pub use logging::*;
 
+#[path = "file_store.rs"]
+mod file_store;
+pub use file_store::*;
+
 use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
@@ -1293,6 +1297,11 @@ pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
     } else {
         0
     }) | CAP_V4
+        | if cfg!(feature = "file-session-store") {
+            1 << 22
+        } else {
+            0
+        }
         | CAP_FIRST_CONNECTION
         | CAP_DEFERRED_ADMISSION
         | CAP_SHARED_EXECUTION

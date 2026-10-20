@@ -7,6 +7,24 @@
   Retain the private experiment and reproducible evidence; reopening requires a
   confirmed application need and renewed acceptance evidence.
 
+- Wrapper-core/C: Apply one persistence deadline to file-store loading and queued
+  checkpoint decoding. Timed-out decoding retains key exclusion until its work
+  settles. Enable C11 atomics for the maintained restart fixture on MSVC.
+
+- Wrapper-core/C: Add optional `file-session-store` with owned execution contexts,
+  retained file stores, durable v4/v5 attachment, metadata inspection, quarantine,
+  operator clear, and bounded staging cleanup. Independent duplicate opens fail;
+  client and administration leases survive timed-out filesystem work. Explicit
+  context shutdown/join covers initialization, engine close and worker teardown.
+  Defaults and application callback stores are preserved. See
+  [the ownership contract](native-wrappers/file-session-stores.md).
+  Wrapper-core Rust `StoreFailure` adds classifications; exhaustive matches must
+  handle the new variants.
+- Rust v4/v5: Add default-forwarding owned-save and bounded-load store hooks,
+  bounded checkpoint encoding and allocation-budgeted decoding. The optional
+  `owned-session-store` feature lets managed wrappers transfer snapshots to
+  worker execution; ordinary event-loop save dispatch remains unchanged.
+
 - Wrapper-core/C: Size optional readiness subscriber storage to observed fan-out.
   Preserve registration, revision/rearm, close, and cancellation behavior without
   adding APIs or notification machinery. The C host-loop example bounds event

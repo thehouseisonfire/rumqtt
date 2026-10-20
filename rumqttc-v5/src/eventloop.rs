@@ -215,6 +215,12 @@ impl SessionSave {
             return Ok(false);
         };
 
+        #[cfg(feature = "owned-session-store")]
+        store
+            .save_owned(&key, session)
+            .await
+            .map_err(ConnectionError::SessionStore)?;
+        #[cfg(not(feature = "owned-session-store"))]
         store
             .save(&key, &session)
             .await

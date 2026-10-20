@@ -31,3 +31,10 @@ values interchangeable.
 The adapter requires an existing, trusted local-filesystem root. It provides
 process-local same-key coordination but no cross-process locking, encryption,
 authentication, tamper resistance, or universal power-loss guarantee.
+
+Each protocol module also provides `BlockingSessionFileStore` for explicitly owned
+workers. Its `load_with_limits` bounds canonical serialized bytes and logical
+allocations made while decoding. `close()` drains the engine and joins its threads;
+all clones close together. Asynchronous `SessionFileStore::close().await` exposes
+the same engine boundary. Handle drop alone does not establish deterministic
+quiescence. Blocking methods must not run on asynchronous execution workers.

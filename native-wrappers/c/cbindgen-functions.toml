@@ -50,3 +50,7 @@ item_types = ["functions"]
 "rumqttc_logging_registration" = "rumqttc_logging_registration_t"
 "rumqttc_logging_flush" = "rumqttc_logging_flush_t"
 "rumqttc_log_record" = "rumqttc_log_record_t"
+
+"rumqttc_file_store_context" = "rumqttc_file_store_context_t"
+"rumqttc_file_store" = "rumqttc_file_store_t"
+"rumqttc_file_store_operation" = "rumqttc_file_store_operation_t"

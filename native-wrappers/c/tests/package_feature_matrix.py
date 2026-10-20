@@ -13,6 +13,9 @@ from pathlib import Path
 
 PROFILES = {
     "minimal": (),
+    "file-store-minimal": ("file-session-store",),
+    "file-store-core-only": ("rumqttc-wrapper-core-next/file-session-store",),
+    "file-store-composed": ("use-rustls-ring", "websocket", "file-session-store", "readiness", "ordered-shutdown", "tracing"),
     "readiness-minimal": ("readiness",),
     "readiness-core-only": ("rumqttc-wrapper-core-next/readiness",),
     "readiness-composed": ("use-rustls-ring", "websocket", "readiness", "ordered-shutdown", "tracing"),
@@ -107,6 +110,7 @@ def main() -> None:
             "SOCKS5_PROXY": "proxy" in features,
             "ORDERED_SHUTDOWN": "ordered-shutdown" in features,
             "READINESS": "readiness" in features,
+            "FILE_SESSION_STORE": "file-session-store" in features,
         }
         run(
             [

@@ -821,3 +821,12 @@ publication hooks. Enabled but unregistered completions/admissions allocate no
 readiness source. See the [C protocol](../c/README.md#host-event-loop-readiness-optional)
 and [measurements](benches/readiness.md). Connection-observer readiness remains
 part of the future TODO46 C observer; Python/JavaScript adapters are unchanged.
+
+## Optional maintained file session stores
+
+The `file-session-store` feature exposes `FileStoreContext`, `FileStore`, retained
+operations and typed administration results. Blocking initialization, filesystem
+endpoint work and checkpoint conversion use explicit owned worker execution.
+Use `FileStore::configuration` to share one bridge identity across attachments.
+See [the file-store contract](../file-session-stores.md). Context quiescence is
+separate from MQTT execution teardown and store-operation completion.

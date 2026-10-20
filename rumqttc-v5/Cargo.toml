@@ -21,6 +21,7 @@ features = ["bounded-publish", "use-rustls", "use-rustls-no-provider", "use-nati
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+owned-session-store = []
 # Retained publish budgets and detailed terminal transmission outcomes.
 bounded-publish = []
 # Opt-in coordination for explicit session abandonment by a managed connection owner.

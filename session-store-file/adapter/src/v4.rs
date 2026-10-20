@@ -35,6 +35,12 @@ impl Protocol for V4 {
         session.encode()
     }
 
+    fn encode_limited(session: &Self::Session, limit: usize) -> Result<Vec<u8>, Self::EncodeError> {
+        session.encode_with_limit(limit)
+    }
+    fn decode_limited(payload: &[u8], memory: usize) -> Result<Self::Session, Self::DecodeError> {
+        PersistedSession::decode_with_memory_limit(payload, memory)
+    }
     fn decode(payload: &[u8]) -> Result<Self::Session, Self::DecodeError> {
         PersistedSession::decode(payload)
     }
@@ -156,6 +162,15 @@ impl SessionFileStore {
             .map_err(SessionFileStoreError::from)
     }
 
+    /// Drains accepted work and joins all engine-owned threads. All clones close together.
+    /// Dropping the waiting future does not undo the close request.
+    pub async fn close(&self) -> Result<(), SessionFileStoreError> {
+        self.inner
+            .close()
+            .await
+            .map_err(SessionFileStoreError::from)
+    }
+
     /// Returns the namespace component used by this adapter.
     #[must_use]
     pub fn namespace_name() -> &'static Path {
@@ -221,3 +236,87 @@ fn box_error(error: SessionFileStoreError) -> rumqttc_v4::SessionStoreError {
 
 #[cfg(test)]
 mod tests;
+
+/// Blocking file store for applications with explicitly owned worker execution.
+/// Uses exactly the same namespace, keys and checkpoint format as `SessionFileStore`.
+/// Methods may block; never call them on an asynchronous execution worker.
+#[derive(Clone, Debug)]
+pub struct BlockingSessionFileStore {
+    inner: shared::BlockingAdapter<V4>,
+}
+impl BlockingSessionFileStore {
+    pub fn open(root: impl Into<PathBuf>) -> Result<Self, SessionFileStoreError> {
+        Self::open_with_options(root, FileStoreOptions::default())
+    }
+    pub fn open_with_options(
+        root: impl Into<PathBuf>,
+        options: FileStoreOptions,
+    ) -> Result<Self, SessionFileStoreError> {
+        Ok(Self {
+            inner: shared::BlockingAdapter::open(root, options)
+                .map_err(SessionFileStoreError::from)?,
+        })
+    }
+    pub fn checkpoint_path(&self, key: &SessionStoreKey) -> Result<PathBuf, KeyEncodeError> {
+        self.inner.checkpoint_path(key.scope(), key.client_id())
+    }
+    pub fn inspect(
+        &self,
+        key: &SessionStoreKey,
+    ) -> Result<CheckpointInspection, SessionFileStoreError> {
+        self.inner
+            .inspect(key.scope(), key.client_id())
+            .map_err(SessionFileStoreError::from)
+    }
+    pub fn quarantine(
+        &self,
+        key: &SessionStoreKey,
+    ) -> Result<QuarantineInfo, SessionFileStoreError> {
+        self.inner
+            .quarantine(key.scope(), key.client_id())
+            .map_err(SessionFileStoreError::from)
+    }
+    pub fn operator_clear(&self, key: &SessionStoreKey) -> Result<(), SessionFileStoreError> {
+        self.inner
+            .clear(key.scope(), key.client_id())
+            .map_err(SessionFileStoreError::from)
+    }
+    pub fn cleanup_stale_temporary_files_before_use(
+        &self,
+        age: std::time::Duration,
+    ) -> Result<CleanupReport, SessionFileStoreError> {
+        self.inner.cleanup(age).map_err(SessionFileStoreError::from)
+    }
+    pub fn load(
+        &self,
+        key: &SessionStoreKey,
+    ) -> Result<Option<PersistedSession>, SessionFileStoreError> {
+        self.inner
+            .load(key.scope(), key.client_id())
+            .map_err(SessionFileStoreError::from)
+    }
+    /// Loads with bounds on serialized bytes and logical decoded buffer allocations.
+    pub fn load_with_limits(
+        &self,
+        key: &SessionStoreKey,
+        bytes: usize,
+        memory: usize,
+    ) -> Result<Option<PersistedSession>, SessionFileStoreError> {
+        self.inner
+            .load_with_limits(key.scope(), key.client_id(), bytes, memory)
+            .map_err(SessionFileStoreError::from)
+    }
+    pub fn save(
+        &self,
+        key: &SessionStoreKey,
+        session: &PersistedSession,
+    ) -> Result<(), SessionFileStoreError> {
+        self.inner
+            .save(key.scope(), key.client_id(), session)
+            .map_err(SessionFileStoreError::from)
+    }
+    /// Drains accepted work and joins engine threads. All clones close together.
+    pub fn close(&self) -> Result<(), SessionFileStoreError> {
+        self.inner.close().map_err(SessionFileStoreError::from)
+    }
+}

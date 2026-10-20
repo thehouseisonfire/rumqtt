@@ -29,6 +29,14 @@ macro_rules! adapter {
 
         impl SessionStore for $name {
             fn load(&self, key: SessionStoreKey) -> StoreFuture<Option<SessionCheckpoint>> {
+                self.load_with_limit(key, MAX_CHECKPOINT_SIZE)
+            }
+            fn load_with_limit(
+                &self,
+                key: SessionStoreKey,
+                limit: usize,
+            ) -> StoreFuture<Option<SessionCheckpoint>> {
+                let limit = limit.min(MAX_CHECKPOINT_SIZE);
                 let store = Arc::clone(&self.0);
                 Box::pin(async move {
                     if key.protocol != ProtocolVersion::$version {
@@ -36,42 +44,61 @@ macro_rules! adapter {
                     }
                     let key = $native::SessionStoreKey::new(key.scope, key.client_id);
                     store
-                        .load(&key)
+                        .load_with_limit(&key, limit.saturating_sub(8))
                         .await
-                        .map_err(|_| StoreFailure::Load)?
+                        .map_err(|e| {
+                            e.downcast_ref::<StoreFailure>()
+                                .copied()
+                                .unwrap_or(StoreFailure::Load)
+                        })?
                         .map(|session| {
-                            let bytes = session.encode().map_err(|_| StoreFailure::Oversized)?;
-                            envelope(&bytes, $tag, MAX_CHECKPOINT_SIZE)
+                            let bytes = session
+                                .encode_with_limit(limit.saturating_sub(8))
+                                .map_err(|_| StoreFailure::Oversized)?;
+                            envelope(&bytes, $tag, limit)
                         })
                         .transpose()
                 })
             }
 
             fn save(&self, key: SessionStoreKey, checkpoint: SessionCheckpoint) -> StoreFuture<()> {
+                self.save_with_limit(key, checkpoint, MAX_CHECKPOINT_SIZE)
+            }
+            fn save_with_limit(
+                &self,
+                key: SessionStoreKey,
+                checkpoint: SessionCheckpoint,
+                limit: usize,
+            ) -> StoreFuture<()> {
+                let limit = limit.min(MAX_CHECKPOINT_SIZE);
                 let store = Arc::clone(&self.0);
                 Box::pin(async move {
                     if key.protocol != ProtocolVersion::$version {
                         return Err(StoreFailure::Protocol);
                     }
-                    let bytes = payload(checkpoint, $tag, MAX_CHECKPOINT_SIZE)?;
-                    let session =
-                        $native::PersistedSession::decode(&bytes).map_err(|error| match error {
-                            $native::SessionDecodeError::WrongProtocol { .. } => {
-                                StoreFailure::Protocol
-                            }
-                            $native::SessionDecodeError::UnsupportedCodecVersion { .. } => {
-                                StoreFailure::Version
-                            }
-                            $native::SessionDecodeError::LimitExceeded { .. } => {
-                                StoreFailure::Oversized
-                            }
-                            _ => StoreFailure::Corrupt,
-                        })?;
+                    let bytes = payload(checkpoint, $tag, limit)?;
+                    let session = $native::PersistedSession::decode_with_memory_limit(
+                        &bytes,
+                        limit
+                            .saturating_mul(4)
+                            .min(bytes.len().saturating_mul(512).saturating_add(1024)),
+                    )
+                    .map_err(|error| match error {
+                        $native::SessionDecodeError::WrongProtocol { .. } => StoreFailure::Protocol,
+                        $native::SessionDecodeError::UnsupportedCodecVersion { .. } => {
+                            StoreFailure::Version
+                        }
+                        $native::SessionDecodeError::LimitExceeded { .. } => {
+                            StoreFailure::Oversized
+                        }
+                        _ => StoreFailure::Corrupt,
+                    })?;
                     let key = $native::SessionStoreKey::new(key.scope, key.client_id);
-                    store
-                        .save(&key, &session)
-                        .await
-                        .map_err(|_| StoreFailure::Save)
+                    store.save(&key, &session).await.map_err(|e| {
+                        e.downcast_ref::<StoreFailure>()
+                            .copied()
+                            .unwrap_or(StoreFailure::Save)
+                    })
                 })
             }
 
@@ -82,7 +109,11 @@ macro_rules! adapter {
                         return Err(StoreFailure::Protocol);
                     }
                     let key = $native::SessionStoreKey::new(key.scope, key.client_id);
-                    store.clear(&key).await.map_err(|_| StoreFailure::Clear)
+                    store.clear(&key).await.map_err(|e| {
+                        e.downcast_ref::<StoreFailure>()
+                            .copied()
+                            .unwrap_or(StoreFailure::Clear)
+                    })
                 })
             }
         }

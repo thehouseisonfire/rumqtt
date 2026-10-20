@@ -3035,6 +3035,241 @@ typedef struct rumqttc_native_failure_details_t {
 RUMQTTC_API rumqttc_status_t rumqttc_error_native_failure_details(
     const rumqttc_error_t *error, rumqttc_native_failure_details_t *out);
 
+/* Optional maintained file stores. Native paths are copied at admission.
+ * Unix: encoding=1, len counts bytes. Windows: encoding=2, len counts UTF-16
+ * code units. Roots must be absolute, existing and trusted.
+ * Retain/release shares ownership. Independent duplicate opens fail InUse.
+ * Wait timeout/release never cancels accepted work. Drain application events.
+ * Close rejects active clients; context shutdown/join is required before unload.
+ * Result entry views borrow the operation. Path-copy lengths/capacities are BYTES,
+ * including for UTF-16 results, and exclude any terminator.
+ * Poll/wait states: 0 unavailable/rejected, 1 pending, 2 success, 3 failure.
+ * Result kinds: 1 inspection, 2 quarantine, 3 clear, 4 cleanup, 5 close.
+ * Entry categories: 0 quarantine identifier, 1 removed, 2 skipped, 3 failed.
+ */
+#define RUMQTTC_CAP_FILE_SESSION_STORE (UINT64_C(1) << 22)
+#define RUMQTTC_FILE_STORE_STATE_UNAVAILABLE 0u
+#define RUMQTTC_FILE_STORE_STATE_PENDING 1u
+#define RUMQTTC_FILE_STORE_STATE_SUCCESS 2u
+#define RUMQTTC_FILE_STORE_STATE_FAILURE 3u
+#define RUMQTTC_FILE_STORE_RESULT_INSPECTION 1u
+#define RUMQTTC_FILE_STORE_RESULT_QUARANTINE 2u
+#define RUMQTTC_FILE_STORE_RESULT_CLEAR 3u
+#define RUMQTTC_FILE_STORE_RESULT_CLEANUP 4u
+#define RUMQTTC_FILE_STORE_RESULT_CLOSE 5u
+#define RUMQTTC_FILE_STORE_ENTRY_QUARANTINE_IDENTIFIER 0u
+#define RUMQTTC_FILE_STORE_ENTRY_REMOVED 1u
+#define RUMQTTC_FILE_STORE_ENTRY_SKIPPED 2u
+#define RUMQTTC_FILE_STORE_ENTRY_FAILED 3u
+#define RUMQTTC_FILE_STORE_OPERATION_RESOLVE_CURRENT_DIRECTORY 1u
+#define RUMQTTC_FILE_STORE_OPERATION_NORMALIZE_ROOT 2u
+#define RUMQTTC_FILE_STORE_OPERATION_START_INITIALIZATION 3u
+#define RUMQTTC_FILE_STORE_OPERATION_START_COORDINATOR 4u
+#define RUMQTTC_FILE_STORE_OPERATION_INSPECT_ROOT 5u
+#define RUMQTTC_FILE_STORE_OPERATION_INSPECT_NAMESPACE 6u
+#define RUMQTTC_FILE_STORE_OPERATION_CREATE_NAMESPACE 7u
+#define RUMQTTC_FILE_STORE_OPERATION_OPEN_ROOT_DIRECTORY 8u
+#define RUMQTTC_FILE_STORE_OPERATION_SYNC_ROOT_DIRECTORY 9u
+#define RUMQTTC_FILE_STORE_OPERATION_OPEN_BLOB 10u
+#define RUMQTTC_FILE_STORE_OPERATION_READ_ENVELOPE 11u
+#define RUMQTTC_FILE_STORE_OPERATION_OPEN_ATOMIC_WRITER 12u
+#define RUMQTTC_FILE_STORE_OPERATION_WRITE_ENVELOPE 13u
+#define RUMQTTC_FILE_STORE_OPERATION_REMOVE_BLOB 14u
+#define RUMQTTC_FILE_STORE_OPERATION_OPEN_NAMESPACE_DIRECTORY 15u
+#define RUMQTTC_FILE_STORE_OPERATION_SYNC_NAMESPACE_DIRECTORY 16u
+#define RUMQTTC_FILE_STORE_OPERATION_INSPECT_BLOB 17u
+#define RUMQTTC_FILE_STORE_OPERATION_QUARANTINE_BLOB 18u
+#define RUMQTTC_FILE_STORE_OPERATION_GENERATE_IDENTIFIER 19u
+#define RUMQTTC_FILE_STORE_OPERATION_ENUMERATE_TEMPORARY_FILES 20u
+#define RUMQTTC_FILE_STORE_OPERATION_REMOVE_TEMPORARY_FILE 21u
+#define RUMQTTC_FILE_STORE_OPERATION_REFRESH_CLEAR_STAGING_AGE 22u
+#define RUMQTTC_FILE_STORE_IO_NOT_FOUND 1u
+#define RUMQTTC_FILE_STORE_IO_PERMISSION_DENIED 2u
+#define RUMQTTC_FILE_STORE_IO_ALREADY_EXISTS 3u
+#define RUMQTTC_FILE_STORE_IO_INVALID_INPUT 4u
+#define RUMQTTC_FILE_STORE_IO_INTERRUPTED 5u
+#define RUMQTTC_FILE_STORE_IO_WOULD_BLOCK 6u
+#define RUMQTTC_FILE_STORE_IO_TIMED_OUT 7u
+#define RUMQTTC_FILE_STORE_IO_OTHER 8u
+#define RUMQTTC_PATH_UNIX_BYTES 1u
+#define RUMQTTC_PATH_WINDOWS_UTF16 2u
+#define RUMQTTC_STORE_FAILURE_CLOSED 13u
+#define RUMQTTC_STORE_FAILURE_RESOURCES 14u
+#define RUMQTTC_STORE_FAILURE_IO 15u
+#define RUMQTTC_STORE_FAILURE_UNSUPPORTED 16u
+#define RUMQTTC_STORE_FAILURE_SHUTDOWN 17u
+#define RUMQTTC_FILE_STORE_FAILURE_INVALID 1u
+#define RUMQTTC_FILE_STORE_FAILURE_IN_USE 2u
+#define RUMQTTC_FILE_STORE_FAILURE_CLOSED 3u
+#define RUMQTTC_FILE_STORE_FAILURE_RESOURCES 4u
+#define RUMQTTC_FILE_STORE_FAILURE_IO 5u
+#define RUMQTTC_FILE_STORE_FAILURE_CORRUPT 6u
+#define RUMQTTC_FILE_STORE_FAILURE_VERSION 7u
+#define RUMQTTC_FILE_STORE_FAILURE_PROTOCOL 8u
+#define RUMQTTC_FILE_STORE_FAILURE_OVERSIZED 9u
+#define RUMQTTC_FILE_STORE_FAILURE_UNSUPPORTED 10u
+#define RUMQTTC_FILE_STORE_FAILURE_SHUTDOWN 11u
+#define RUMQTTC_FILE_STORE_FAILURE_PANIC 12u
+#define RUMQTTC_FILE_STORE_FAILURE_ABSENT 13u
+
+typedef struct rumqttc_file_store_context_t rumqttc_file_store_context_t;
+typedef struct rumqttc_file_store_t rumqttc_file_store_t;
+typedef struct rumqttc_file_store_operation_t rumqttc_file_store_operation_t;
+
+typedef struct rumqttc_file_store_context_options_t {
+  uint32_t struct_size;
+  uint32_t reserved;
+  size_t worker_threads;
+  size_t store_capacity;
+  size_t operation_capacity;
+  size_t observation_capacity;
+  size_t byte_capacity;
+} rumqttc_file_store_context_options_t;
+
+typedef struct rumqttc_file_store_options_t {
+  uint32_t struct_size;
+  uint32_t reserved;
+  size_t max_checkpoint_size;
+  size_t max_concurrent_operations;
+  size_t max_report_entries;
+} rumqttc_file_store_options_t;
+
+typedef struct rumqttc_path_view_t {
+  const void *data;
+  size_t len;
+  uint32_t encoding;
+  uint32_t reserved;
+} rumqttc_path_view_t;
+
+typedef struct rumqttc_file_store_error_details_t {
+  uint32_t struct_size;
+  uint32_t kind;
+  uint32_t operation;
+  uint32_t io_kind;
+  int32_t os_code;
+  uint8_t os_code_present;
+  uint8_t reserved[3];
+} rumqttc_file_store_error_details_t;
+
+typedef struct rumqttc_file_store_result_t {
+  uint32_t struct_size;
+  uint32_t kind;
+  uint8_t present;
+  uint8_t size_present;
+  uint8_t modified_present;
+  uint8_t reserved;
+  uint32_t modified_nanos;
+  uint64_t size;
+  int64_t modified_seconds;
+  size_t removed_count;
+  size_t skipped_count;
+  size_t failure_count;
+} rumqttc_file_store_result_t;
+
+#define RUMQTTC_FILE_STORE_CONTEXT_OPTIONS_INIT                                                                        \
+  {sizeof(rumqttc_file_store_context_options_t), 0u, 2u, 64u, 256u, 256u, 256u * 1024u * 1024u}
+#define RUMQTTC_FILE_STORE_OPTIONS_INIT {sizeof(rumqttc_file_store_options_t), 0u, 16u * 1024u * 1024u - 8u, 4u, 4096u}
+#define RUMQTTC_FILE_STORE_RESULT_INIT {sizeof(rumqttc_file_store_result_t), 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0, 0u, 0u, 0u}
+#define RUMQTTC_FILE_STORE_ERROR_DETAILS_INIT                                                                          \
+  {sizeof(rumqttc_file_store_error_details_t), 0u, 0u, 0u, 0, 0u, {0u, 0u, 0u}}
+
+RUMQTTC_API uint32_t rumqttc_file_store_context_new(const struct rumqttc_file_store_context_options_t *options,
+                                                    struct rumqttc_file_store_context_t **out,
+                                                    struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_context_retain(const struct rumqttc_file_store_context_t *handle,
+                                                       struct rumqttc_file_store_context_t **out,
+                                                       struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_file_store_context_release(struct rumqttc_file_store_context_t *handle);
+
+RUMQTTC_API uint32_t rumqttc_file_store_retain(const struct rumqttc_file_store_t *handle,
+                                               struct rumqttc_file_store_t **out, struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_file_store_release(struct rumqttc_file_store_t *handle);
+
+RUMQTTC_API uint32_t rumqttc_file_store_operation_retain(const struct rumqttc_file_store_operation_t *handle,
+                                                         struct rumqttc_file_store_operation_t **out,
+                                                         struct rumqttc_error_t **error_out);
+
+RUMQTTC_API void rumqttc_file_store_operation_release(struct rumqttc_file_store_operation_t *handle);
+
+RUMQTTC_API uint32_t rumqttc_file_store_begin_open(const struct rumqttc_file_store_context_t *handle, uint32_t protocol,
+                                                   struct rumqttc_path_view_t root,
+                                                   const struct rumqttc_file_store_options_t *options,
+                                                   struct rumqttc_file_store_operation_t **out,
+                                                   struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_config_set_file_session_store(struct rumqttc_config_t *config,
+                                                           const struct rumqttc_file_store_t *handle,
+                                                           struct rumqttc_string_view_t scope, uint64_t timeout_ms,
+                                                           size_t max_checkpoint_size,
+                                                           struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_operation_poll(const struct rumqttc_file_store_operation_t *handle,
+                                                       uint32_t *state_out, struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_operation_wait_timeout_ms(const struct rumqttc_file_store_operation_t *handle,
+                                                                  uint64_t timeout_ms, uint32_t *state_out,
+                                                                  struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_operation_get_store(const struct rumqttc_file_store_operation_t *handle,
+                                                            struct rumqttc_file_store_t **out,
+                                                            struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_inspect(const struct rumqttc_file_store_t *handle,
+                                                struct rumqttc_string_view_t scope,
+                                                struct rumqttc_string_view_t client_id,
+                                                struct rumqttc_file_store_operation_t **out,
+                                                struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_quarantine(const struct rumqttc_file_store_t *handle,
+                                                   struct rumqttc_string_view_t scope,
+                                                   struct rumqttc_string_view_t client_id,
+                                                   struct rumqttc_file_store_operation_t **out,
+                                                   struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_clear(const struct rumqttc_file_store_t *handle,
+                                              struct rumqttc_string_view_t scope,
+                                              struct rumqttc_string_view_t client_id,
+                                              struct rumqttc_file_store_operation_t **out,
+                                              struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_close(const struct rumqttc_file_store_t *handle,
+                                              struct rumqttc_file_store_operation_t **out,
+                                              struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_cleanup(const struct rumqttc_file_store_t *handle, uint64_t minimum_age_ms,
+                                                struct rumqttc_file_store_operation_t **out,
+                                                struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_context_request_shutdown(const struct rumqttc_file_store_context_t *handle,
+                                                                 struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_context_join_timeout_ms(const struct rumqttc_file_store_context_t *handle,
+                                                                uint64_t timeout_ms,
+                                                                struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_operation_result(const struct rumqttc_file_store_operation_t *handle,
+                                                         struct rumqttc_file_store_result_t *out,
+                                                         struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_operation_path_copy(const struct rumqttc_file_store_operation_t *handle,
+                                                            uint8_t *buffer, size_t capacity, size_t *length_out,
+                                                            uint32_t *encoding_out, struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_operation_entry(const struct rumqttc_file_store_operation_t *handle,
+                                                        uint32_t category, size_t index,
+                                                        struct rumqttc_string_view_t *text_out,
+                                                        struct rumqttc_error_t **error_out);
+
+RUMQTTC_API uint32_t rumqttc_error_file_store_details(const struct rumqttc_error_t *handle,
+                                                      struct rumqttc_file_store_error_details_t *out);
+
+RUMQTTC_API uint32_t rumqttc_file_store_operation_cleanup_failure(const rumqttc_file_store_operation_t *handle,
+                                                                  size_t index, rumqttc_file_store_error_details_t *out,
+                                                                  rumqttc_error_t **error_out);
+
 #ifdef __cplusplus
 }
 #endif

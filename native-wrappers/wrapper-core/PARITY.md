@@ -621,3 +621,19 @@ definitions on Linux x86_64 confirmed unchanged `Error`/`TerminalOutcome` sizes 
 120/192 bytes. All 10 packaged C feature profiles passed with native consumers,
 including the new failure-details fixture. macOS/Windows execution
 remains with the existing CI matrix; no new execution claim is made for those targets.
+
+## Optional maintained file stores
+
+The `file-session-store` feature covers Rust file-store v4/v5 attachment and
+metadata inspection, quarantine, operator clear and supported staging cleanup
+through core and C. The default build retains callback stores without the optional
+dependency. C independently opened root/namespace owners are rejected; explicit
+retained handles share limits, leases and closure. Rust/C checkpoints interoperate
+sequentially. Active clients and unsettled key work exclude destructive administration.
+
+Evidence: core `file_store::tests`, C `tests/file_store.rs`, native
+`rumqttc-native-file-store-restart`, and installed `file-store-minimal` /
+`file-store-composed` package profiles. Inspection is metadata only. Concurrent
+process writers, generic session editing and universal filesystem exclusion remain
+outside this contract. Windows staging cleanup requires native Windows execution;
+Unix returns the engine's unsupported classification.

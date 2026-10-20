@@ -145,6 +145,7 @@ target_compile_features(rumqttc-native-unload PRIVATE c_std_11)
 target_include_directories(rumqttc-native-unload PRIVATE "${RUMQTTC_ROOT}/include")
 target_link_libraries(rumqttc-native-unload PRIVATE ${CMAKE_DL_LIBS})
 if(MSVC)
+    target_compile_definitions(rumqttc-native-unload PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(rumqttc-native-unload PRIVATE /W4 /WX /experimental:c11atomics)
 else()
     target_compile_options(rumqttc-native-unload PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -475,3 +476,11 @@ set_tests_properties(rumqttc-native-readiness PROPERTIES LABELS "native;readines
 
 rumqttc_native_target(rumqttc-native-readiness-benchmark "${RUMQTTC_ROOT}/../wrapper-core/benches/readiness.c")
 target_compile_definitions(rumqttc-native-readiness-benchmark PRIVATE WITH_READINESS=1)
+
+rumqttc_native_target(rumqttc-native-file-store-restart native_file_store_restart.c)
+if(MSVC)
+    target_compile_options(rumqttc-native-file-store-restart PRIVATE /experimental:c11atomics)
+endif()
+add_test(NAME rumqttc-native-file-store-restart
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --file-store-restart --binary $<TARGET_FILE:rumqttc-native-file-store-restart>)
+set_tests_properties(rumqttc-native-file-store-restart PROPERTIES LABELS "native;persistence;ownership" TIMEOUT 90 SKIP_RETURN_CODE 77)

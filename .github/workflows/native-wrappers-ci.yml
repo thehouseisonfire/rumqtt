@@ -5,6 +5,7 @@ on:
       - mqtt5-client
     paths:
       - 'native-wrappers/**'
+      - 'session-store-file/adapter/**'
       - 'rumqttc-core/**'
       - 'rumqttc-v4/**'
       - 'rumqttc-v5/**'
@@ -102,6 +103,15 @@ jobs:
       - name: Check documentation
         if: ${{ matrix.os != 'windows-latest' }}
         run: cargo doc --locked --workspace --no-deps
+
+      - name: Optional maintained file stores
+        run: |
+          cargo test --locked -p rumqttc-wrapper-core-next -p rumqttc-c-next --no-default-features --features file-session-store
+          cargo test --locked -p rumqttc-wrapper-core-next -p rumqttc-c-next --no-default-features --features file-session-store,readiness,ordered-shutdown,tracing-log-compat,use-rustls-ring,websocket
+          cargo build --locked -p rumqttc-c-next --no-default-features --features file-session-store
+          cmake -S c/tests/native -B target/c-file-store
+          cmake --build target/c-file-store --config Debug --target rumqttc-native-file-store-restart rumqttc-native-unload rumqttc-example-file_session_store
+          ctest --test-dir target/c-file-store -C Debug -R '(file-store|file_session_store|unload)' --output-on-failure
 
       - name: Run Rust tests
         run: |

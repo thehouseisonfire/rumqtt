@@ -8,7 +8,6 @@ use futures_util::FutureExt;
 
 use crate::{
     ProtocolVersion, SessionCheckpoint, SessionStoreConfig, SessionStoreKey, StoreFailure,
-    StoreFuture,
 };
 
 type LeaseKey = (usize, SessionStoreKey);
@@ -26,6 +25,8 @@ static LEASES: OnceLock<Mutex<HashSet<LeaseKey>>> = OnceLock::new();
 pub(super) struct Adapter {
     config: SessionStoreConfig,
     lease: LeaseKey,
+    #[cfg(feature = "file-session-store")]
+    _file_lease: Option<crate::FileStoreClientLease>,
 }
 
 impl Adapter {
@@ -39,6 +40,12 @@ impl Adapter {
             scope: config.scope.clone(),
             client_id: client_id.into(),
         };
+        #[cfg(feature = "file-session-store")]
+        let file_lease = config
+            .store
+            .file_store()
+            .map(|store| store.acquire_client(&key))
+            .transpose()?;
         let identity = Arc::as_ptr(&config.store).cast::<()>() as usize;
         let lease = (identity, key);
         if !LEASES
@@ -49,10 +56,18 @@ impl Adapter {
         {
             return Err(crate::Error::store(StoreFailure::InUse));
         }
-        Ok(Self { config, lease })
+        Ok(Self {
+            config,
+            lease,
+            #[cfg(feature = "file-session-store")]
+            _file_lease: file_lease,
+        })
     }
 
-    async fn call<T>(&self, invoke: impl FnOnce() -> StoreFuture<T>) -> Result<T, StoreFailure> {
+    async fn call<T, F>(&self, invoke: impl FnOnce() -> F) -> Result<T, StoreFailure>
+    where
+        F: Future<Output = Result<T, StoreFailure>>,
+    {
         // Catch both method invocation and future polling. No app callback runs
         // under LEASES or wrapper admission/lifecycle locks.
         let work = async {
@@ -197,34 +212,57 @@ macro_rules! implement_store {
                             Box::new(StoreFailure::KeyMismatch) as $backend::SessionStoreError
                         );
                     }
-                    let checkpoint = self
-                        .call(|| {
-                            self.config.store.load_with_limit(
+                    self.call(|| async {
+                        // Loading and queued decoding share one persistence deadline.
+                        let checkpoint = self.config.store.load_with_limit(
+                            self.lease.1.clone(),
+                            self.config.max_checkpoint_size,
+                        ).await?;
+                        #[cfg(feature = "file-session-store")]
+                        if let Some(store) = self.config.store.file_store() {
+                            let protocol = self.protocol_byte();
+                            let limit = self.config.max_checkpoint_size;
+                            let bytes = checkpoint.as_ref().map_or(0, |c| c.0.len());
+                            let memory = crate::file_store::decode_budget(limit, bytes);
+                            return store.codec(
                                 self.lease.1.clone(),
-                                self.config.max_checkpoint_size,
-                            )
-                        })
-                        .await?;
-                    checkpoint
-                        .map(|checkpoint| {
-                            let bytes = self.payload(checkpoint)?;
-                            $backend::PersistedSession::decode(&bytes).map_err(
-                                |error| match error {
-                                    $backend::SessionDecodeError::WrongProtocol { .. } => {
-                                        StoreFailure::Protocol
-                                    }
-                                    $backend::SessionDecodeError::UnsupportedCodecVersion {
-                                        ..
-                                    } => StoreFailure::Version,
-                                    $backend::SessionDecodeError::LimitExceeded { .. } => {
-                                        StoreFailure::Oversized
-                                    }
-                                    _ => StoreFailure::Corrupt,
+                                bytes.saturating_mul(4).saturating_add(memory),
+                                move || {
+                                    checkpoint.map(|checkpoint| {
+                                        let bytes = payload(checkpoint, protocol, limit)?;
+                                        $backend::PersistedSession::decode_with_memory_limit(&bytes, memory)
+                                            .map_err(|error| match error {
+                                                $backend::SessionDecodeError::WrongProtocol { .. } => {
+                                                    StoreFailure::Protocol
+                                                }
+                                                $backend::SessionDecodeError::UnsupportedCodecVersion { .. } => {
+                                                    StoreFailure::Version
+                                                }
+                                                $backend::SessionDecodeError::LimitExceeded { .. } => {
+                                                    StoreFailure::Oversized
+                                                }
+                                                _ => StoreFailure::Corrupt,
+                                            })
+                                    }).transpose()
                                 },
-                            )
-                        })
-                        .transpose()
-                        .map_err(|e| Box::new(e) as $backend::SessionStoreError)
+                            ).await;
+                        }
+                        checkpoint.map(|checkpoint| {
+                            let bytes = self.payload(checkpoint)?;
+                            $backend::PersistedSession::decode(&bytes).map_err(|error| match error {
+                                $backend::SessionDecodeError::WrongProtocol { .. } => {
+                                    StoreFailure::Protocol
+                                }
+                                $backend::SessionDecodeError::UnsupportedCodecVersion { .. } => {
+                                    StoreFailure::Version
+                                }
+                                $backend::SessionDecodeError::LimitExceeded { .. } => {
+                                    StoreFailure::Oversized
+                                }
+                                _ => StoreFailure::Corrupt,
+                            })
+                        }).transpose()
+                    }).await.map_err(|e| Box::new(e) as $backend::SessionStoreError)
                 })
             }
 
@@ -247,6 +285,33 @@ macro_rules! implement_store {
                     self.call(|| self.config.store.save(self.lease.1.clone(), checkpoint))
                         .await
                         .map_err(|e| Box::new(e) as $backend::SessionStoreError)
+                })
+            }
+
+            fn save_owned<'a>(
+                &'a self, key: &'a $backend::SessionStoreKey, session: $backend::PersistedSession,
+            ) -> NativeFuture<'a, ()> {
+                Box::pin(async move {
+                    #[cfg(feature = "file-session-store")]
+                    if let Some(store) = self.config.store.file_store() {
+                        if self.lease.1.protocol != ProtocolVersion::$protocol || key.scope() != self.lease.1.scope || key.client_id() != self.lease.1.client_id {
+                            return Err(Box::new(StoreFailure::KeyMismatch) as $backend::SessionStoreError);
+                        }
+                        let protocol = self.protocol_byte(); let limit = self.config.max_checkpoint_size;
+                        let input_bytes = session.allocated_size();
+                        if input_bytes > limit.saturating_mul(4) { return Err(Box::new(StoreFailure::Oversized) as $backend::SessionStoreError); }
+                        let key = self.lease.1.clone();
+                        let target = self.config.store.clone();
+                        return self.call(|| Box::pin(async move {
+                            let encoded_bound = input_bytes.saturating_add(64).min(limit.saturating_sub(8));
+                            let checkpoint = store.codec(key.clone(), input_bytes.saturating_add(encoded_bound.saturating_mul(2)).saturating_add(8), move || {
+                                let bytes = session.encode_with_limit(encoded_bound).map_err(|_| StoreFailure::Oversized)?;
+                                envelope(&bytes, protocol, limit)
+                            }).await?;
+                            target.save(key, checkpoint).await
+                        })).await.map_err(|e| Box::new(e) as $backend::SessionStoreError);
+                    }
+                    self.save(key, &session).await
                 })
             }
 
@@ -275,7 +340,178 @@ implement_store!(rumqttc_v5, V5);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SessionStore;
+    use crate::{SessionStore, StoreFuture};
+
+    #[cfg(feature = "file-session-store")]
+    struct ContendedLoad {
+        file: crate::FileStore,
+        checkpoint: SessionCheckpoint,
+        ready: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    #[cfg(feature = "file-session-store")]
+    impl SessionStore for ContendedLoad {
+        fn file_store(&self) -> Option<crate::FileStore> {
+            Some(self.file.clone())
+        }
+
+        fn load(&self, _: SessionStoreKey) -> StoreFuture<Option<SessionCheckpoint>> {
+            let ready = self.ready.lock().unwrap().take().unwrap();
+            let checkpoint = self.checkpoint.clone();
+            Box::pin(async move {
+                ready.await.unwrap();
+                Ok(Some(checkpoint))
+            })
+        }
+
+        fn save(&self, _: SessionStoreKey, _: SessionCheckpoint) -> StoreFuture<()> {
+            panic!("load deadline test must not save")
+        }
+
+        fn clear(&self, _: SessionStoreKey) -> StoreFuture<()> {
+            panic!("load deadline test must not clear")
+        }
+    }
+
+    #[cfg(feature = "file-session-store")]
+    fn load_codec_deadline(protocol: ProtocolVersion) {
+        use std::time::Duration;
+
+        let deadline = Duration::from_secs(5);
+        let root = tempfile::tempdir().unwrap();
+        let context = crate::FileStoreContext::new(crate::FileStoreContextOptions {
+            worker_threads: 1,
+            ..crate::FileStoreContextOptions::default()
+        })
+        .unwrap();
+        let store = context
+            .open(
+                protocol,
+                root.path().to_owned(),
+                crate::FileStoreOptions::default(),
+            )
+            .unwrap()
+            .wait(deadline)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (started, running) = std::sync::mpsc::channel();
+        let blocker = store.codec(
+            SessionStoreKey {
+                protocol,
+                scope: "scope".into(),
+                client_id: "blocker".into(),
+            },
+            0,
+            move || {
+                started.send(()).unwrap();
+                blocked.recv_timeout(deadline).unwrap();
+                Ok(())
+            },
+        );
+        assert!(runtime.block_on(async { blocker.now_or_never() }).is_none());
+        running.recv_timeout(deadline).unwrap();
+
+        let (loaded, ready) = tokio::sync::oneshot::channel();
+        // A valid envelope reaches the queued codec stage. The stalled worker
+        // prevents decoding until after the caller's deadline has expired.
+        let checkpoint = envelope(
+            b"checkpoint",
+            if protocol == ProtocolVersion::V4 {
+                4
+            } else {
+                5
+            },
+            1024,
+        )
+        .unwrap();
+        let mut config = SessionStoreConfig::new(
+            Arc::new(ContendedLoad {
+                file: (*store).clone(),
+                checkpoint,
+                ready: Mutex::new(Some(ready)),
+            }),
+            "scope",
+        );
+        config.timeout = Duration::from_millis(100);
+        let adapter = Adapter::new(config.clone(), protocol, "client").unwrap();
+        runtime.block_on(async {
+            let load = async {
+                match protocol {
+                    ProtocolVersion::V4 => rumqttc_v4::SessionStore::load(
+                        &adapter,
+                        &rumqttc_v4::SessionStoreKey::new("scope", "client"),
+                    )
+                    .await
+                    .map(|_| ()),
+                    ProtocolVersion::V5 => rumqttc_v5::SessionStore::load(
+                        &adapter,
+                        &rumqttc_v5::SessionStoreKey::new("scope", "client"),
+                    )
+                    .await
+                    .map(|_| ()),
+                }
+            };
+            tokio::pin!(load);
+            assert!(load.as_mut().now_or_never().is_none());
+            tokio::time::advance(Duration::from_millis(60)).await;
+            loaded.send(()).unwrap();
+            assert!(load.as_mut().now_or_never().is_none());
+            tokio::time::advance(Duration::from_millis(39)).await;
+            assert!(load.as_mut().now_or_never().is_none());
+            tokio::time::advance(Duration::from_millis(1)).await;
+            let error = load
+                .as_mut()
+                .now_or_never()
+                .expect("queued decoding must honor the original load deadline")
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<StoreFailure>(),
+                Some(&StoreFailure::Timeout)
+            );
+        });
+        drop(adapter);
+        assert_eq!(
+            Adapter::new(config.clone(), protocol, "client")
+                .unwrap_err()
+                .store_failure(),
+            Some(StoreFailure::InUse)
+        );
+        assert!(
+            matches!(store.clear("scope".into(), "client".into()), Err(e) if e.kind == crate::FileStoreFailure::InUse)
+        );
+        release.send(()).unwrap();
+        // On the sole worker, inspection follows the abandoned codec job and
+        // therefore observes its settlement before checking replacement admission.
+        store
+            .inspect("scope".into(), "client".into())
+            .unwrap()
+            .wait(deadline)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        drop(Adapter::new(config, protocol, "client").unwrap());
+        context.request_shutdown().unwrap();
+        assert!(context.join(deadline).unwrap());
+    }
+
+    #[cfg(feature = "file-session-store")]
+    #[test]
+    fn v4_load_codec_uses_the_original_deadline_and_retains_pending_work() {
+        load_codec_deadline(ProtocolVersion::V4);
+    }
+
+    #[cfg(feature = "file-session-store")]
+    #[test]
+    fn v5_load_codec_uses_the_original_deadline_and_retains_pending_work() {
+        load_codec_deadline(ProtocolVersion::V5);
+    }
 
     #[derive(Default)]
     struct Memory(Mutex<Option<SessionCheckpoint>>);
@@ -292,6 +528,44 @@ mod tests {
             *self.0.lock().unwrap() = None;
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[cfg(feature = "file-session-store")]
+    #[test]
+    fn file_store_redirect_targets_share_administration_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let context =
+            crate::FileStoreContext::new(crate::FileStoreContextOptions::default()).unwrap();
+        let store = context
+            .open(
+                ProtocolVersion::V5,
+                root.path().to_owned(),
+                crate::FileStoreOptions::default(),
+            )
+            .unwrap()
+            .wait(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let config = store
+            .configuration("origin".into(), std::time::Duration::from_secs(1), 1024)
+            .unwrap();
+        let factory = AdapterFactory::new(config);
+        let origin = factory.prepare("origin", "client").unwrap();
+        let target = factory.prepare("target", "client").unwrap();
+        assert!(store.clear("target".into(), "client".into()).is_err());
+        drop(origin);
+        drop(target);
+        drop(factory);
+        store
+            .clear("target".into(), "client".into())
+            .unwrap()
+            .wait(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        context.request_shutdown().unwrap();
+        assert!(context.join(std::time::Duration::from_secs(5)).unwrap());
     }
 
     #[tokio::test]

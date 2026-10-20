@@ -10,10 +10,12 @@
 #include <string.h>
 #if !defined(_WIN32)
 #include <time.h>
+#include <unistd.h>
 #endif
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <wchar.h>
 typedef HMODULE module_t;
 static module_t open_module(const char *path) { return LoadLibraryA(path); }
 static void *find_symbol(module_t module, const char *name) {
@@ -40,6 +42,18 @@ static int close_module(module_t module) { return dlclose(module) == 0; }
   } while (0)
 
 typedef struct native_api {
+  uint64_t (*library_capabilities)(void);
+  rumqttc_status_t (*file_store_context_new)(const rumqttc_file_store_context_options_t *, rumqttc_file_store_context_t **, rumqttc_error_t **);
+  rumqttc_status_t (*file_store_begin_open)(const rumqttc_file_store_context_t *, uint32_t, rumqttc_path_view_t, const rumqttc_file_store_options_t *, rumqttc_file_store_operation_t **, rumqttc_error_t **);
+  rumqttc_status_t (*file_store_operation_wait_timeout_ms)(const rumqttc_file_store_operation_t *, uint64_t, uint32_t *, rumqttc_error_t **);
+  rumqttc_status_t (*file_store_operation_get_store)(const rumqttc_file_store_operation_t *, rumqttc_file_store_t **, rumqttc_error_t **);
+  rumqttc_status_t (*file_store_inspect)(const rumqttc_file_store_t *, rumqttc_string_view_t, rumqttc_string_view_t, rumqttc_file_store_operation_t **, rumqttc_error_t **);
+  void (*file_store_operation_release)(rumqttc_file_store_operation_t *);
+  void (*file_store_release)(rumqttc_file_store_t *);
+  rumqttc_status_t (*file_store_context_request_shutdown)(const rumqttc_file_store_context_t *, rumqttc_error_t **);
+  rumqttc_status_t (*file_store_context_join_timeout_ms)(const rumqttc_file_store_context_t *, uint64_t, rumqttc_error_t **);
+  void (*file_store_context_release)(rumqttc_file_store_context_t *);
+
   rumqttc_status_t (*execution_context_new)(const rumqttc_execution_options_t *, rumqttc_execution_context_t **, rumqttc_error_t **);
   rumqttc_status_t (*execution_context_request_shutdown)(const rumqttc_execution_context_t *, rumqttc_error_t **);
   rumqttc_status_t (*execution_context_join_timeout_ms)(const rumqttc_execution_context_t *, uint64_t, rumqttc_error_t **);
@@ -104,6 +118,46 @@ static void destroy_store(void *user_data) {
     memcpy(&api.name, &address, sizeof(address));                                                                      \
   } while (0)
 
+static void exercise_file_store_unload(void) {
+  if (!(api.library_capabilities() & RUMQTTC_CAP_FILE_SESSION_STORE)) return;
+  rumqttc_path_view_t path;
+#if defined(_WIN32)
+  wchar_t parent[MAX_PATH], root[MAX_PATH], namespace_path[MAX_PATH];
+  REQUIRE(GetTempPathW(MAX_PATH, parent));
+  REQUIRE(GetTempFileNameW(parent, L"rfs", 0, root));
+  REQUIRE(DeleteFileW(root) && CreateDirectoryW(root, NULL));
+  path = (rumqttc_path_view_t){root, wcslen(root), RUMQTTC_PATH_WINDOWS_UTF16, 0};
+#else
+  char root[] = "/tmp/rumqttc-file-unload-XXXXXX";
+  char namespace_path[128];
+  REQUIRE(mkdtemp(root) != NULL);
+  path = (rumqttc_path_view_t){root, strlen(root), RUMQTTC_PATH_UNIX_BYTES, 0};
+#endif
+  rumqttc_file_store_context_t *context = NULL;
+  rumqttc_file_store_operation_t *opened = NULL, *inspection = NULL;
+  rumqttc_file_store_t *store = NULL;
+  uint32_t state = 0;
+  REQUIRE(api.file_store_context_new(NULL, &context, NULL) == RUMQTTC_OK);
+  REQUIRE(api.file_store_begin_open(context, RUMQTTC_PROTOCOL_V4, path, NULL, &opened, NULL) == RUMQTTC_OK);
+  REQUIRE(api.file_store_operation_wait_timeout_ms(opened, 5000, &state, NULL) == RUMQTTC_OK && state == 2);
+  REQUIRE(api.file_store_operation_get_store(opened, &store, NULL) == RUMQTTC_OK);
+  api.file_store_operation_release(opened);
+  REQUIRE(api.file_store_inspect(store, view("scope"), view("client"), &inspection, NULL) == RUMQTTC_OK);
+  REQUIRE(api.file_store_context_request_shutdown(context, NULL) == RUMQTTC_OK);
+  REQUIRE(api.file_store_context_join_timeout_ms(context, 5000, NULL) == RUMQTTC_OK);
+  REQUIRE(api.file_store_operation_wait_timeout_ms(inspection, 5000, &state, NULL) == RUMQTTC_OK && state == 2);
+  api.file_store_operation_release(inspection);
+  api.file_store_release(store);
+  api.file_store_context_release(context);
+#if defined(_WIN32)
+  REQUIRE(swprintf(namespace_path, MAX_PATH, L"%ls\\v4", root) > 0);
+  REQUIRE(RemoveDirectoryW(namespace_path) && RemoveDirectoryW(root));
+#else
+  REQUIRE(snprintf(namespace_path, sizeof(namespace_path), "%s/v4", root) > 0);
+  REQUIRE(rmdir(namespace_path) == 0 && rmdir(root) == 0);
+#endif
+}
+
 int main(int argc, char **argv) {
   module_t module;
   rumqttc_store_vtable_t vtable = RUMQTTC_STORE_VTABLE_INIT;
@@ -117,6 +171,17 @@ int main(int argc, char **argv) {
   REQUIRE(argc == 2 && context != NULL);
   module = open_module(argv[1]);
   REQUIRE(module != NULL);
+  LOAD(library_capabilities);
+  LOAD(file_store_context_new);
+  LOAD(file_store_begin_open);
+  LOAD(file_store_operation_wait_timeout_ms);
+  LOAD(file_store_operation_get_store);
+  LOAD(file_store_inspect);
+  LOAD(file_store_operation_release);
+  LOAD(file_store_release);
+  LOAD(file_store_context_request_shutdown);
+  LOAD(file_store_context_join_timeout_ms);
+  LOAD(file_store_context_release);
   LOAD(execution_context_new);
   LOAD(execution_context_request_shutdown);
   LOAD(execution_context_join_timeout_ms);
@@ -179,6 +244,7 @@ int main(int argc, char **argv) {
   REQUIRE(api.first_connection_poll(connection, &state, NULL, NULL, NULL) == RUMQTTC_DISCONNECTED);
   REQUIRE(state == RUMQTTC_FIRST_CONNECTION_FAILED);
   api.first_connection_release(connection);
+  exercise_file_store_unload();
   REQUIRE(close_module(module));
   return 0;
 }

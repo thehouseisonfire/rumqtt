@@ -56,6 +56,7 @@ pub struct ErrorHandle {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FailureDetails {
+    pub file: Option<FileFailureDetails>,
     pub native: Option<rumqttc_wrapper_core::NativeFailureDetails>,
     pub configuration_revision: Option<u64>,
     pub store: Option<NonZeroU32>,
@@ -68,7 +69,15 @@ pub struct FailureDetails {
     pub publish: Option<NonZeroU32>,
     pub recovery: Option<NonZeroU32>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileFailureDetails {
+    pub kind: u32,
+    pub operation: u32,
+    pub io_kind: u32,
+    pub os_code: Option<i32>,
+}
 const EMPTY_FAILURES: FailureDetails = FailureDetails {
+    file: None,
     native: None,
     configuration_revision: None,
     store: None,
@@ -85,6 +94,26 @@ const EMPTY_FAILURES: FailureDetails = FailureDetails {
 impl FailureDetails {
     fn from_core(error: &Error) -> Self {
         Self {
+            file: {
+                #[cfg(feature = "file-session-store")]
+                {
+                    match error.store_failure() {
+                        Some(rumqttc_wrapper_core::StoreFailure::File(e)) => {
+                            Some(FileFailureDetails {
+                                kind: e.kind as u32,
+                                operation: e.operation,
+                                io_kind: e.io_kind,
+                                os_code: e.os_code,
+                            })
+                        }
+                        _ => None,
+                    }
+                }
+                #[cfg(not(feature = "file-session-store"))]
+                {
+                    None
+                }
+            },
             native: error.native_failure().copied(),
             configuration_revision: error.configuration_revision(),
             recovery: error
@@ -96,22 +125,9 @@ impl FailureDetails {
             publish: error
                 .publish_failure()
                 .and_then(|failure| NonZeroU32::new(failure as u32)),
-            store: error.store_failure().and_then(|failure| {
-                NonZeroU32::new(match failure {
-                    rumqttc_wrapper_core::StoreFailure::Load => 1,
-                    rumqttc_wrapper_core::StoreFailure::Save => 2,
-                    rumqttc_wrapper_core::StoreFailure::Clear => 3,
-                    rumqttc_wrapper_core::StoreFailure::Corrupt => 4,
-                    rumqttc_wrapper_core::StoreFailure::Version => 5,
-                    rumqttc_wrapper_core::StoreFailure::Protocol => 6,
-                    rumqttc_wrapper_core::StoreFailure::Oversized => 7,
-                    rumqttc_wrapper_core::StoreFailure::Timeout => 8,
-                    rumqttc_wrapper_core::StoreFailure::Panic => 9,
-                    rumqttc_wrapper_core::StoreFailure::InUse => 10,
-                    rumqttc_wrapper_core::StoreFailure::KeyMismatch => 11,
-                    rumqttc_wrapper_core::StoreFailure::PublishBudgetExceeded => 12,
-                })
-            }),
+            store: error
+                .store_failure()
+                .and_then(|failure| NonZeroU32::new(u32::from(failure.code()))),
             auth: error.auth_failure().and_then(|failure| {
                 NonZeroU32::new(match failure {
                     rumqttc_wrapper_core::AuthFailure::Rejected => 1,
@@ -255,6 +271,12 @@ impl ErrorHandle {
             failures,
             exhaustion: error.reconnect_exhaustion().cloned().map(Arc::new),
         }
+    }
+
+    #[cfg(feature = "file-session-store")]
+    pub fn with_file_failure(mut self, detail: FileFailureDetails) -> Self {
+        Arc::make_mut(self.failures.get_or_insert_with(Default::default)).file = Some(detail);
+        self
     }
 
     pub fn failure_details(&self) -> &FailureDetails {

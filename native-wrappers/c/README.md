@@ -1948,3 +1948,15 @@ Selected events share the bounded application queue, so slow consumers can pause
 polling and trigger delivery-timeout termination. Outgoing activity describes
 native scheduling, not flush or peer receipt. See the
 [availability, selection, and ownership contract](../protocol-observations.md).
+
+## Optional maintained file session stores
+
+Build with `--features file-session-store` and check
+`RUMQTTC_CAP_FILE_SESSION_STORE`. An owned file-store context opens protocol-specific
+stores asynchronously. Attach a store using `rumqttc_config_set_file_session_store`
+instead of supplying storage callbacks. Retain the same handle for multiple clients;
+independent opens of its root/namespace fail with typed `InUse`.
+
+See [storage, limits, administration and unload](../file-session-stores.md) and the
+[file-store example](examples/file_session_store.c). Close/destroy clients before
+closing stores, then request context shutdown and join it before unloading.

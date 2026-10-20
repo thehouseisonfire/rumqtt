@@ -8,7 +8,7 @@ mod shared;
 use std::num::NonZeroUsize;
 use std::time::SystemTime;
 
-pub use atomic_blob_store::{CleanupReport, QuarantineInfo};
+pub use atomic_blob_store::{AtomicBlobStoreError, CleanupReport, QuarantineInfo, StoreOperation};
 pub use shared::KeyEncodeError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
