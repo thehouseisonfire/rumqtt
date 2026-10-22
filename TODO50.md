@@ -164,11 +164,10 @@ administer inactive keys without reimplementing persistence or weakening leases.
 
 Local validation on Linux:
 
-- Wrapper-core/C tests pass with default features (502 passing tests), minimal
-  `file-session-store` (454), and the composed file-store/readiness/ordered-
-  shutdown/tracing/Rustls/WebSocket profile (593). The default rerun serialized
-  tests after a concurrent run exceeded an existing authentication join deadline;
-  that test also passed in isolation.
+- Wrapper-core/C follow-up tests pass with default features (515 passing tests,
+  two ignored), minimal `file-session-store` (469 passing, two ignored), and the
+  composed file-store/readiness/ordered-shutdown/tracing/Rustls/WebSocket profile
+  (608 passing, three ignored). These totals include doctests.
 - Both protocols have deterministic paused-time regressions for the full load
   deadline, including worker contention after loading. They verify timeout at the
   original deadline, retained key exclusion after timeout, and reuse after work
@@ -180,6 +179,14 @@ Local validation on Linux:
   before unloading. Seven existing native callback-store ownership, cancellation,
   atomic-write, recovery and race regressions also pass with file support enabled.
   The optional-error-output audit covers all 289 APIs.
+- Native interoperability coverage cross-opens C checkpoints with the Rust file
+  adapter for both protocols, verifies pending subscriptions, outgoing QoS 1/2
+  and incoming QoS 2, then saves distinct payloads that C must recover on the wire.
+  CI enables this test explicitly. The production source-boundary check now parses
+  Rust syntax, excludes test-only modules and allows the maintained storage bridges.
+  All four Linux native checks (restart, cross-open, unload and example) and all
+  26 Python fixture tests pass. Default pedantic/nursery and optional/composed
+  warnings-as-errors Clippy checks, package contents and formatting checks pass.
 - C ABI/header/export checks and C/C++ consumers pass. Installed static/shared
   CMake and pkg-config consumers pass all seven checks in each of
   `file-store-minimal`, `file-store-core-only`, and `file-store-composed`.

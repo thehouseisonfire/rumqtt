@@ -338,6 +338,7 @@ class Broker:
         self.tls_context = tls_context
         self.websocket = websocket
         self.tls_proxy = tls_proxy
+        self.file_store_interop = False
         self.stopping = threading.Event()
         self.threads: list[threading.Thread] = []
         self.failures: list[str] = []
@@ -1581,7 +1582,8 @@ class Broker:
                 b"rumqttc/native/restart/qos1": 1,
                 b"rumqttc/native/restart/qos2": 2,
             }.get(topic)
-            if expected_qos is None or payload != b"persist" or qos != expected_qos:
+            expected_payload = b"rust-ok" if attempt == 2 and self.file_store_interop else b"persist"
+            if expected_qos is None or payload != expected_payload or qos != expected_qos:
                 raise AssertionError("restart publish changed on the wire")
             key = (connection.client_id, topic)
             if attempt == 1:
@@ -1984,6 +1986,7 @@ def main() -> int:
     parser.add_argument("--binary", required=True)
     parser.add_argument("--atomic-restart", action="store_true")
     parser.add_argument("--file-store-restart", action="store_true")
+    parser.add_argument("--file-store-rust-helper", help="native Rust reader/writer between C restart stages")
     parser.add_argument("--redact", action="store_true")
     parser.add_argument("--proxy-matrix", action="store_true")
     parser.add_argument("--tls-matrix", action="store_true")
@@ -2001,6 +2004,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="rumqttc-native-tls-") as directory:
         tls_context, mtls_context, ca_cert, wrong_cert, client_cert, client_key = make_tls_fixture(directory)
         broker = Broker()
+        broker.file_store_interop = bool(args.file_store_rust_helper)
         untrusted_broker = None
         if args.tls_matrix:
             untrusted_directory = os.path.join(directory, "untrusted")
@@ -2203,6 +2207,14 @@ def main() -> int:
                     )
                     if status:
                         return status
+                    if stage.startswith("seed-") and args.file_store_rust_helper:
+                        status = run_native(
+                            [args.file_store_rust_helper, stage.removeprefix("seed-"), directory],
+                            environment,
+                            args.redact,
+                        )
+                        if status:
+                            return status
                 return 0
             if args.atomic_restart:
                 environment["RUMQTTC_TEST_ATOMIC_FILE"] = os.path.join(directory, "checkpoint")

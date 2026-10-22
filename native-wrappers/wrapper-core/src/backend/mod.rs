@@ -3,6 +3,9 @@ pub mod tls;
 #[cfg(any(feature = "use-rustls-no-provider", feature = "use-native-tls"))]
 pub use tls::build_tls;
 
+mod acknowledgement;
+pub use acknowledgement::customize_ack;
+
 mod auth;
 pub mod configuration;
 mod diagnostics;

@@ -632,7 +632,7 @@ retained handles share limits, leases and closure. Rust/C checkpoints interopera
 sequentially. Active clients and unsettled key work exclude destructive administration.
 
 Evidence: core `file_store::tests`, C `tests/file_store.rs`, native
-`rumqttc-native-file-store-restart`, and installed `file-store-minimal` /
+`rumqttc-native-file-store-restart`, `rumqttc-native-file-store-interop`, and installed `file-store-minimal` /
 `file-store-composed` package profiles. Inspection is metadata only. Concurrent
 process writers, generic session editing and universal filesystem exclusion remain
 outside this contract. Windows staging cleanup requires native Windows execution;

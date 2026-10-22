@@ -619,7 +619,7 @@ pub fn validate_command(command: &Command, backend: &crate::backend::BackendClie
             }
             for f in &p.filters {
                 crate::validation::validate_mqtt_utf8_string(&f.filter, "topic filter")?;
-                if !rumqttc_v5::valid_filter(&f.filter) {
+                if !crate::backend::v5::valid_filter(&f.filter) {
                     return Err(invalid("invalid topic filter"));
                 }
                 if f.filter.starts_with("$share/")
@@ -639,7 +639,7 @@ pub fn validate_command(command: &Command, backend: &crate::backend::BackendClie
             }
             for f in &p.filters {
                 crate::validation::validate_mqtt_utf8_string(f, "topic filter")?;
-                if !rumqttc_v5::valid_filter(f) {
+                if !crate::backend::v5::valid_filter(f) {
                     return Err(invalid("invalid topic filter"));
                 }
             }

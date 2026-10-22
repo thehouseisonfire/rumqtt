@@ -7,6 +7,7 @@ use crate::{
     V5IncomingPublishProperties, V5OutgoingPublishProperties, V5RetainForwardRule,
     V5SubscribeProperties, V5UnsubscribeProperties,
 };
+pub use rumqttc_v5::valid_filter;
 
 use crate::validation::{protocol_option_error, validate_mqtt_utf8_string};
 

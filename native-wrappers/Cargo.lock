@@ -1835,6 +1835,7 @@ dependencies = [
  "native-tls",
  "openssl-sys",
  "parking_lot",
+ "proc-macro2",
  "rcgen",
  "rumqttc-core-next",
  "rumqttc-session-store-file-next",

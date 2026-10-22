@@ -66,14 +66,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Enforce wrapper backend source boundary
-        if: ${{ matrix.os == 'ubuntu-latest' }}
-        run: |
-          if rg -n 'rumqttc_v[45]::' wrapper-core/src --glob '!**/backend/**' --glob '!rust_session_store.rs'; then
-            echo 'native protocol paths must remain inside wrapper-core/src/backend' >&2
-            exit 1
-          fi
-
       - uses: rui314/setup-mold@v1
         if: ${{ runner.os == 'Linux' }}
 
@@ -85,6 +77,10 @@ jobs:
         with:
           shared-key: ${{ runner.os }}-native-wrappers
           workspaces: native-wrappers -> target
+
+      - name: Enforce wrapper backend source boundary
+        if: ${{ runner.os == 'Linux' }}
+        run: cargo test --locked -p rumqttc-wrapper-core-next --no-default-features --test backend_boundary
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -109,7 +105,8 @@ jobs:
           cargo test --locked -p rumqttc-wrapper-core-next -p rumqttc-c-next --no-default-features --features file-session-store
           cargo test --locked -p rumqttc-wrapper-core-next -p rumqttc-c-next --no-default-features --features file-session-store,readiness,ordered-shutdown,tracing-log-compat,use-rustls-ring,websocket
           cargo build --locked -p rumqttc-c-next --no-default-features --features file-session-store
-          cmake -S c/tests/native -B target/c-file-store
+          cargo build --locked -p rumqttc-wrapper-core-next --no-default-features --features file-session-store --example file-store-interop
+          cmake -S c/tests/native -B target/c-file-store -DRUMQTTC_FILE_STORE_INTEROP=ON
           cmake --build target/c-file-store --config Debug --target rumqttc-native-file-store-restart rumqttc-native-unload rumqttc-example-file_session_store
           ctest --test-dir target/c-file-store -C Debug -R '(file-store|file_session_store|unload)' --output-on-failure
 

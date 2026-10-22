@@ -2,6 +2,12 @@
 
 ### Changed
 
+- Wrapper validation: Check production protocol dependencies using Rust syntax,
+  allowing test-only code and the maintained storage bridges. Keep acknowledgement
+  packet conversion and topic-filter validation inside the backend. Add native
+  C/Rust checkpoint cross-open tests for both MQTT versions, including Rust-written
+  payloads verified on the wire after C recovery.
+
 - Wrapper-core/C: Account for all peak administration key buffers in optional file
   stores. Rust operation results now return `FileStoreValue<T>`, retaining byte
   reservations until the final shared result owner releases them. The C ABI is unchanged.

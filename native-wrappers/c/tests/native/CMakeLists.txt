@@ -491,3 +491,18 @@ endif()
 add_test(NAME rumqttc-native-file-store-restart
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --file-store-restart --binary $<TARGET_FILE:rumqttc-native-file-store-restart>)
 set_tests_properties(rumqttc-native-file-store-restart PROPERTIES LABELS "native;persistence;ownership" TIMEOUT 90 SKIP_RETURN_CODE 77)
+
+option(RUMQTTC_FILE_STORE_INTEROP "Test sequential Rust/C checkpoint interoperability" OFF)
+if(RUMQTTC_FILE_STORE_INTEROP)
+    set(RUMQTTC_FILE_STORE_RUST_HELPER
+        "${RUMQTTC_LIBRARY_DIR}/examples/file-store-interop${CMAKE_EXECUTABLE_SUFFIX}"
+        CACHE FILEPATH "Rust checkpoint interoperability fixture executable")
+    if(NOT EXISTS "${RUMQTTC_FILE_STORE_RUST_HELPER}")
+        message(FATAL_ERROR "Build wrapper-core's file-store-interop example before enabling interoperability tests")
+    endif()
+    add_test(NAME rumqttc-native-file-store-interop
+        COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --file-store-restart
+            --file-store-rust-helper "${RUMQTTC_FILE_STORE_RUST_HELPER}"
+            --binary $<TARGET_FILE:rumqttc-native-file-store-restart>)
+    set_tests_properties(rumqttc-native-file-store-interop PROPERTIES LABELS "native;persistence;ownership" TIMEOUT 90)
+endif()
