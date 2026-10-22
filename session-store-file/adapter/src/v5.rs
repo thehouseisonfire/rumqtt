@@ -238,6 +238,7 @@ fn box_error(error: SessionFileStoreError) -> rumqttc_v5::SessionStoreError {
 mod tests;
 
 /// Blocking file store for applications with explicitly owned worker execution.
+///
 /// Uses exactly the same namespace, keys and checkpoint format as `SessionFileStore`.
 /// Methods may block; never call them on an asynchronous execution worker.
 #[derive(Clone, Debug)]
