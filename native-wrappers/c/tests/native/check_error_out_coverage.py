@@ -19,6 +19,7 @@ source = "\n".join(
         "native_auth.c",
         "native_readiness.c",
         "native_first_connection.c",
+        "native_publish_buffer.c",
         "native_file_store_restart.c",
     )
 )

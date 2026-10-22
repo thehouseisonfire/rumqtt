@@ -637,3 +637,27 @@ Evidence: core `file_store::tests`, C `tests/file_store.rs`, native
 process writers, generic session editing and universal filesystem exclusion remain
 outside this contract. Windows staging cleanup requires native Windows execution;
 Unix returns the engine's unsupported classification.
+
+## Owned immutable C publish buffers (TODO51)
+
+Native v4/v5 owned `Bytes` publish payloads pass through wrapper-core's existing
+`PublishCommand` and admission paths. C additionally accepts application-owned
+immutable storage through an opaque retained publish buffer backed by
+`Bytes::from_owner`; immediate, tracked and deferred calls preserve native
+operation/completion behavior. Topics and MQTT 5 properties still copy; payload
+UTF-8 checks remain enabled. Existing C view APIs retain copy semantics.
+
+Each admitted/pending use pays the full logical payload charge wherever the
+corresponding budget exists. Native retained publish budgets are MQTT 5-specific;
+backing allocation capacity, caller references and pool storage are not RSS-bounded
+by logical counters. Final storage release is separate from completion and joins.
+Callbacks use the existing host-callback guard, allow only documented buffer/query
+reentry, and retain no client/runtime. UTF-8 proof caches, slicing and mutable
+storage remain excluded.
+
+Evidence: C `publish_buffer` ownership/controlled-transport tests cover native
+retention, reconnect replay, pending cancellation/limits, QoS completion, shared
+storage charging and callback reentry; `native_publish_buffer` exercises all APIs
+with C reclamation on both protocols/execution modes. `native_unload` checks final
+buffer release after client/context join and before unloading. Performance scope
+and raw evidence are maintained in [the buffer measurements](../c/benches/publish-buffer.md).

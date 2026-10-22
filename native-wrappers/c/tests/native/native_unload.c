@@ -43,6 +43,11 @@ static int close_module(module_t module) { return dlclose(module) == 0; }
 
 typedef struct native_api {
   uint64_t (*library_capabilities)(void);
+  rumqttc_status_t (*publish_buffer_create)(rumqttc_bytes_view_t, rumqttc_publish_buffer_release_fn, void *,
+                                            rumqttc_publish_buffer_t **, rumqttc_error_t **);
+  rumqttc_status_t (*publish_buffer_retain)(const rumqttc_publish_buffer_t *, rumqttc_publish_buffer_t **,
+                                            rumqttc_error_t **);
+  void (*publish_buffer_release)(rumqttc_publish_buffer_t *);
   rumqttc_status_t (*file_store_context_new)(const rumqttc_file_store_context_options_t *, rumqttc_file_store_context_t **, rumqttc_error_t **);
   rumqttc_status_t (*file_store_begin_open)(const rumqttc_file_store_context_t *, uint32_t, rumqttc_path_view_t, const rumqttc_file_store_options_t *, rumqttc_file_store_operation_t **, rumqttc_error_t **);
   rumqttc_status_t (*file_store_operation_wait_timeout_ms)(const rumqttc_file_store_operation_t *, uint64_t, uint32_t *, rumqttc_error_t **);
@@ -84,6 +89,13 @@ typedef struct native_api {
 static native_api api;
 static atomic_uintptr_t pending;
 static atomic_uint destroyed;
+static atomic_uint buffers_released;
+static void reclaim_buffer(void *userdata, const uint8_t *data, size_t len) {
+  (void)userdata;
+  REQUIRE(len == 1 && *data == 42);
+  free((void *)data);
+  atomic_fetch_add(&buffers_released, 1);
+}
 
 static rumqttc_string_view_t view(const char *value) {
   rumqttc_string_view_t result = {value, strlen(value)};
@@ -172,6 +184,17 @@ int main(int argc, char **argv) {
   module = open_module(argv[1]);
   REQUIRE(module != NULL);
   LOAD(library_capabilities);
+  LOAD(publish_buffer_create);
+  LOAD(publish_buffer_retain);
+  LOAD(publish_buffer_release);
+  uint8_t *payload = malloc(1);
+  REQUIRE(payload != NULL);
+  *payload = 42;
+  rumqttc_publish_buffer_t *buffer = NULL, *retained_buffer = NULL;
+  REQUIRE(api.publish_buffer_create((rumqttc_bytes_view_t){payload, 1}, reclaim_buffer, NULL, &buffer, NULL) ==
+          RUMQTTC_OK);
+  REQUIRE(api.publish_buffer_retain(buffer, &retained_buffer, NULL) == RUMQTTC_OK);
+  api.publish_buffer_release(buffer);
   LOAD(file_store_context_new);
   LOAD(file_store_begin_open);
   LOAD(file_store_operation_wait_timeout_ms);
@@ -245,6 +268,9 @@ int main(int argc, char **argv) {
   REQUIRE(state == RUMQTTC_FIRST_CONNECTION_FAILED);
   api.first_connection_release(connection);
   exercise_file_store_unload();
+  REQUIRE(atomic_load(&buffers_released) == 0);
+  api.publish_buffer_release(retained_buffer);
+  REQUIRE(atomic_load(&buffers_released) == 1);
   REQUIRE(close_module(module));
   return 0;
 }

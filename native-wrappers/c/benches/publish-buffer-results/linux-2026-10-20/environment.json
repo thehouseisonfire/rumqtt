@@ -1,0 +1,28 @@
+{
+  "utc": "2026-10-20T23:26:51.496745+00:00",
+  "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+  "architecture": "x86_64",
+  "cpu": "13th Gen Intel(R) Core(TM) i5-13500H",
+  "producer_affinity": [
+    0
+  ],
+  "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+  "cc": "cc (GCC) 16.2.1 20260810",
+  "git_base": "6768e48d3960aa63315804e2cc0549fb09dabf9c",
+  "profile": "release, no-default-features, publish-buffer-proof; no timing instrumentation",
+  "baseline_provenance": "Private Stage 0 proof before public exports; existing copying functions unchanged from git_base. Original shared library retained before public implementation.",
+  "artifacts_sha256": {
+    "buffer-baseline.so": "bd12fe3e501590d90a7c3ccfe7c07beb0a928a5efc0f4924b5dcfbf8af3e3dfd",
+    "buffer-baseline-test": "bd44953c700297a03f27b8eb22b4a9960a399b22b0f5560631d941dfcb7bc7c7",
+    "todo51-release/release/librumqttc.so": "584d2e69faeae8ad3010e5ad32bae22e2e4637c9c5e9cd20307b543929cede20"
+  },
+  "raw_sha256": {
+    "buffer-baseline.jsonl": "34a4905517ff3ff4304f4af600cbda9b2d9a3590a6706b0989eaaf5003222190",
+    "buffer-baseline-pinned.jsonl": "1347e729945108fd1735363e2f9e64bd6e9d8867269c4a20acc4ca0a251e3b72",
+    "buffer-final.jsonl": "f849a29bcda49320d0122281957579c26b093e5b73c24cd54ed33b703089cc9c",
+    "buffer-admission.jsonl": "760339ddf9689c73125ee83156952d889ba41383186ba69b1a8fca487320b542",
+    "buffer-copy-external.jsonl": "36a21a6778515d7d9bc033c84d9696fb8e6af6c7c08189b6de2a58b83f9d6c8c",
+    "buffer-copy-followup.jsonl": "e791d5f9a92638e2f28d3320877a820fa35d08c1d99e0e407225b68e9dc9043e"
+  },
+  "limits": "Producer-thread Rust allocation measurements exclude background/native workers, C allocations and allocator metadata; known application input backing allocations are reported separately. No process RSS or whole-stack copy claim."
+}

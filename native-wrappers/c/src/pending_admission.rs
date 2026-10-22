@@ -230,7 +230,7 @@ pub unsafe extern "C" fn rumqttc_pending_admission_wait_timeout_ms(
     )
 }
 
-fn create(
+pub(super) fn create(
     client: *mut rumqttc_client,
     out: *mut *mut rumqttc_pending_admission,
     error_out: *mut *mut rumqttc_error,
@@ -313,15 +313,12 @@ unsafe fn properties_charge(
     Ok(bytes)
 }
 
-unsafe fn publish_charge(
+pub(super) unsafe fn publish_charge(
     topic: rumqttc_string_view_t,
-    payload: rumqttc_bytes_view_t,
+    payload_len: usize,
     options: *const rumqttc_publish_options_t,
 ) -> Result<usize, ErrorHandle> {
-    let mut bytes = add(
-        unsafe { text_charge(topic) }?,
-        unsafe { bytes_from_view(payload) }?.len(),
-    )?;
+    let mut bytes = add(unsafe { text_charge(topic) }?, payload_len)?;
     if !options.is_null() {
         let options = unsafe { record(options) }?;
         if !options.v5_properties.is_null() {
@@ -359,7 +356,7 @@ pub unsafe extern "C" fn rumqttc_client_publish_deferred(
         client,
         out,
         error_out,
-        || unsafe { publish_charge(topic, payload, options) },
+        || unsafe { publish_charge(topic, bytes_from_view(payload)?.len(), options) },
         || unsafe { publish_command(topic, payload, options) }.map(Command::Publish),
     )
 }

@@ -9,6 +9,7 @@ parse_deps = false
 
 [export]
 include = [
+    "rumqttc_publish_buffer", "rumqttc_publish_buffer_release_fn",
     "rumqttc_file_store_context",
     "rumqttc_file_store",
     "rumqttc_file_store_operation",
@@ -126,6 +127,7 @@ include = [
 ]
 
 [export.rename]
+"rumqttc_publish_buffer" = "rumqttc_publish_buffer_t"
 "rumqttc_first_connection" = "rumqttc_first_connection_t"
 "rumqttc_notification_context" = "rumqttc_notification_context_t"
 "rumqttc_pending_admission" = "rumqttc_pending_admission_t"

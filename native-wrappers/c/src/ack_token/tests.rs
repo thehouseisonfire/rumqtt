@@ -1141,3 +1141,6 @@ mod first_connection_tests;
 // Reuse the same controlled transport and owned-client harness for snapshot tests.
 #[path = "../publish_budget/tests.rs"]
 mod publish_budget_tests;
+
+#[path = "../publish_buffer/controlled_tests.rs"]
+mod publish_buffer_tests;

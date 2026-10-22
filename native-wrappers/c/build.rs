@@ -2,6 +2,13 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    #[cfg(feature = "publish-buffer-proof")]
+    {
+        println!("cargo:rerun-if-changed=tests/native/publish_buffer_owner.c");
+        cc::Build::new()
+            .file("tests/native/publish_buffer_owner.c")
+            .compile("publish_buffer_owner");
+    }
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=cbindgen.toml");
     println!("cargo:rerun-if-changed=cbindgen-functions.toml");

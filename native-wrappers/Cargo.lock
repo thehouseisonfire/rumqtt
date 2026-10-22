@@ -1690,6 +1690,7 @@ version = "0.1.0-alpha"
 dependencies = [
  "bytes",
  "cbindgen",
+ "cc",
  "rumqttc-wrapper-core-next",
  "tempfile",
  "tokio",

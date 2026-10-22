@@ -115,3 +115,7 @@ See the [mapping, absence and lifetime contract](native-failures.md).
 C and wrapper-core optionally provide maintained file-backed session stores with
 explicit execution ownership and inactive-key administration. Enable
 `file-session-store`; see [the storage and teardown contract](file-session-stores.md).
+
+C applications can optionally reuse [owned immutable publish buffers](c/README.md#owned-immutable-publish-buffers)
+through immediate, tracked and deferred admission. Existing view APIs still copy;
+final release callbacks, logical accounting and unload lifetimes are explicit.

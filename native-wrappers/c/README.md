@@ -1960,3 +1960,56 @@ independent opens of its root/namespace fail with typed `InUse`.
 See [storage, limits, administration and unload](../file-session-stores.md) and the
 [file-store example](examples/file_session_store.c). Close/destroy clients before
 closing stores, then request context shutdown and join it before unloading.
+
+## Owned immutable publish buffers
+
+Every build exposes `RUMQTTC_CAP_OWNED_PUBLISH_BUFFER`. Existing publish calls
+copy payload views. Applications with large or reused immutable payloads can use
+`rumqttc_publish_buffer_create`, `retain` and `release`, then
+`rumqttc_client_try_publish_buffer`, `publish_buffer_tracked` or
+`publish_buffer_deferred`. Each publish borrows a live handle and retains storage;
+metadata still copies. Failed admission leaves the caller's handle reusable.
+Each successful call creates a distinct MQTT publication. Releasing a buffer
+handle never cancels pending or admitted work.
+
+Creation requires a release callback and accepts nullable userdata. Success
+transfers release responsibility and returns one owned handle; failure transfers
+nothing and invokes no callback. NULL data is valid only for zero length. Both
+NULL and non-NULL empty buffers retain their owner and original callback arguments.
+Nonempty data must be a stable readable region, with byte alignment and length
+at most `PTRDIFF_MAX`; MQTT/configured packet limits apply separately at publish.
+Callers may read but must not mutate or free bytes until final callback entry.
+Do not independently adopt the same storage under competing release owners.
+
+Retain supplies an independently owned handle. Release is NULL-safe; do not race
+release against use of that same reference. Independent references can be used
+and released concurrently. The final owner invokes the callback exactly once,
+on the releasing caller, native worker or cleanup thread. Callback/userdata must
+be thread-safe, callback execution must return promptly, and unwinding or
+`longjmp` across Rust is forbidden. Permitted reentry is limited to buffer
+retain/release through other live references and library version/capability
+queries. Client and operation observation reentry is unsupported; blocking
+wrapper waits/joins are rejected even from callbacks running on caller threads.
+
+Buffers own no client/runtime and may survive MQTT completion and client/context
+join. Those boundaries do not release caller references or prove a buffer's
+callback ran. Native/replay/checkpoint references retain original bytes until
+last use; independent copies own their own storage. The callback controls actual
+reclamation and may enqueue it on a host executor. Keep its code loaded through
+return, bound any host reclamation queue, and finish all handles, calls and host
+reclamation before unloading the relevant library/module.
+
+MQTT 5 publish budgets and both protocols' deferred budgets charge the full
+logical payload for every operation/attempt, including shared storage. MQTT 3.1.1
+retains its existing queue/packet limits and has no equivalent native retained
+publish byte budget. A small region can pin a larger pool block or mapping;
+these counters do not bound backing allocation capacity or process RSS. Bound
+application pool capacity and producer concurrency, especially during disconnects
+and replay. UTF-8 payload-format validation stays enabled on applicable MQTT 5
+publishes, including deferred retries; no proof caching or validation switch is added.
+
+The [bounded ownership example](examples/owned_publish_buffer.c) reuses one pool
+block, consumes events independently, and observes deferred admission before MQTT
+completion. [Measurements](benches/publish-buffer.md) distinguish FFI copy avoidance
+from codecs, persistence and transport costs. This API is neither allocation-free
+nor end-to-end zero-copy, and small single-use messages may not benefit.

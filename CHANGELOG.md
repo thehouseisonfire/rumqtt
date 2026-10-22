@@ -6,6 +6,13 @@
   stores. Rust operation results now return `FileStoreValue<T>`, retaining byte
   reservations until the final shared result owner releases them. The C ABI is unchanged.
 
+- C: Add retained immutable application publish buffers with exactly-once release
+  callbacks and immediate, tracked and deferred publish APIs. Owned payloads avoid
+  the obligatory FFI copy while preserving validation, admission and completion
+  behavior. Existing view APIs still copy. Document callback threading, logical
+  accounting, pool pressure and final release/unload boundaries; include a bounded
+  ownership example and reproducible copy/allocation measurements.
+
 - Wrapper development: Park TODO49's external-TLS C API and further bridge
   redesign after corrected performance measurements and targeted profiling.
   Retain the private experiment and reproducible evidence; reopening requires a
@@ -24,6 +31,7 @@
   [the ownership contract](native-wrappers/file-session-stores.md).
   Wrapper-core Rust `StoreFailure` adds classifications; exhaustive matches must
   handle the new variants.
+
 - Rust v4/v5: Add default-forwarding owned-save and bounded-load store hooks,
   bounded checkpoint encoding and allocation-budgeted decoding. The optional
   `owned-session-store` feature lets managed wrappers transfer snapshots to

@@ -1,0 +1,30 @@
+{
+  "benefit_workloads": [
+    [
+      262144,
+      "admitted"
+    ],
+    [
+      262144,
+      "deferred"
+    ],
+    [
+      262144,
+      "rejected"
+    ],
+    [
+      1048576,
+      "admitted"
+    ],
+    [
+      1048576,
+      "deferred"
+    ],
+    [
+      1048576,
+      "rejected"
+    ]
+  ],
+  "copying_regression_gate": true,
+  "performance_gate": true
+}
