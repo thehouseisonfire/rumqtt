@@ -2,6 +2,11 @@
 
 ### Changed
 
+- Wrapper validation: Keep atomic updates compatible with Rust 1.88 while passing
+  Rust 1.99 deprecation checks, and mark terminal result observations as must-use.
+  Cache and checksum the Windows Mosquitto installer and retry transient download
+  failures before running broker-dependent suites.
+
 - Wrapper validation: Check production protocol dependencies using Rust syntax,
   allowing test-only code and the maintained storage bridges. Keep acknowledgement
   packet conversion and topic-filter validation inside the backend. Add native

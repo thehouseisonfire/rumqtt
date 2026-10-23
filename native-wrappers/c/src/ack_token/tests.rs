@@ -935,7 +935,7 @@ fn acknowledgement_racing_reconnect_never_enters_the_replacement_connection() {
             );
             assert_eq!(wait(completion), 0);
             assert_eq!(client.peer.frame(), (0x40, vec![0, 8]));
-            assert!(client.peer.buffered.is_empty());
+            assert_eq!(client.peer.buffered, [] as [u8; 0]);
             assert!(client.peer.output.try_recv().is_err());
             rumqttc_completion_destroy(completion);
             rumqttc_ack_token_release(current);

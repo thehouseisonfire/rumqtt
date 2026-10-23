@@ -380,10 +380,14 @@ impl Job {
             tokio::pin!(cancel);
             cancel.as_mut().enable();
             poll_fn(|cx| {
-                if budget
+                #[allow(
+                    deprecated,
+                    reason = "Atomic fetch_update is available at the Rust 1.88 MSRV"
+                )]
+                let consumed = budget
                     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
-                    .is_ok()
-                {
+                    .is_ok();
+                if consumed {
                     std::task::Poll::Ready(())
                 } else {
                     cx.waker().wake_by_ref();

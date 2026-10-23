@@ -20,12 +20,30 @@ runs:
         test -x "$broker"
         "$broker" -h || test "$?" -eq 3
         echo "MOSQUITTO_BIN=$broker" >> "$GITHUB_ENV"
+    - name: Cache Mosquitto Windows installer
+      if: runner.os == 'Windows'
+      uses: actions/cache@v5
+      with:
+        path: ${{ runner.temp }}/mosquitto-2.1.2-install-windows-x64.exe
+        key: mosquitto-windows-x64-2.1.2-58008ad7a22ada0b
     - name: Install Mosquitto on Windows
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        $installer = Join-Path $env:RUNNER_TEMP mosquitto-installer.exe
-        Invoke-WebRequest -Uri https://mosquitto.org/files/binary/win64/mosquitto-2.1.2-install-windows-x64.exe -OutFile $installer
+        $installer = Join-Path $env:RUNNER_TEMP mosquitto-2.1.2-install-windows-x64.exe
+        if (-not (Test-Path $installer -PathType Leaf)) {
+          # Retry connection refusals as well as HTTP failures; keep outages bounded.
+          curl.exe --fail --location --retry 4 --retry-all-errors --retry-delay 5 `
+            --retry-max-time 180 --connect-timeout 15 --max-time 120 `
+            --output $installer https://mosquitto.org/files/binary/win64/mosquitto-2.1.2-install-windows-x64.exe
+          if ($LASTEXITCODE -ne 0) { throw "Mosquitto download failed: $LASTEXITCODE" }
+        }
+        # Also validate cache hits. SHA-256 matches the Microsoft winget 2.1.2 x64 manifest:
+        # https://github.com/microsoft/winget-pkgs/blob/master/manifests/e/EclipseFoundation/Mosquitto/2.1.2/EclipseFoundation.Mosquitto.installer.yaml
+        $expected = '58008AD7A22ADA0B4073AFA415801746E027C5F583E4FA52D0F4E9193B98D6AA'
+        if ((Get-FileHash -Path $installer -Algorithm SHA256).Hash -ne $expected) {
+          throw "Mosquitto installer checksum mismatch"
+        }
         $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
         if ($install.ExitCode -ne 0) { throw "Mosquitto installation failed: $($install.ExitCode)" }
         $broker = Join-Path $env:ProgramFiles mosquitto/mosquitto.exe
