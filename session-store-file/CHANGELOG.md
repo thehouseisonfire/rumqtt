@@ -24,6 +24,8 @@
 
 ### Changed
 
+- Document errors from the v4/v5 blocking file-store APIs and asynchronous close,
+  and include the blocking adapter's size limit and namespace in debug output.
 - Re-license as MIT OR Apache-2.0 with separate `LICENSE-MIT` and
   `LICENSE-APACHE` files.
 - Update MQTT 3.1.1 file checkpoints to the rumqttc v4 session format version 2,

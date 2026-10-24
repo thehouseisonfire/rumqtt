@@ -279,7 +279,9 @@ impl<P: Protocol> fmt::Debug for BlockingAdapter<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlockingAdapter")
             .field("core", &self.core)
-            .finish()
+            .field("limit", &self.limit)
+            .field("namespace", &P::NAMESPACE)
+            .finish_non_exhaustive()
     }
 }
 impl<P: Protocol> BlockingAdapter<P> {

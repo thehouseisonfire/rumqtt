@@ -164,6 +164,9 @@ impl SessionFileStore {
 
     /// Drains accepted work and joins all engine-owned threads. All clones close together.
     /// Dropping the waiting future does not undo the close request.
+    ///
+    /// # Errors
+    /// Returns an error if the store engine fails to shut down or join its threads.
     pub async fn close(&self) -> Result<(), SessionFileStoreError> {
         self.inner
             .close()
@@ -246,9 +249,19 @@ pub struct BlockingSessionFileStore {
     inner: shared::BlockingAdapter<V4>,
 }
 impl BlockingSessionFileStore {
+    /// Opens the `v4` namespace below an existing configured root.
+    ///
+    /// # Errors
+    /// Returns an error if the root or namespace cannot be opened safely.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, SessionFileStoreError> {
         Self::open_with_options(root, FileStoreOptions::default())
     }
+
+    /// Opens the `v4` namespace with explicit size limits.
+    ///
+    /// # Errors
+    /// Returns an error for invalid options or filesystem state, or if the maximum
+    /// checkpoint size cannot be represented as a `usize` on this platform.
     pub fn open_with_options(
         root: impl Into<PathBuf>,
         options: FileStoreOptions,
@@ -258,9 +271,18 @@ impl BlockingSessionFileStore {
                 .map_err(SessionFileStoreError::from)?,
         })
     }
+    /// Returns the canonical path used for `key`.
+    ///
+    /// # Errors
+    /// Returns an error if a key field exceeds the stable encoding limit.
     pub fn checkpoint_path(&self, key: &SessionStoreKey) -> Result<PathBuf, KeyEncodeError> {
         self.inner.checkpoint_path(key.scope(), key.client_id())
     }
+
+    /// Inspects the canonical checkpoint without decoding it.
+    ///
+    /// # Errors
+    /// Returns an error for key encoding, filesystem, or coordination failures.
     pub fn inspect(
         &self,
         key: &SessionStoreKey,
@@ -269,6 +291,10 @@ impl BlockingSessionFileStore {
             .inspect(key.scope(), key.client_id())
             .map_err(SessionFileStoreError::from)
     }
+    /// Moves the canonical checkpoint aside for diagnosis.
+    ///
+    /// # Errors
+    /// Returns an error for key encoding, filesystem, or coordination failures.
     pub fn quarantine(
         &self,
         key: &SessionStoreKey,
@@ -277,17 +303,31 @@ impl BlockingSessionFileStore {
             .quarantine(key.scope(), key.client_id())
             .map_err(SessionFileStoreError::from)
     }
+    /// Explicitly clears canonical local state during operator-led recovery.
+    ///
+    /// # Errors
+    /// Returns an error for key encoding, filesystem, or coordination failures.
     pub fn operator_clear(&self, key: &SessionStoreKey) -> Result<(), SessionFileStoreError> {
         self.inner
             .clear(key.scope(), key.client_id())
             .map_err(SessionFileStoreError::from)
     }
+    /// Cleans stale store-owned Windows staging files behind a global barrier.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid age, unsupported platform, or filesystem
+    /// or coordination failure.
     pub fn cleanup_stale_temporary_files_before_use(
         &self,
         age: std::time::Duration,
     ) -> Result<CleanupReport, SessionFileStoreError> {
         self.inner.cleanup(age).map_err(SessionFileStoreError::from)
     }
+    /// Loads and decodes the canonical checkpoint, or returns `None` if absent.
+    ///
+    /// # Errors
+    /// Returns an error for key encoding, filesystem, coordination, checkpoint
+    /// validation, or session decoding failures, including exceeded size limits.
     pub fn load(
         &self,
         key: &SessionStoreKey,
@@ -297,6 +337,10 @@ impl BlockingSessionFileStore {
             .map_err(SessionFileStoreError::from)
     }
     /// Loads with bounds on serialized bytes and logical decoded buffer allocations.
+    ///
+    /// # Errors
+    /// Returns an error for key encoding, filesystem, coordination, checkpoint
+    /// validation, or session decoding failures, including exceeded byte or memory limits.
     pub fn load_with_limits(
         &self,
         key: &SessionStoreKey,
@@ -307,6 +351,11 @@ impl BlockingSessionFileStore {
             .load_with_limits(key.scope(), key.client_id(), bytes, memory)
             .map_err(SessionFileStoreError::from)
     }
+    /// Encodes and atomically saves a session checkpoint.
+    ///
+    /// # Errors
+    /// Returns an error for key or session encoding, filesystem, or coordination
+    /// failures, including checkpoints exceeding the configured size limit.
     pub fn save(
         &self,
         key: &SessionStoreKey,
@@ -317,6 +366,9 @@ impl BlockingSessionFileStore {
             .map_err(SessionFileStoreError::from)
     }
     /// Drains accepted work and joins engine threads. All clones close together.
+    ///
+    /// # Errors
+    /// Returns an error if the store engine fails to shut down or join its threads.
     pub fn close(&self) -> Result<(), SessionFileStoreError> {
         self.inner.close().map_err(SessionFileStoreError::from)
     }
