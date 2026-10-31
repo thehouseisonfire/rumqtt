@@ -1,4 +1,4 @@
-use super::framed::{Network, ReadBatch, ReadBatchError, ReadBatchOutcome};
+use super::framed::{IncomingFrame, Network, ReadBatch, ReadBatchError, ReadBatchOutcome};
 use super::mqttbytes::v5::{
     ConnAck, Connect, ConnectProperties, Disconnect, DisconnectReasonCode, Packet, Publish,
     Subscribe, Unsubscribe,
@@ -20,6 +20,7 @@ use crate::{
     redirect::{normalized_broker_key, normalized_profile_key},
     srv::{MAX_SRV_TARGETS, ResolvedSrvTarget, SrvAnswerError, prepare_srv_targets},
 };
+use futures_util::FutureExt;
 
 #[cfg(not(feature = "ordered-shutdown"))]
 use flume::{Receiver, Sender, TryRecvError, bounded, unbounded};
@@ -45,6 +46,7 @@ mod ordered_disconnect;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 
 use super::mqttbytes::v5::ConnectReturnCode;
@@ -71,6 +73,48 @@ use crate::websockets::split_url_with_default_port;
 
 #[cfg(any(feature = "http-proxy", feature = "socks-proxy"))]
 use crate::proxy::ProxyError;
+
+enum PollReady {
+    Closed,
+    Immediate(RequestEnvelope),
+    Control(RequestEnvelope),
+    Request(Result<RequestEnvelope, ConnectionError>),
+    Network(IncomingFrame),
+    KeepAlive,
+}
+
+// Bound request bursts without probing an idle socket for every publish.
+const MAX_REQUEST_BURST: u8 = 8;
+
+#[derive(Clone, Copy)]
+enum PollSource {
+    Request(u8),
+    Network,
+    KeepAlive,
+}
+
+impl Default for PollSource {
+    fn default() -> Self {
+        Self::Request(MAX_REQUEST_BURST)
+    }
+}
+
+impl PollSource {
+    const fn after_ready(self) -> Self {
+        match self {
+            Self::Request(remaining) if remaining > 1 => Self::Request(remaining - 1),
+            _ => self.next(),
+        }
+    }
+
+    const fn next(self) -> Self {
+        match self {
+            Self::Request(_) => Self::Network,
+            Self::Network => Self::KeepAlive,
+            Self::KeepAlive => Self::Request(MAX_REQUEST_BURST),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct RequestEnvelope {
@@ -582,13 +626,13 @@ pub struct EventLoop {
     /// helpers are reached through [`Self::select`], which [`Self::poll`] calls only while this is
     /// `Some`.
     network: Option<Network>,
+    next_poll_source: PollSource,
     /// Keep alive time
     keepalive_timeout: Option<Pin<Box<Sleep>>>,
+    /// Absolute budget for draining ready packets after a keepalive expiry.
+    keepalive_scan_deadline: Option<Instant>,
     /// Keep alive interval effective for the current network connection.
     effective_keep_alive: Duration,
-    /// Dummy sleep used as a placeholder in select! when keepalive is disabled.
-    /// Initialized once with `Duration::MAX` so that it never fires.
-    no_sleep: Option<Pin<Box<Sleep>>>,
     /// `ClientId` associated with the currently retained local session state.
     session_client_id: Option<String>,
     /// Store key associated with the currently retained local session state.
@@ -610,6 +654,10 @@ pub struct EventLoop {
 
     #[cfg(feature = "ordered-shutdown")]
     terminal_checkpoint: Option<crate::disconnect::TerminalCheckpoint>,
+
+    /// Terminal error deferred until committed application notifications are delivered.
+    #[cfg(feature = "ordered-shutdown")]
+    terminal_error: Option<Box<ConnectionError>>,
 
     #[cfg(feature = "ordered-shutdown")]
     publish_ledger: Arc<crate::disconnect::Ledger>,
@@ -657,6 +705,34 @@ impl Drop for AuthenticationPollGuard<'_> {
             self.eventloop
                 .state
                 .fail_auth_exchange_due_to_connection_closed();
+        }
+    }
+}
+
+/// Keep a response deadline attached only while its batch future is alive.
+struct ResponseWriteDeadlineGuard<'a> {
+    eventloop: &'a mut EventLoop,
+    previous_deadline: Option<Instant>,
+}
+
+impl<'a> ResponseWriteDeadlineGuard<'a> {
+    const fn new(eventloop: &'a mut EventLoop, deadline: Instant) -> Self {
+        let previous_deadline = eventloop
+            .network
+            .as_mut()
+            .expect("connected network")
+            .replace_write_deadline(Some(deadline));
+        Self {
+            eventloop,
+            previous_deadline,
+        }
+    }
+}
+
+impl Drop for ResponseWriteDeadlineGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(network) = &mut self.eventloop.network {
+            _ = network.replace_write_deadline(self.previous_deadline);
         }
     }
 }
@@ -998,9 +1074,10 @@ impl EventLoop {
             reconnect_topic_aliases: None,
             publish_admission,
             network: None,
+            next_poll_source: PollSource::default(),
             keepalive_timeout: None,
+            keepalive_scan_deadline: None,
             effective_keep_alive,
-            no_sleep: None,
             session_client_id: None,
             session_store_key: None,
             effective_session_expiry_interval,
@@ -1016,6 +1093,9 @@ impl EventLoop {
 
             #[cfg(feature = "ordered-shutdown")]
             terminal_checkpoint: None,
+
+            #[cfg(feature = "ordered-shutdown")]
+            terminal_error: None,
 
             #[cfg(feature = "ordered-shutdown")]
             publish_ledger: Arc::default(),
@@ -1166,6 +1246,7 @@ impl EventLoop {
         self.network = None;
         self.connack_session = None;
         self.keepalive_timeout = None;
+        self.keepalive_scan_deadline = None;
         self.pending_disconnect = None;
         #[cfg(feature = "ordered-shutdown")]
         let older_pending = if self.requests_rx.gate().has_fence() {
@@ -3098,94 +3179,9 @@ impl EventLoop {
     /// This connected-only driver is called by [`Self::poll`] only after a network has been
     /// established. Connection errors return to `poll`, which normalizes the lifecycle through
     /// [`Self::handle_network_result`] before another establishment attempt.
-    #[allow(clippy::too_many_lines)]
     async fn select(&mut self) -> Result<Event, ConnectionError> {
-        #[cfg(not(feature = "ordered-shutdown"))]
         loop {
-            if let Some(event) = self.state.events.pop_front() {
-                return Ok(event);
-            }
-
-            if let Ok(envelope) = self.immediate_disconnect_rx.try_recv() {
-                return self.handle_immediate_disconnect(envelope).await;
-            }
-
-            if self.all_request_sources_drained() {
-                return Err(ConnectionError::RequestsDone);
-            }
-
-            if self.pending_disconnect.is_none() && self.handle_ready_requests().await? {
-                if let Some(event) = self.state.events.pop_front() {
-                    return Ok(event);
-                }
-                continue;
-            }
-
-            if self.pending_disconnect.is_some() {
-                if self.state.outbound_requests_drained() {
-                    return self.send_pending_disconnect().await;
-                }
-
-                if let Some(event) = self.poll_disconnect_drain().await? {
-                    return Ok(event);
-                }
-                continue;
-            }
-
-            let read_batch_size = self.effective_read_batch_size();
-            let normal_request_admission_allowed =
-                self.normal_request_admission_allowed() || !self.pending.is_empty();
-            let no_sleep = self
-                .no_sleep
-                .get_or_insert_with(|| Box::pin(time::sleep(Duration::MAX)));
-
-            return select! {
-                biased;
-                o = self.immediate_disconnect_rx.recv_async(), if !self.immediate_disconnect_rx.is_disconnected() => match o {
-                    Ok(envelope) => self.handle_immediate_disconnect(envelope).await,
-                    Err(_) => continue,
-                },
-                o = self.control_requests_rx.recv_async(),
-                    if self.pending_disconnect.is_none()
-                        && (!self.control_requests_rx.is_empty()
-                            || !self.control_requests_rx.is_disconnected()) => match o {
-                    Ok(envelope) => {
-                        self.try_admit_existing_normal_requests().await;
-                        self.queued.push_back(envelope);
-                        continue;
-                    }
-                    Err(_) => continue,
-                },
-                o = Self::next_request(
-                    &mut self.pending,
-                    &self.requests_rx,
-                    self.options.pending_throttle,
-                    self.publish_admission.as_deref(),
-                ), if self.pending_disconnect.is_none()
-                    && normal_request_admission_allowed
-                    && (!self.pending.is_empty()
-                        || !self.requests_rx.is_empty()
-                        || !self.requests_rx.is_disconnected()) => match o {
-                    Ok(envelope) => {
-                        self.admit_normal_request_batch(envelope).await;
-                        continue;
-                    }
-                    Err(_) => continue,
-                },
-                o = self
-                    .network
-                    .as_mut()
-                    .expect("connected event loop must have an active network")
-                    .readb(&mut self.state, read_batch_size) => self.handle_network_read(o).await,
-                () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
-                    if self.keepalive_timeout.is_some() && !self.effective_keep_alive.is_zero() => {
-                    self.handle_keepalive_ping().await
-                }
-            };
-        }
-
-        #[cfg(feature = "ordered-shutdown")]
-        loop {
+            #[cfg(feature = "ordered-shutdown")]
             self.ensure_ordered_deadline()?;
             if let Some(event) = self.state.events.pop_front() {
                 return Ok(event);
@@ -3199,6 +3195,8 @@ impl EventLoop {
                 return Err(ConnectionError::RequestsDone);
             }
 
+            self.check_keepalive_scan_timeout()?;
+
             if self.pending_disconnect.is_none() && self.handle_ready_requests().await? {
                 if let Some(event) = self.state.events.pop_front() {
                     return Ok(event);
@@ -3207,6 +3205,9 @@ impl EventLoop {
             }
 
             if self.pending_disconnect.is_some() {
+                #[cfg(not(feature = "ordered-shutdown"))]
+                let drained = self.state.outbound_requests_drained();
+                #[cfg(feature = "ordered-shutdown")]
                 let drained = if self.ordered_packet.is_some() {
                     self.publish_ledger.result()?
                 } else {
@@ -3215,70 +3216,201 @@ impl EventLoop {
                 if drained {
                     return self.send_pending_disconnect().await;
                 }
-
                 if let Some(event) = self.poll_disconnect_drain().await? {
                     return Ok(event);
                 }
                 continue;
             }
 
-            let read_batch_size = self.effective_read_batch_size();
-            let normal_request_admission_allowed =
-                self.normal_request_admission_allowed() || !self.pending.is_empty();
-            let no_sleep = self
-                .no_sleep
-                .get_or_insert_with(|| Box::pin(time::sleep(Duration::MAX)));
-
-            return select! {
-                biased;
-                o = self.immediate_disconnect_rx.recv_async(), if !self.immediate_disconnect_rx.is_disconnected() => match o {
-                    Ok(envelope) => self.handle_immediate_disconnect(envelope).await,
-                    Err(_) => continue,
-                },
-                o = self.control_requests_rx.recv_async(),
-                    if self.pending_disconnect.is_none()
-                        && (!self.control_requests_rx.is_empty()
-                            || !self.control_requests_rx.is_disconnected()) => match o {
-                    Ok(envelope) => {
-                        self.try_admit_existing_normal_requests().await;
-                        self.queued.push_back(envelope);
-                        continue;
-                    }
-                    Err(_) => continue,
-                },
-                o = Self::next_request(
-                    &mut self.pending,
-                    &self.requests_rx,
-                    self.options.pending_throttle,
-                    self.publish_admission.as_deref(),
-                ), if self.pending_disconnect.is_none()
-                    && normal_request_admission_allowed
-                    && (!self.pending.is_empty()
-                        || !self.requests_rx.is_empty()
-                        || !self.requests_rx.is_disconnected()) => match o {
-                    Ok(envelope) => {
-                        self.admit_normal_request_batch(envelope).await;
-                        continue;
-                    }
-                    Err(_) => continue,
-                },
-                o = self
-                    .network
-                    .as_mut()
-                    .expect("connected event loop must have an active network")
-                    .readb(&mut self.state, read_batch_size) => self.handle_network_read(o).await,
-                () = self.keepalive_timeout.as_mut().unwrap_or(no_sleep),
-                    if self.keepalive_timeout.is_some() && !self.effective_keep_alive.is_zero() => {
-                    self.handle_keepalive_ping().await
+            match self.next_ready().await {
+                PollReady::Immediate(envelope) => {
+                    return self.handle_immediate_disconnect(envelope).await;
                 }
-            };
+                PollReady::Control(envelope) => {
+                    self.try_admit_existing_normal_requests().await;
+                    self.queued.push_back(envelope);
+                }
+                PollReady::Request(Ok(envelope)) => self.admit_normal_request_batch(envelope).await,
+                PollReady::Closed | PollReady::Request(Err(_)) => {}
+                PollReady::Network(first) => return self.handle_network_read(first).await,
+                PollReady::KeepAlive => return self.handle_keepalive_ping().await,
+            }
         }
+    }
+
+    /// Poll control traffic first, then bound ordinary request bursts before
+    /// giving incoming packets and keepalive their turn. Only frame acquisition
+    /// participates in arbitration; protocol transitions and response writes
+    /// finish after the winning read.
+    async fn next_ready(&mut self) -> PollReady {
+        let requests_enabled = (self.normal_request_admission_allowed()
+            || !self.pending.is_empty())
+            && (!self.pending.is_empty()
+                || !self.requests_rx.is_empty()
+                || !self.requests_rx.is_disconnected());
+        // A buffered request needs no receive/read/timer futures. Preserve
+        // control priority and the same burst budget before taking this path.
+        if requests_enabled
+            && self.pending.is_empty()
+            && matches!(self.next_poll_source, PollSource::Request(_))
+        {
+            if let Ok(envelope) = self.immediate_disconnect_rx.try_recv() {
+                return PollReady::Immediate(envelope);
+            }
+            if let Ok(envelope) = self.control_requests_rx.try_recv() {
+                return PollReady::Control(envelope);
+            }
+            if let Ok(envelope) = self.requests_rx.try_recv() {
+                if let Some(admission) = &self.publish_admission {
+                    admission.notify_progress();
+                }
+                self.next_poll_source = self.next_poll_source.after_ready();
+                return PollReady::Request(Ok(envelope));
+            }
+        }
+        let immediate_enabled = !self.immediate_disconnect_rx.is_disconnected();
+        let control_enabled =
+            !self.control_requests_rx.is_empty() || !self.control_requests_rx.is_disconnected();
+        let keepalive_enabled =
+            self.keepalive_timeout.is_some() && !self.effective_keep_alive.is_zero();
+        let keepalive = &mut self.keepalive_timeout;
+        let mut immediate = std::pin::pin!(self.immediate_disconnect_rx.recv_async());
+        let mut control = std::pin::pin!(self.control_requests_rx.recv_async());
+        let mut request = std::pin::pin!(Self::next_request(
+            &mut self.pending,
+            &self.requests_rx,
+            self.options.pending_throttle,
+            self.publish_admission.as_deref(),
+        ));
+        let mut network = std::pin::pin!(
+            self.network
+                .as_mut()
+                .expect("connected network")
+                .read_frame()
+        );
+        let next_source = &mut self.next_poll_source;
+        poll_fn(|cx| {
+            if immediate_enabled && let Poll::Ready(result) = immediate.as_mut().poll(cx) {
+                return Poll::Ready(result.map_or(PollReady::Closed, PollReady::Immediate));
+            }
+            if control_enabled && let Poll::Ready(result) = control.as_mut().poll(cx) {
+                return Poll::Ready(result.map_or(PollReady::Closed, PollReady::Control));
+            }
+            let mut source = *next_source;
+            for _ in 0..3 {
+                let ready = match source {
+                    PollSource::Request(_) if requests_enabled => {
+                        request.as_mut().poll(cx).map(PollReady::Request)
+                    }
+                    PollSource::Network => network.as_mut().poll(cx).map(PollReady::Network),
+                    PollSource::KeepAlive if keepalive_enabled => keepalive
+                        .as_mut()
+                        .expect("enabled keepalive")
+                        .as_mut()
+                        .poll(cx)
+                        .map(|()| PollReady::KeepAlive),
+                    _ => Poll::Pending,
+                };
+                if ready.is_ready() {
+                    *next_source = source.after_ready();
+                    return ready;
+                }
+                source = source.next();
+            }
+            Poll::Pending
+        })
+        .await
+    }
+
+    fn response_write_deadline(&self) -> Instant {
+        Instant::now()
+            .checked_add(Duration::from_secs(
+                self.options.network_options.connection_timeout(),
+            ))
+            // Match Tokio's far-future clamp only when the configured duration overflows.
+            .unwrap_or_else(|| time::sleep(Duration::MAX).deadline())
+    }
+
+    fn close_timed_out_transport(&mut self) {
+        self.network = None;
+        self.keepalive_timeout = None;
+        self.keepalive_scan_deadline = None;
+        self.connack_session = None;
+    }
+
+    fn defer_connection_error(&mut self, error: ConnectionError) -> Result<Event, ConnectionError> {
+        // Redirects retain their own event-draining lifecycle and connection transition.
+        if matches!(
+            &error,
+            ConnectionError::MqttState(StateError::ServerRedirect(_))
+        ) {
+            return Err(error);
+        }
+        if matches!(&error, ConnectionError::MqttState(StateError::Io(source)) if source.kind() == io::ErrorKind::TimedOut)
+            || matches!(&error, ConnectionError::DisconnectTimeout)
+        {
+            self.close_timed_out_transport();
+        }
+        if let Some(event) = self.state.events.pop_front() {
+            self.pending_connection_error = Some(Box::new(error));
+            Ok(event)
+        } else {
+            Err(error)
+        }
+    }
+
+    async fn read_network_batch(
+        &mut self,
+        first: IncomingFrame,
+        read_batch_size: usize,
+        deadline: Instant,
+    ) -> Result<(), ConnectionError> {
+        let deadline = self
+            .keepalive_scan_deadline
+            .map_or(deadline, |scan_deadline| scan_deadline.min(deadline));
+        let guard = ResponseWriteDeadlineGuard::new(self, deadline);
+        let eventloop = &mut *guard.eventloop;
+        let network = eventloop.network.as_mut().expect("connected network");
+        // Only the low-level I/O awaits expire. The batch itself remains alive,
+        // retaining protocol state and collected notices through error completion.
+        let batch = network
+            .readb_from(first, &mut eventloop.state, read_batch_size)
+            .await;
+        if matches!(&batch, Err(error) if matches!(&error.source, StateError::Io(source) if source.kind() == io::ErrorKind::TimedOut))
+        {
+            eventloop.close_timed_out_transport();
+        }
+        let result = eventloop.complete_network_read(batch).await;
+        if matches!(&result, Err(ConnectionError::MqttState(StateError::Io(source))) if source.kind() == io::ErrorKind::TimedOut)
+        {
+            eventloop.close_timed_out_transport();
+        }
+        result
     }
 
     async fn handle_network_read(
         &mut self,
-        batch: Result<ReadBatch, ReadBatchError>,
+        first: IncomingFrame,
     ) -> Result<Event, ConnectionError> {
+        let read_batch_size = self.effective_read_batch_size();
+        let deadline = self.response_write_deadline();
+        match self
+            .read_network_batch(first, read_batch_size, deadline)
+            .await
+        {
+            Ok(()) => Ok(self
+                .state
+                .events
+                .pop_front()
+                .expect("successful network read must queue an event")),
+            Err(error) => self.defer_connection_error(error),
+        }
+    }
+
+    async fn complete_network_read(
+        &mut self,
+        batch: Result<ReadBatch, ReadBatchError>,
+    ) -> Result<(), ConnectionError> {
         let batch = match batch {
             Ok(batch) => batch,
             Err(err) => return Err(self.complete_failed_read_batch(err).await),
@@ -3287,14 +3419,73 @@ impl EventLoop {
         if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
             self.reset_keepalive_timeout();
         }
-        Ok(self
-            .state
-            .events
-            .pop_front()
-            .expect("successful network read must queue an event"))
+        Ok(())
     }
 
     async fn handle_keepalive_ping(&mut self) -> Result<Event, ConnectionError> {
+        let awaiting_pingresp = self.state.await_pingresp();
+        match self.handle_keepalive_ping_inner().await {
+            Err(error) if awaiting_pingresp => self.defer_connection_error(error),
+            result => result,
+        }
+    }
+
+    fn check_keepalive_scan_timeout(&mut self) -> Result<(), ConnectionError> {
+        let Some(deadline) = self.keepalive_scan_deadline else {
+            return Ok(());
+        };
+        if !self.state.await_pingresp() || self.effective_keep_alive.is_zero() {
+            self.keepalive_scan_deadline = None;
+        } else if Instant::now() >= deadline {
+            return Err(StateError::AwaitPingResp.into());
+        }
+        Ok(())
+    }
+
+    async fn scan_keepalive_response(&mut self) -> Result<Option<Event>, ConnectionError> {
+        // Keep one absolute response budget across polls. The packet cap only
+        // bounds each turn's work and queued events; it cannot prove absence.
+        const MAX_READY_PACKETS: usize = 128;
+        let deadline = self
+            .keepalive_scan_deadline
+            .unwrap_or_else(|| self.response_write_deadline());
+        self.keepalive_scan_deadline = Some(deadline);
+        for _ in 0..MAX_READY_PACKETS {
+            // A readiness probe must not mistake a cooperative yield for
+            // an unreadable socket. Processing and writes still cooperate.
+            let Some(first) = tokio::task::unconstrained(
+                self.network
+                    .as_mut()
+                    .expect("connected event loop must have an active network")
+                    .read_frame(),
+            )
+            .now_or_never() else {
+                return Ok(None);
+            };
+            self.read_network_batch(first, 1, deadline).await?;
+            if !self.state.await_pingresp() {
+                self.keepalive_scan_deadline = None;
+                break;
+            }
+        }
+        // Deliver committed events before resuming an unfinished scan. The
+        // expired keepalive timer stays eligible for fair arbitration.
+        Ok(Some(
+            self.state
+                .events
+                .pop_front()
+                .expect("successful network read must queue an event"),
+        ))
+    }
+
+    async fn handle_keepalive_ping_inner(&mut self) -> Result<Event, ConnectionError> {
+        self.check_keepalive_scan_timeout()?;
+        // Fair arbitration can select an expired timer before a readable PINGRESP.
+        if self.state.await_pingresp()
+            && let Some(event) = self.scan_keepalive_response().await?
+        {
+            return Ok(event);
+        }
         let (outgoing, _flush_notice) = self
             .state
             .handle_outgoing_packet_with_notice(Request::PingReq, None)?;
@@ -3599,7 +3790,7 @@ impl EventLoop {
                         .network
                         .as_mut()
                         .expect("connected event loop must have an active network")
-                        .write(outgoing)
+                        .write_request(outgoing)
                         .await
                     {
                         return Err(ConnectionError::MqttState(err));
@@ -3635,7 +3826,7 @@ impl EventLoop {
                         .network
                         .as_mut()
                         .expect("connected event loop must have an active network")
-                        .write(outgoing)
+                        .write_request(outgoing)
                         .await
                     {
                         for notice in qos0_notices.drain(..) {
@@ -3697,7 +3888,7 @@ impl EventLoop {
                         .network
                         .as_mut()
                         .expect("connected event loop must have an active network")
-                        .write(outgoing)
+                        .write_request(outgoing)
                         .await
                     {
                         return Err(ConnectionError::MqttState(err));
@@ -3733,7 +3924,7 @@ impl EventLoop {
                         .network
                         .as_mut()
                         .expect("connected event loop must have an active network")
-                        .write(outgoing)
+                        .write_request(outgoing)
                         .await
                     {
                         for notice in qos0_notices.drain(..) {
@@ -3789,7 +3980,7 @@ impl EventLoop {
         self.network
             .as_mut()
             .expect("connected event loop must have an active network")
-            .flush()
+            .flush_request()
             .await?;
         Ok(())
     }
@@ -3807,7 +3998,7 @@ impl EventLoop {
                     self.network
                         .as_mut()
                         .expect("connected event loop must have an active network")
-                        .flush()
+                        .flush_request()
                         .await?;
                 } else {
                     self.save_persisted_session().await?;
@@ -3825,25 +4016,30 @@ impl EventLoop {
             .network
             .as_mut()
             .expect("disconnect drain requires an active network")
-            .readb(&mut self.state, read_batch_size);
+            .read_frame();
 
-        let batch = if let Some(deadline) = self
+        let deadline = self
             .pending_disconnect
             .as_ref()
-            .and_then(|pending| pending.deadline)
-        {
+            .and_then(|pending| pending.deadline);
+        let read_deadline = match (deadline, self.keepalive_scan_deadline) {
+            (Some(deadline), Some(scan_deadline)) => Some(deadline.min(scan_deadline)),
+            (deadline, scan_deadline) => deadline.or(scan_deadline),
+        };
+        let first = if let Some(read_deadline) = read_deadline {
             select! {
                 o = self.immediate_disconnect_rx.recv_async(), if !self.immediate_disconnect_rx.is_disconnected() => match o {
                     Ok(envelope) => return self.handle_immediate_disconnect(envelope).await.map(Some),
                     Err(_) => return Ok(None),
                 },
-                result = read => match result {
-                    Ok(batch) => batch,
-                    Err(err) => {
-                        return Err(self.complete_failed_read_batch(err).await);
-                    }
+                frame = read => frame,
+                () = time::sleep_until(read_deadline) => {
+                    return Err(if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        ConnectionError::DisconnectTimeout
+                    } else {
+                        StateError::AwaitPingResp.into()
+                    });
                 },
-                () = time::sleep_until(deadline) => return Err(ConnectionError::DisconnectTimeout),
             }
         } else {
             select! {
@@ -3851,20 +4047,29 @@ impl EventLoop {
                     Ok(envelope) => return self.handle_immediate_disconnect(envelope).await.map(Some),
                     Err(_) => return Ok(None),
                 },
-                result = read => match result {
-                    Ok(batch) => batch,
-                    Err(err) => {
-                        return Err(self.complete_failed_read_batch(err).await);
-                    }
-                },
+                frame = read => frame,
             }
         };
 
-        let outcome = self.complete_read_batch(batch).await?;
-        if matches!(outcome, ReadBatchOutcome::ResponseWritten) {
-            self.reset_keepalive_timeout();
+        let write_deadline = self.response_write_deadline();
+        let write_deadline =
+            deadline.map_or(write_deadline, |deadline| deadline.min(write_deadline));
+        match self
+            .read_network_batch(first, read_batch_size, write_deadline)
+            .await
+        {
+            Ok(()) => Ok(None),
+            Err(error) => {
+                let error = if deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                    && matches!(&error, ConnectionError::MqttState(StateError::Io(source)) if source.kind() == io::ErrorKind::TimedOut)
+                {
+                    ConnectionError::DisconnectTimeout
+                } else {
+                    error
+                };
+                self.defer_connection_error(error).map(Some)
+            }
         }
-        Ok(None)
     }
 
     async fn send_pending_disconnect(&mut self) -> Result<Event, ConnectionError> {
@@ -3932,8 +4137,13 @@ impl EventLoop {
 
     fn reset_keepalive_timeout(&mut self) {
         if self.effective_keep_alive.is_zero() {
+            self.keepalive_scan_deadline = None;
             return;
         }
+        if self.state.await_pingresp() && self.keepalive_scan_deadline.is_some() {
+            return;
+        }
+        self.keepalive_scan_deadline = None;
 
         if let Some(timeout) = &mut self.keepalive_timeout {
             timeout
@@ -4755,6 +4965,10 @@ const fn should_replay_after_reconnect(request: &Request) -> bool {
 }
 
 #[cfg(test)]
+#[path = "eventloop_response_tests.rs"]
+mod response_write_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::framed::ReadBatch;
@@ -4783,6 +4997,379 @@ mod tests {
     use std::task::{Context, Poll};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
     use tokio::sync::Notify;
+
+    #[cfg(feature = "ordered-shutdown")]
+    #[tokio::test]
+    async fn ordered_deadline_preserves_events_from_a_failed_keepalive_scan() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut options = MqttOptions::new("ping-response", "localhost");
+        options.set_keep_alive(1);
+        let (client, mut eventloop) = crate::AsyncClient::builder(options).capacity(1).build();
+        let (socket, mut peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(socket, None));
+        eventloop.handle_keepalive_ping().await.unwrap();
+        peer.read_exact(&mut [0; 2]).await.unwrap();
+        let mut packet = [0x32, 6, 0, 1, b'a', 0, 7, 0];
+        for pkid in [7, 8] {
+            packet[6] = pkid;
+            peer.write_all(&packet).await.unwrap();
+        }
+        assert!(
+            matches!(eventloop.handle_keepalive_ping().await.unwrap(), Event::Incoming(Packet::Publish(publish)) if publish.pkid == 7)
+        );
+        peer.read_exact(&mut [0; 8]).await.unwrap();
+        let notice = client
+            .try_disconnect_after_queued_with_timeout(Duration::ZERO)
+            .unwrap();
+
+        assert_eq!(
+            eventloop.poll().await.unwrap(),
+            Event::Outgoing(Outgoing::PubAck(7))
+        );
+        assert!(
+            matches!(eventloop.poll().await.unwrap(), Event::Incoming(Packet::Publish(publish)) if publish.pkid == 8)
+        );
+        assert_eq!(
+            eventloop.poll().await.unwrap(),
+            Event::Outgoing(Outgoing::PubAck(8))
+        );
+        assert!(matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::OrderedDisconnect(
+                crate::DisconnectNoticeError::DisconnectTimeout
+            ))
+        ));
+        assert!(matches!(
+            notice.wait_async().await,
+            Err(crate::DisconnectNoticeError::DisconnectTimeout)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_deadline_bounds_a_started_response_write() {
+        use tokio::io::AsyncWriteExt;
+
+        let mut options = MqttOptions::new("disconnect-backpressure", "localhost");
+        options.set_keep_alive(0);
+        let mut eventloop = EventLoop::new(options, 1);
+        let (socket, mut peer) = tokio::io::duplex(8);
+        let mut network = Network::new(socket, None);
+        for _ in 0..4 {
+            network.write(Packet::PingReq).await.unwrap();
+            network.flush().await.unwrap();
+        }
+        network.write(Packet::PingReq).await.unwrap();
+        network.set_backpressure_boundary(1);
+        eventloop.network = Some(network);
+        peer.write_all(&[0x32, 6, 0, 1, b'a', 0, 7, 0])
+            .await
+            .unwrap();
+        eventloop.pending_disconnect = Some(PendingDisconnect::new(
+            Disconnect::new(DisconnectReasonCode::NormalDisconnection),
+            Some(Duration::from_secs(1)),
+        ));
+
+        let result = time::timeout(Duration::from_secs(2), eventloop.poll_disconnect_drain())
+            .await
+            .expect("graceful disconnect must retain its response-write deadline");
+        assert!(matches!(
+            result,
+            Ok(Some(Event::Incoming(Packet::Publish(_))))
+        ));
+        assert!(eventloop.network.is_none());
+        assert_eq!(
+            eventloop.poll().await.unwrap(),
+            Event::Outgoing(Outgoing::PubAck(7))
+        );
+        assert!(matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::DisconnectTimeout)
+        ));
+    }
+
+    async fn assert_response_survives_arbitration_under_backpressure(
+        qos2: bool,
+        ready_timer: bool,
+    ) {
+        use futures_util::FutureExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for _ in 0..100 {
+            let mut options = MqttOptions::new("read-cancellation", "localhost");
+            options
+                .set_keep_alive(u16::from(ready_timer))
+                .set_max_request_batch(1)
+                .set_read_batch_size(1);
+            let (mut eventloop, request_tx) = EventLoop::new_for_async_client(options, 4);
+            if ready_timer {
+                eventloop.keepalive_timeout = Some(Box::pin(time::sleep(Duration::from_secs(1))));
+                time::advance(Duration::from_secs(1)).await;
+            }
+            let mut completion = None;
+            let (incoming, pkid) = if qos2 {
+                let (tx, notice) = PublishNoticeTx::new();
+                let (packet, _) = eventloop
+                    .state
+                    .handle_outgoing_packet_with_notice(
+                        Request::Publish(Publish::new("s", QoS::ExactlyOnce, Vec::new(), None)),
+                        Some(TrackedNoticeTx::Publish(tx)),
+                    )
+                    .unwrap();
+                let Some(Packet::Publish(publish)) = packet else {
+                    panic!("expected outgoing publish")
+                };
+                completion = Some(notice);
+                eventloop.state.events.clear();
+                let [hi, lo] = publish.pkid.to_be_bytes();
+                (vec![0x50, 2, hi, lo], publish.pkid)
+            } else {
+                ([0x32, 6, 0, 1, b'a', 0, 7, 0].to_vec(), 7)
+            };
+            let (socket, mut peer) = tokio::io::duplex(8);
+            let mut network = Network::new(socket, None);
+            // Fill the transport, then leave a frame buffered. Sending either
+            // the request or the reply must wait for the peer to read first.
+            for _ in 0..4 {
+                network.write(Packet::PingReq).await.unwrap();
+                network.flush().await.unwrap();
+            }
+            network.write(Packet::PingReq).await.unwrap();
+            network.set_backpressure_boundary(1);
+            eventloop.network = Some(network);
+            peer.write_all(&incoming).await.unwrap();
+            if !ready_timer {
+                request_tx
+                    .try_send(RequestEnvelope::plain(Request::Publish(Publish::new(
+                        "q",
+                        QoS::AtMostOnce,
+                        Vec::new(),
+                        None,
+                    ))))
+                    .unwrap();
+            }
+
+            let first = {
+                let polling = eventloop.select();
+                tokio::pin!(polling);
+                // Keep the future alive. A ready application event here means
+                // arbitration cancelled a started batch and lost its reply.
+                assert!(
+                    polling.as_mut().now_or_never().is_none(),
+                    "event returned before its response could be written"
+                );
+                let mut buffered = [0; 8];
+                peer.read_exact(&mut buffered).await.unwrap();
+                assert_eq!(buffered, [0xc0, 0, 0xc0, 0, 0xc0, 0, 0xc0, 0]);
+                polling.await.unwrap()
+            };
+            assert_eq!(read_packet_bytes(&mut peer).await, [0xc0, 0]);
+            let competing_event = Event::Outgoing(if ready_timer {
+                Outgoing::PingReq
+            } else {
+                Outgoing::Publish(0)
+            });
+            let competing_header = if ready_timer { 0xc0 } else { 0x30 };
+            let incoming_event = if first == competing_event {
+                assert_eq!(read_packet_bytes(&mut peer).await[0], competing_header);
+                eventloop.select().await.unwrap()
+            } else {
+                first
+            };
+            if qos2 {
+                assert!(
+                    matches!(incoming_event, Event::Incoming(Packet::PubRec(packet)) if packet.pkid == pkid)
+                );
+            } else {
+                assert!(
+                    matches!(incoming_event, Event::Incoming(Packet::Publish(packet)) if packet.pkid == pkid)
+                );
+            }
+            let [hi, lo] = pkid.to_be_bytes();
+            assert_eq!(
+                read_packet_bytes(&mut peer).await,
+                [if qos2 { 0x62 } else { 0x40 }, 2, hi, lo]
+            );
+            assert_eq!(
+                eventloop.select().await.unwrap(),
+                Event::Outgoing(if qos2 {
+                    Outgoing::PubRel(pkid)
+                } else {
+                    Outgoing::PubAck(pkid)
+                })
+            );
+            if let Some(completion) = completion {
+                peer.write_all(&[0x70, 2, hi, lo]).await.unwrap();
+                loop {
+                    match eventloop.select().await.unwrap() {
+                        Event::Incoming(Packet::PubComp(packet)) => {
+                            assert_eq!(packet.pkid, pkid);
+                            break;
+                        }
+                        event if event == competing_event => {
+                            assert_eq!(read_packet_bytes(&mut peer).await[0], competing_header);
+                        }
+                        other => panic!("unexpected event: {other:?}"),
+                    }
+                }
+                let result = time::timeout(Duration::from_secs(1), completion.wait_async())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(matches!(result, PublishResult::Qos2Completed(_)));
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_request_cannot_cancel_a_puback_under_backpressure() {
+        assert_response_survives_arbitration_under_backpressure(false, false).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_request_cannot_cancel_a_pubrel_under_backpressure() {
+        assert_response_survives_arbitration_under_backpressure(true, false).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_timer_cannot_cancel_a_puback_under_backpressure() {
+        assert_response_survives_arbitration_under_backpressure(false, true).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_timer_cannot_cancel_a_pubrel_under_backpressure() {
+        assert_response_survives_arbitration_under_backpressure(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn keepalive_handler_delivers_scanned_publishes_before_failure() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for close_peer in [false, true] {
+            let mut options = MqttOptions::new("ping-response", "localhost");
+            options.set_keep_alive(1).set_read_batch_size(1);
+            let mut eventloop = EventLoop::new(options, 1);
+            let (socket, mut peer) = tokio::io::duplex(1024);
+            eventloop.network = Some(Network::new(socket, None));
+            eventloop.handle_keepalive_ping().await.unwrap();
+            peer.read_exact(&mut [0; 2]).await.unwrap();
+            for pkid in 1..=3 {
+                let mut packet = [0x32, 6, 0, 1, b'a', 0, 7, 0].to_vec();
+                packet[6] = pkid;
+                peer.write_all(&packet).await.unwrap();
+            }
+            if close_peer {
+                peer.shutdown().await.unwrap();
+            }
+
+            let first = eventloop.handle_keepalive_ping().await.unwrap();
+            assert!(
+                matches!(first, Event::Incoming(Packet::Publish(publish)) if publish.pkid == 1)
+            );
+            assert!(eventloop.network.is_some());
+            // All three publishes have already been acknowledged on the wire.
+            let mut acks = [0; 12];
+            peer.read_exact(&mut acks).await.unwrap();
+            assert_eq!(acks, [0x40, 2, 0, 1, 0x40, 2, 0, 2, 0x40, 2, 0, 3]);
+            if !close_peer {
+                // This late response must not restart scanning or cancel the
+                // latched failure while we deliver the committed events.
+                peer.write_all(&[0xd0, 0]).await.unwrap();
+            }
+            for pkid in 1..=3 {
+                if pkid != 1 {
+                    assert!(
+                        matches!(eventloop.poll().await.unwrap(), Event::Incoming(Packet::Publish(publish)) if publish.pkid == pkid)
+                    );
+                }
+                assert_eq!(
+                    eventloop.poll().await.unwrap(),
+                    Event::Outgoing(Outgoing::PubAck(pkid))
+                );
+                assert!(eventloop.network.is_some());
+            }
+            let error = eventloop.poll().await.unwrap_err();
+            if close_peer {
+                assert!(matches!(
+                    error,
+                    ConnectionError::MqttState(StateError::ConnectionAborted)
+                ));
+            } else {
+                assert!(matches!(
+                    error,
+                    ConnectionError::MqttState(StateError::AwaitPingResp)
+                ));
+            }
+            assert!(eventloop.network.is_none());
+            assert!(eventloop.state.events.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn keepalive_handler_consumes_ready_pingresp_before_failing() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut options = MqttOptions::new("ping-response", "localhost");
+        options.set_keep_alive(1);
+        let mut eventloop = EventLoop::new(options, 1);
+        let (socket, mut peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(socket, None));
+        assert_eq!(
+            eventloop.handle_keepalive_ping().await.unwrap(),
+            Event::Outgoing(Outgoing::PingReq)
+        );
+        let mut ping = [0; 2];
+        peer.read_exact(&mut ping).await.unwrap();
+        assert_eq!(ping, [0xc0, 0]);
+        peer.write_all(&[0xd0, 0]).await.unwrap();
+        assert_eq!(
+            eventloop.handle_keepalive_ping().await.unwrap(),
+            Event::Incoming(Packet::PingResp)
+        );
+        assert!(!eventloop.state.await_pingresp());
+    }
+
+    #[tokio::test]
+    async fn keepalive_handler_completes_publish_notice_before_ready_pingresp() {
+        use futures_util::FutureExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut options = MqttOptions::new("ping-response", "localhost");
+        options.set_keep_alive(1).set_read_batch_size(1);
+        let mut eventloop = EventLoop::new(options, 1);
+        let (socket, mut peer) = tokio::io::duplex(1024);
+        eventloop.network = Some(Network::new(socket, None));
+        let (tx, notice) = PublishNoticeTx::new();
+        let (packet, _) = eventloop
+            .state
+            .handle_outgoing_packet_with_notice(
+                Request::Publish(Publish::new("a", QoS::AtLeastOnce, vec![1], None)),
+                Some(TrackedNoticeTx::Publish(tx)),
+            )
+            .unwrap();
+        let Some(Packet::Publish(publish)) = packet else {
+            panic!("expected outgoing publish")
+        };
+        eventloop.state.events.clear();
+        eventloop.handle_keepalive_ping().await.unwrap();
+        peer.read_exact(&mut [0; 2]).await.unwrap();
+        let [hi, lo] = publish.pkid.to_be_bytes();
+        peer.write_all(&[0x40, 2, hi, lo, 0xd0, 0]).await.unwrap();
+
+        assert!(matches!(
+            eventloop.handle_keepalive_ping().await.unwrap(),
+            Event::Incoming(Packet::PubAck(_))
+        ));
+        assert!(matches!(
+            notice.wait_async().now_or_never(),
+            Some(Ok(PublishResult::Qos1(_)))
+        ));
+        assert_eq!(
+            eventloop.state.events.pop_front(),
+            Some(Event::Incoming(Packet::PingResp))
+        );
+        assert!(!eventloop.state.await_pingresp());
+    }
 
     // These sizes are the pre-budget x86-64 layouts. Even an untracked request carries the
     // inline notice storage, so growing it would penalize feature-off clients.
@@ -7859,9 +8446,30 @@ mod tests {
         assert_eq!(disconnect, Event::Outgoing(Outgoing::Disconnect));
     }
 
+    #[tokio::test]
+    async fn closing_request_sources_wakes_an_idle_connected_poll() {
+        let mut options = MqttOptions::new("closed-idle-client", "localhost");
+        options.set_keep_alive(0);
+        let (mut eventloop, requests, control, immediate) =
+            EventLoop::new_for_async_client_with_capacity(
+                options,
+                RequestChannelCapacity::Bounded(1),
+            );
+        let (socket, _peer) = tokio::io::duplex(64);
+        eventloop.network = Some(Network::new(socket, Some(64)));
+        let polling = eventloop.select();
+        tokio::pin!(polling);
+        assert!(polling.as_mut().now_or_never().is_none());
+        drop((requests, control, immediate));
+        let error = time::timeout(Duration::from_secs(1), polling)
+            .await
+            .expect("closing request sources must wake arbitration")
+            .unwrap_err();
+        assert!(matches!(error, ConnectionError::RequestsDone));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn finite_request_flood_eventually_allows_ready_network_read() {
-        const REQUEST_COUNT: usize = 1_024;
+    async fn sustained_request_flood_allows_ready_network_read() {
         const CHANNEL_CAPACITY: usize = 10;
 
         let mut options = MqttOptions::new("test-client", "localhost");
@@ -7883,16 +8491,6 @@ mod tests {
                 ))))
                 .unwrap();
         }
-        let producer = tokio::spawn(async move {
-            for _ in CHANNEL_CAPACITY..REQUEST_COUNT {
-                request_tx
-                    .send_async(RequestEnvelope::plain(Request::Publish(publish(
-                        QoS::AtMostOnce,
-                    ))))
-                    .await
-                    .unwrap();
-            }
-        });
         peer.write_all(&[0xD0, 0x00]).await.unwrap();
         let drain = tokio::spawn(async move {
             let mut bytes = [0; 4096];
@@ -7906,19 +8504,25 @@ mod tests {
                 .expect("request flood should make finite progress")
                 .expect("event loop should process request flood");
             match event {
-                Event::Outgoing(Outgoing::Publish(0)) => outgoing_before_read += 1,
+                Event::Outgoing(Outgoing::Publish(0)) => {
+                    outgoing_before_read += 1;
+                    assert!(
+                        outgoing_before_read <= usize::from(MAX_REQUEST_BURST),
+                        "ready network read was starved"
+                    );
+                    // Refill every consumed request so success cannot depend on exhausting
+                    // a finite producer. Both sources remain ready until the read wins.
+                    request_tx
+                        .try_send(RequestEnvelope::plain(Request::Publish(publish(
+                            QoS::AtMostOnce,
+                        ))))
+                        .unwrap();
+                }
                 Event::Incoming(Packet::PingResp) => break,
                 event => panic!("unexpected event during request flood: {event:?}"),
             }
         }
         drain.abort();
-        producer.abort();
-
-        assert!(
-            (CHANNEL_CAPACITY..=REQUEST_COUNT).contains(&outgoing_before_read),
-            "ready network read should make progress during or immediately after the finite request flood; \
-             observed {outgoing_before_read} requests"
-        );
     }
 
     #[tokio::test]

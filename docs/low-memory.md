@@ -21,6 +21,10 @@ each client, prints its result and peak, and removes its containers and temporar
 Docker network. Detailed logs and cgroup counters are written below
 `target/low-memory/results/`.
 
+The builder pins the Rust image by digest and musl to the 1.2.5 release series.
+Alpine package revisions may advance within that series because the branch
+repositories replace older revisions with security and packaging updates.
+
 The runner refuses to produce a pass when it cannot verify cgroup v2,
 `memory.max`, `memory.swap.max`, or `memory.peak`. An alternate limit can be
 used for diagnosis, without changing the official result:

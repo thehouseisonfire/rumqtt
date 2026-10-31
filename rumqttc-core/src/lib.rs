@@ -344,10 +344,12 @@ impl NetworkOptions {
 
     /// Set connection timeout in whole seconds.
     ///
-    /// The effect depends on the protocol crate: the v4 event loop uses it
-    /// as the connect and network flush deadline, while the v5 event loop
-    /// uses `MqttOptions::set_connect_timeout` for the connect deadline and
-    /// only forwards these options to the socket connector.
+    /// Both clients use this limit for feeding and flushing protocol responses.
+    /// After keepalive expiry, it also bounds draining ready packets across polls
+    /// while looking for a buffered PINGRESP. Incoming traffic does not renew that budget.
+    /// The v4 event loop also uses it for connection establishment and outbound
+    /// request flushing. The v5 event loop uses `MqttOptions::set_connect_timeout`
+    /// for connection establishment and forwards these options to the socket connector.
     pub const fn set_connection_timeout(&mut self, timeout: u64) -> &mut Self {
         self.conn_timeout = timeout;
         self

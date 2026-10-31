@@ -41,11 +41,11 @@ static void exercise(rumqttc_protocol_t protocol, int shared) {
     REQUIRE(data != NULL);
     memset(data, 42, 256);
     /* ERROR_OUT_FAILURE: rumqttc_publish_buffer_create */
-    REQUIRE(rumqttc_publish_buffer_create(native_bytes(data, 256), NULL, &calls, &buffer, NULL) ==
+    REQUIRE(rumqttc_publish_buffer_create(native_bytes(data, 256), NULL, (void *)&calls, &buffer, NULL) ==
             RUMQTTC_INVALID_ARGUMENT);
     REQUIRE(buffer == NULL && atomic_load(&calls) == 0);
     /* ERROR_OUT_SUCCESS: rumqttc_publish_buffer_create */
-    CHECK(rumqttc_publish_buffer_create(native_bytes(data, 256), reclaim, &calls, &buffer, NULL));
+    CHECK(rumqttc_publish_buffer_create(native_bytes(data, 256), reclaim, (void *)&calls, &buffer, NULL));
     /* ERROR_OUT_FAILURE: rumqttc_publish_buffer_retain */
     REQUIRE(rumqttc_publish_buffer_retain(NULL, &retained, NULL) == RUMQTTC_INVALID_ARGUMENT);
     /* ERROR_OUT_SUCCESS: rumqttc_publish_buffer_retain */

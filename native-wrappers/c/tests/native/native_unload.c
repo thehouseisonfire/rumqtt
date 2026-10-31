@@ -1,6 +1,10 @@
 #if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
 #endif
+#if defined(__APPLE__)
+/* Darwin exposes mkdtemp through its extension namespace. */
+#define _DARWIN_C_SOURCE
+#endif
 #include "rumqttc.h"
 
 #include <stdatomic.h>

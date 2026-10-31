@@ -2,6 +2,41 @@
 
 ### Changed
 
+- Rust v4/v5: Fairly arbitrate normal requests, incoming packets and keepalive so
+  sustained publish traffic cannot starve broker acknowledgements. Bound request
+  bursts to amortize idle socket probes, and keep ordinary outbound I/O separate
+  from response deadlines to avoid per-publish timeout wrappers. Admit buffered
+  requests without constructing receive futures and create response timers only
+  when writes block. Preserve
+  immediate disconnect and control request priority. Check ready incoming packets
+  before declaring a missing PINGRESP after a scheduling stall, including with
+  ordered shutdown enabled. Deliver events from that scan before surfacing a
+  connection failure so acknowledged incoming publishes survive timeout cleanup.
+  Select on initial frame reads and finish protocol batches after arbitration so
+  write backpressure cannot cause normal requests or keepalive timers to cancel
+  acknowledgements. Bound response feeding and flushing with one
+  `NetworkOptions::connection_timeout` budget in both clients. Expiry closes the
+  transport and reports an I/O `TimedOut` error after delivering committed events
+  and completing collected notices. Restore the previous response deadline when
+  polling is cancelled so an expired budget cannot affect later requests. Probe
+  ready keepalive responses independently of Tokio's cooperative budget so a
+  scheduling yield cannot be mistaken for a missing PINGRESP.
+  Resume keepalive scans across polls when their packet budget is exhausted,
+  delivering committed events between batches. Share one absolute
+  `connection_timeout` budget across those scans so continuous unrelated traffic
+  cannot indefinitely mask a missing response.
+  On ordered deadline cancellation, close the transport and resolve the shutdown
+  notice immediately while delivering committed incoming events before the final
+  polling error. Preserve event delivery when cancellation interrupts a keepalive
+  scan or an ordinary read batch after an acknowledgement was flushed.
+  Enforce expired ordered deadlines before delivering events deferred by an
+  earlier read failure, closing the transport and resolving the shutdown notice
+  on that poll while retaining the queued notifications and acknowledgements.
+- Wrapper-core: Cancel synchronous TLS callback relay waits during deferred
+  handshake teardown, including callbacks queued as cancellation begins, so
+  driver joins cannot deadlock. Fix native C fixtures and the redirect example
+  to compile with strict Darwin and MSVC warnings.
+
 - Wrapper validation: Keep atomic updates compatible with Rust 1.88 while passing
   Rust 1.99 deprecation checks, and mark terminal result observations as must-use.
   Cache and checksum the Windows Mosquitto installer and retry transient download

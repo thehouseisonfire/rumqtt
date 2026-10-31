@@ -2,7 +2,8 @@
 
 FROM rust:1.88.0-alpine3.21@sha256:54e937b1530d435dc83b94f5a61ef08365127f2fefbb3789712c5d6f55bbb58c AS builder
 WORKDIR /src
-RUN apk add --no-cache musl=1.2.5-r11 musl-dev=1.2.5-r11
+# Keep musl 1.2.5 while allowing Alpine security/package revision updates.
+RUN apk add --no-cache 'musl~1.2.5' 'musl-dev~1.2.5'
 COPY . .
 RUN cargo build --locked --release -p low-memory-acceptance \
     --bin low-memory-v4 \

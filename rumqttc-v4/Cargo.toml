@@ -75,6 +75,7 @@ fixedbitset = "0.5.7"
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
+tokio = { version = "1.40", features = ["test-util"] }
 wincode = { version = "0.4.9", features = ["derive"] }
 color-backtrace = "0.7.2"
 matches = "0.1"
