@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::FutureExt;
 
-use crate::transport::{HostFuture, OwnedStream};
+use crate::transport::{HostFuture, OwnedStream, discard_panic_payload};
 use crate::{
     CommonConfig, NetworkConfig, NetworkHandling, ProtocolVersion, TransportConnectorConfig,
     TransportFailure, TransportMode, TransportRequest,
@@ -73,7 +73,7 @@ async fn connect(
     let connection = match result {
         Err(_) => return Err(TransportFailure::Timeout.into_io()),
         Ok(Err(payload)) => {
-            std::mem::forget(payload);
+            discard_panic_payload(payload);
             return Err(TransportFailure::Panic.into_io());
         }
         Ok(Ok(result)) => result.map_err(TransportFailure::into_io)?,
@@ -260,6 +260,36 @@ mod tests {
             // Native options and their connector closures remain alive until here.
             drop((v4, v5));
         }
+    }
+
+    #[tokio::test]
+    async fn synchronous_connector_panics_are_contained() {
+        struct PanickingConnector;
+        impl crate::TransportConnector for PanickingConnector {
+            fn connect(&self, _: TransportRequest) -> TransportFuture {
+                std::panic::panic_any(String::from("host connector failed"));
+            }
+        }
+        let result = connect(
+            TransportConnectorConfig {
+                connector: Arc::new(PanickingConnector),
+                mode: TransportMode::Base,
+            },
+            TransportRequest {
+                protocol: ProtocolVersion::V4,
+                client_id: "panic".into(),
+                target: "memory:1883".into(),
+                generation: 1,
+                deadline: Instant::now() + Duration::from_secs(5),
+                network: NetworkConfig::default(),
+                mode: TransportMode::Base,
+            },
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("connector panic must fail the attempt");
+        };
+        assert_eq!(failure(&error), Some(TransportFailure::Panic));
     }
 
     #[tokio::test]

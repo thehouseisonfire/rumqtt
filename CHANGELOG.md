@@ -2,6 +2,12 @@
 
 ### Changed
 
+- Wrapper-core: Reclaim string panic payloads caught at custom transport boundaries
+  while keeping opaque host payload destructors outside driver teardown.
+- Wrapper validation: Load the Windows certificate provider explicitly in each
+  platform trust fixture command, including preflight checks and cleanup. Gate
+  the native integration overflow burst on observed subscription completion and
+  wait for transport closure before draining events.
 - Wrapper-core: Deliver queued events before terminal driver status even when a
   blocking receiver selects the terminal channel concurrently with event delivery.
 - Wrapper validation: Handle expected TLS handshake cancellation, portable socket

@@ -450,6 +450,26 @@ class PlatformTrustTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows certificate provider")
+    def test_certificate_drive_is_available_in_a_fresh_windows_session(self):
+        state = {"root": "unused.cer", "thumbprint": "UNUSED"}
+        result = platform_trust.powershell(
+            r"if (-not (Test-Path Cert:\CurrentUser\Root)) { throw 'certificate drive unavailable' }; 'ready'",
+            state,
+        )
+        self.assertEqual(result.strip(), "ready")
+
+    def test_powershell_loads_certificate_provider_before_store_access(self):
+        state = {"root": "fixture.cer", "thumbprint": "FIXTURE"}
+        script = r"Test-Path Cert:\CurrentUser\Root"
+        with patch.object(platform_trust, "command", return_value="True") as command:
+            self.assertEqual(platform_trust.powershell(script, state), "True")
+        arguments, environment = command.call_args.args
+        self.assertIn("-NoProfile", arguments)
+        self.assertIn("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; " + script, arguments[-1])
+        self.assertEqual(environment["RUMQTTC_PLATFORM_CA"], "fixture.cer")
+        self.assertEqual(environment["RUMQTTC_PLATFORM_THUMBPRINT"], "FIXTURE")
+
     @unittest.skipIf(os.name == "nt", "POSIX process groups")
     def test_sudo_timeout_kills_privileged_group_before_returning(self):
         arguments = ["sudo", "-n", "security", "remove-trusted-cert"]

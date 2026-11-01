@@ -70,9 +70,12 @@ def powershell(script: str, state: dict[str, object]) -> str:
     environment = os.environ.copy()
     environment["RUMQTTC_PLATFORM_CA"] = str(state["root"])
     environment["RUMQTTC_PLATFORM_THUMBPRINT"] = str(state["thumbprint"])
+    # Every command starts a fresh -NoProfile session. PKI's Import-Certificate
+    # does not load the Security module that provides the Cert: drive.
+    prelude = "$ErrorActionPreference = 'Stop'; Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; "
     try:
         return command(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + script],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", prelude + script],
             environment,
         )
     except subprocess.CalledProcessError as error:

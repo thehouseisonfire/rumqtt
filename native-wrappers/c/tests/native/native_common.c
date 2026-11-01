@@ -205,11 +205,26 @@ rumqttc_event_t *native_wait_event(rumqttc_client_t *client,
   }
 }
 
-void native_wait_completion(rumqttc_completion_t *completion,
-                            rumqttc_completion_kind_t expected) {
+void native_wait_completion_at(rumqttc_completion_t *completion,
+                              rumqttc_completion_kind_t expected,
+                              const char *file, int line) {
   rumqttc_completion_kind_t kind = 0;
-  CHECK(
-      rumqttc_completion_wait_timeout_ms(completion, NATIVE_DEADLINE_MS, NULL));
+  rumqttc_error_t *error = NULL;
+  rumqttc_status_t status =
+      rumqttc_completion_wait_timeout_ms(completion, NATIVE_DEADLINE_MS, &error);
+  if (status != RUMQTTC_OK) {
+    rumqttc_error_kind_t error_kind = RUMQTTC_ERROR_NONE;
+    rumqttc_string_view_t code = {NULL, 0};
+    if (error != NULL) {
+      CHECK(rumqttc_error_kind(error, &error_kind));
+      CHECK(rumqttc_error_code(error, &code));
+    }
+    fprintf(stderr, "completion kind %u failed: error kind %u, code %.*s\n",
+            expected, error_kind, (int)code.len, code.data != NULL ? code.data : "");
+    rumqttc_error_destroy(error);
+    native_fail(file, line, "rumqttc_completion_wait_timeout_ms", status);
+  }
+  rumqttc_error_destroy(error);
   CHECK(rumqttc_completion_kind(completion, &kind, NULL));
   REQUIRE(kind == expected);
 }

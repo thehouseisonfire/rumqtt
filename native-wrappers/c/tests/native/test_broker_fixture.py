@@ -4,10 +4,38 @@ import ssl
 import unittest
 from unittest.mock import MagicMock, patch
 
-from broker_fixture import Broker
+from broker_fixture import Broker, Connection
 
 
 class BrokerFailureTests(unittest.TestCase):
+    def test_integration_overflow_waits_for_subscription_observation_and_socket_close(self):
+        broker = Broker()
+        self.addCleanup(broker.listener.close)
+        stream = MagicMock()
+        stream.recv.return_value = b""
+        connection = Connection(stream, 4, b"native-overflow")
+        topic = b"rumqttc/native/overflow"
+        body = b"\x00\x01" + len(topic).to_bytes(2, "big") + topic + b"\x00"
+
+        def ready(name):
+            self.assertEqual(name, "integration-overflow-ready")
+            # Only SUBACK is sent before the C consumer observes completion.
+            self.assertEqual(stream.sendall.call_count, 1)
+            stream.recv.assert_not_called()
+
+        def closed(name):
+            self.assertEqual(name, "integration-overflow-closed")
+            self.assertEqual(stream.sendall.call_count, 9)
+            stream.recv.assert_called_once_with(1)
+
+        with (
+            patch.object(broker, "barrier", side_effect=ready) as barrier,
+            patch.object(broker, "signal", side_effect=closed) as signal,
+        ):
+            broker.handle_subscribe(connection, body)
+        barrier.assert_called_once_with("integration-overflow-ready")
+        signal.assert_called_once_with("integration-overflow-closed")
+
     def serve_error(self, error, tls):
         broker = Broker(ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER) if tls else None)
         self.addCleanup(broker.listener.close)

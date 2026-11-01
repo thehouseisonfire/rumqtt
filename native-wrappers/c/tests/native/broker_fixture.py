@@ -1746,8 +1746,20 @@ class Broker:
                 for index in range(128):
                     connection.publish(topic, index.to_bytes(2, "big"), qos=1)
             elif topic == b"rumqttc/native/overflow":
+                if connection.client_id == b"native-overflow":
+                    self.barrier("integration-overflow-ready")
                 for index in range(8):
                     connection.publish(topic, bytes([index, 0]), qos=0)
+                if connection.client_id == b"native-overflow":
+                    # Socket closure proves the event delivery deadline expired
+                    # while the C consumer kept its one-slot queue full.
+                    try:
+                        remaining = connection.stream.recv(1)
+                    except ConnectionResetError:
+                        remaining = b""
+                    if remaining:
+                        raise AssertionError("overflow client did not close its transport")
+                    self.signal("integration-overflow-closed")
             elif topic == b"rumqttc/native/automatic/qos1":
                 connection.publish(topic, b"automatic-qos1", qos=1)
             elif topic == b"rumqttc/native/automatic/qos2":
