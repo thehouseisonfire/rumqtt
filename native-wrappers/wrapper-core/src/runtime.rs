@@ -328,12 +328,9 @@ impl EventConsumer {
                 Err(_) => self.recv_terminal_async().await,
             },
             terminal = self.terminal.recv_async() => {
-                match terminal {
-                    Ok(status) => Ok(Some(self.deliver_terminal(status))),
-                    Err(_) => {
-                        self.mark_terminal_seen();
-                        Ok(None)
-                    }
+                if let Ok(status) = terminal { Ok(Some(self.deliver_terminal(status))) } else {
+                    self.mark_terminal_seen();
+                    Ok(None)
                 }
             }
         }
@@ -371,12 +368,9 @@ impl EventConsumer {
         if self.terminal_seen {
             return Ok(None);
         }
-        match self.terminal.recv_async().await {
-            Ok(status) => Ok(Some(self.deliver_terminal(status))),
-            Err(_) => {
-                self.mark_terminal_seen();
-                Ok(None)
-            }
+        if let Ok(status) = self.terminal.recv_async().await { Ok(Some(self.deliver_terminal(status))) } else {
+            self.mark_terminal_seen();
+            Ok(None)
         }
     }
 
