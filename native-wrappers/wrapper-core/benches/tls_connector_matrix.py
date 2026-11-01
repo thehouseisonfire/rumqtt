@@ -28,9 +28,21 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         parser.error("output directory must be empty to preserve previous evidence")
-    build = ["cargo", "test", "--locked", "--release", "--manifest-path",
-             str(root / "native-wrappers/Cargo.toml"), "-p", "rumqttc-wrapper-core-next",
-             "--features", "tls-connector-proof", "--lib", "--no-run", "--message-format=json"]
+    build = [
+        "cargo",
+        "test",
+        "--locked",
+        "--release",
+        "--manifest-path",
+        str(root / "native-wrappers/Cargo.toml"),
+        "-p",
+        "rumqttc-wrapper-core-next",
+        "--features",
+        "tls-connector-proof",
+        "--lib",
+        "--no-run",
+        "--message-format=json",
+    ]
     result = subprocess.run(build, cwd=root, stdout=subprocess.PIPE, text=True, check=True)
     executable = None
     for line in result.stdout.splitlines():
@@ -39,11 +51,15 @@ def main() -> int:
             executable = item["executable"]
     if executable is None:
         raise SystemExit("Cargo did not report a test executable")
-    sources = ["native-wrappers/wrapper-core/src/backend/tls_connector_proof.rs",
-               "native-wrappers/wrapper-core/tests/fixtures/tls_connector.c",
-               "native-wrappers/wrapper-core/build.rs", "native-wrappers/wrapper-core/Cargo.toml",
-               "native-wrappers/Cargo.lock", str(pathlib.Path(__file__).resolve().relative_to(root)),
-               "native-wrappers/wrapper-core/benches/summarize_tls_connector.py"]
+    sources = [
+        "native-wrappers/wrapper-core/src/backend/tls_connector_proof.rs",
+        "native-wrappers/wrapper-core/tests/fixtures/tls_connector.c",
+        "native-wrappers/wrapper-core/build.rs",
+        "native-wrappers/wrapper-core/Cargo.toml",
+        "native-wrappers/Cargo.lock",
+        str(pathlib.Path(__file__).resolve().relative_to(root)),
+        "native-wrappers/wrapper-core/benches/summarize_tls_connector.py",
+    ]
     metadata = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "platform": platform.platform(),
@@ -61,10 +77,15 @@ def main() -> int:
         "runs": [],
     }
     (output / "environment.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    command = [executable, "--exact", "backend::tls_connector_proof::measure_external_tls_delivery_gate",
-               "--ignored", "--nocapture"]
+    command = [
+        executable,
+        "--exact",
+        "backend::tls_connector_proof::measure_external_tls_delivery_gate",
+        "--ignored",
+        "--nocapture",
+    ]
     passed = True
-    for instrumented in ([False, True] if args.allocations else [False]):
+    for instrumented in [False, True] if args.allocations else [False]:
         for mode in ("threaded", "inline"):
             label = mode + ("-allocations" if instrumented else "")
             environment = os.environ.copy()
@@ -77,16 +98,23 @@ def main() -> int:
             print(f"Measuring {label}", flush=True)
             with (output / f"{label}.txt").open("w") as log:
                 subprocess.run(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
-            summary = [sys.executable, str(pathlib.Path(__file__).with_name("summarize_tls_connector.py")),
-                       str(output / f"{label}.txt"), "--output", str(output / f"{label}.csv"),
-                       "--repetitions", str(1 if instrumented else args.repetitions)]
+            summary = [
+                sys.executable,
+                str(pathlib.Path(__file__).with_name("summarize_tls_connector.py")),
+                str(output / f"{label}.txt"),
+                "--output",
+                str(output / f"{label}.csv"),
+                "--repetitions",
+                str(1 if instrumented else args.repetitions),
+            ]
             if instrumented:
                 summary.append("--allocation-samples")
             status = subprocess.run(summary, cwd=root, check=False).returncode
             if status not in (0, 1):
                 raise SystemExit("invalid or incomplete measurement output")
-            metadata["runs"].append({"mode": mode, "instrumented": instrumented,
-                                     "gate_passed": None if instrumented else status == 0})
+            metadata["runs"].append(
+                {"mode": mode, "instrumented": instrumented, "gate_passed": None if instrumented else status == 0}
+            )
             (output / "environment.json").write_text(json.dumps(metadata, indent=2) + "\n")
             passed &= instrumented or status == 0
     return 0 if passed else 1

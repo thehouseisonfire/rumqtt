@@ -37,9 +37,12 @@ async def until_event(client, wanted):
 async def main():
     mode, count, protocol, qos, scenario = sys.argv[1:]
     count, protocol, qos = int(count), int(protocol), int(qos)
+    if count <= 0:
+        raise ValueError("client count must be positive")
+    client = None
     rounds = int(os.environ.get("RUMQTTC_EXECUTION_ROUNDS", "10"))
     contexts = [
-        _native._BenchmarkExecutionContext(count)
+        getattr(_native, "_BenchmarkExecutionContext")(count)
         for _ in range(0 if mode == "dedicated" else 2 if mode == "shards" else 1)
     ]
     transport_name = os.environ.get("RUMQTTC_EXECUTION_TRANSPORT", "tcp")
@@ -47,7 +50,7 @@ async def main():
     tls = (
         TlsOptions(ca=Path(os.environ["RUMQTTC_EXECUTION_CA"]).read_bytes())
         if transport_name in ["tls", "wss"]
-        else None
+        else TlsOptions()
     )
     transport = {
         "tcp": lambda: TcpTransport(),
@@ -69,7 +72,7 @@ async def main():
             )
         )
         if contexts:
-            client._native._benchmark_set_execution(contexts[index % len(contexts)])
+            getattr(client._native, "_benchmark_set_execution")(contexts[index % len(contexts)])
         try:
             await client.connect()
         except Exception as error:

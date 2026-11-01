@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import psutil
 
@@ -95,7 +96,8 @@ def run_case(
     environment["RUMQTTC_EXECUTION_ROUNDS"] = str(args.rounds)
     environment["RUMQTTC_EXECUTION_TRANSPORT"] = transport
     child = broker = None
-    result = {
+    reader = None
+    result: dict[str, Any] = {
         "case": label,
         "consumer": consumer,
         "mode": mode,
@@ -122,6 +124,7 @@ def run_case(
         if transport in ["tls", "wss"]:
             fixture_path = WORKSPACE / "c/tests/native/broker_fixture.py"
             spec = importlib.util.spec_from_file_location("execution_tls_fixture", fixture_path)
+            assert spec is not None and spec.loader is not None
             fixture = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = fixture
             sys.path.insert(0, str(fixture_path.parent))
@@ -146,6 +149,7 @@ def run_case(
                 binary = args.shards_binary if mode == "shards" else args.binary
                 command = [str(binary.resolve()), mode, str(count), str(protocol), str(qos), scenario]
                 if consumer == "python":
+                    assert stage is not None
                     environment["PYTHONPATH"] = str(stage[mode == "shards"])
                     command = [
                         sys.executable,
@@ -160,10 +164,12 @@ def run_case(
                 child = subprocess.Popen(
                     command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=child_log, text=True, env=environment
                 )
+                assert child.stdout is not None and child.stdin is not None
+                stdout = child.stdout
                 output = queue.Queue()
 
                 def read_output():
-                    for line in child.stdout:
+                    for line in stdout:
                         output.put(line)
                     output.put(None)
 
@@ -220,7 +226,7 @@ def run_case(
             finally:
                 if child is not None:
                     stop(child)
-                    if "reader" in locals():
+                    if reader is not None:
                         reader.join(timeout=10)
                 if broker is not None:
                     stop(broker)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Summarize timing repetitions separately from instrumented allocation samples."""
+
 from __future__ import annotations
 
 import argparse
