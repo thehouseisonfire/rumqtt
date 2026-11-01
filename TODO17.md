@@ -1,181 +1,462 @@
-# Python Wrapper Feature Parity
+# Python Wrapper: Implementation and Validation Plan
 
-## Goal and source of truth
+Status: planned. Existing Python features are foundations, not evidence that
+the remaining bindings or their acceptance tests are complete.
 
-Expose the supported `rumqttc-wrapper-core` capabilities through the typed
-`rumqttc-next` CPython `asyncio` package. Use
-`native-wrappers/wrapper-core/PARITY.md` for the current supported and
-intentionally omitted decisions. This plan concerns the Python API, its
-private PyO3 extension, and its packaging. It does not require a C ABI.
+## Scope and sources
 
-Keep the existing `MqttClient`, `MqttClientOptions`, `events()` iterator,
-tracked operations, and `async with` behavior. The Python facade remains
-asynchronous and bound to one `asyncio` loop. All new settings are immutable
-typed values copied into wrapper-core before native startup. Reject protocol
-mismatches and unsupported build/platform capabilities before opening a socket.
-Do not bypass wrapper-core by constructing `rumqttc-v4-next` or
-`rumqttc-v5-next` values. If a needed contract is missing, establish and test
-it in wrapper-core, then update its parity matrix before binding it.
+Deliver the C wrapper's completed feature scope through the typed `rumqttc-next`
+CPython package, using Python values, `asyncio`, and the private PyO3 extension.
+The reference is the inclusive `b9060db0` through `7c16d43e` range, including
+shared-core fixes, fixtures, packaging, and CI. The original `TODO16.md` alone
+did not describe the resulting scope.
 
-## Shared Python API rules
+Use these sources together:
 
-- Add focused frozen dataclasses and enums in `native-wrappers/python/python/rumqttc/_types.py`;
-  use optional nested records in `MqttClientOptions` for larger feature
-  families. Keep existing constructor defaults and names working. Preserve
-  `None` versus present-empty/zero where MQTT distinguishes them, and preserve
-  ordered, duplicate User Properties.
-- Validate Python types, MQTT UTF-8 and binary lengths, integer ranges,
-  finite durations, protocol selectors, and mutually exclusive choices before
-  starting the driver. Reject `bool` where an integer is required. Use seconds
-  for public durations, as the current Python API does. Copy mutable byte
-  buffers and sequences before admission or retention.
-- Extend the private PyO3 bridge with typed conversion where practical. If an
-  internal JSON message remains, make it versioned and lossless for bytes,
-  ordered properties, optional values, and structured errors; never expose it
-  as the public API. Preserve Python exception classes and delivery status.
-- Public callback protocols use `async def` when host work may wait. Dispatch
-  from the native driver to the client's owning `asyncio` loop without holding
-  core or Python locks. Give each invocation one completion, bounded pending
-  work, a timeout/cancellation path, and an exactly-once terminal result.
-  Specify whether callbacks can overlap and whether they may call client
-  methods. A cancelled Python waiter does not revoke already admitted MQTT
-  work; callback cancellation follows the core operation's contract.
-- Keep strong references to callback owners until no native invocation can use
-  them. Close, failed start, loop closure, interpreter shutdown, and finalizer
-  abandonment must release them without scheduling onto a dead loop or
-  executing Python code from an unsafe native thread. Document any host work
-  that cannot be interrupted. Never log passwords, private keys, auth data,
-  proxy credentials, cookies, or payloads through exceptions or debug output.
-- Expose a typed capability query for optional compiled features and platform
-  controls. Unsupported selections fail predictably before network access.
+- [Core parity inventory](native-wrappers/wrapper-core/PARITY.md), public core
+  contracts, and [core documentation](native-wrappers/wrapper-core/README.md).
+- [C contracts](native-wrappers/c/README.md), [native fixtures](native-wrappers/c/tests/native/),
+  and [package profiles](native-wrappers/c/tests/package_feature_matrix.py).
+  Inspect these at `7c16d43e` for historical scope; current files include later
+  additions. `git show 7c16d43e^:TODO16.md` retains the final validation record.
+- [Python contract](native-wrappers/python/README.md), facade/extension/tests,
+  and [wrapper CI](.github/workflows/native-wrappers-ci.yml).
 
-## Feature work
+Milestone A comprises PY-BASE and PY-WC-01 through PY-WC-13: equivalent behavior
+and validation for that C range. Milestone B tracks current-core additions below.
+Completing A does not establish complete parity with today's core. Keep supported,
+partial, pending, and intentionally omitted decisions separate. Historical
+omissions must not become claims that supported core features are unavailable.
+
+## Architecture and compatibility
+
+- Preserve `MqttClient`, `MqttClientOptions`, tracked operations, one `events()`
+  consumer, and `async with`. Construction validates/copies; `connect()` starts
+  native work and coalesces first-CONNACK observation. Keep first-use loop binding,
+  early startup-event consumption, close-before-connect behavior, admission
+  permits, and the independent ACK lane.
+- Bind Rust wrapper-core directly. Implement adapters for `SessionStore`,
+  `AsyncAuthenticator`, and `SrvResolver`. Do not route through the C ABI or
+  construct protocol-client objects in the extension. MQTT state, checkpoint
+  encoding, aliases, IDs, deadlines, admission and close remain core/native-owned.
+  Reuse the core/codec fixes already delivered by the C work.
+- Keep `pyo3-async-runtimes` and the production bounded blocking-work design.
+  Follow the [rejected custom-bridge ADR](native-wrappers/python/experiments/explicit_python_bridge/ADR.md).
+  Host callback dispatch is an adapter to the owning loop, not a new executor,
+  per-operation thread, polling loop, or global client-registry redesign.
+- Share Rust helpers where semantics and ownership are language-neutral. Python
+  references, GIL handling, loop scheduling and exception conversion stay in the
+  Python bridge. Establish/test missing core contracts before binding them.
+
+## PY-BASE: values, errors, callbacks, and capabilities
+
+### Public values and conversion
+
+- Extend frozen dataclasses/enums in `_types.py`, callback `Protocol` definitions,
+  exports and validation together. Use snake_case, compatible keyword options,
+  `bytes` outputs and immutable tuples for retained sequences. A frozen record
+  must not retain mutable nested input. Preserve constructors and defaults.
+- Use seconds for public durations. Check finite values, documented zero modes,
+  integer widths, aggregate MQTT lengths, MQTT UTF-8, protocol selectors and
+  exclusive choices. Reject `bool` as an integer/duration. Validate before native
+  allocation/startup where possible, with authoritative core validation as well.
+- Preserve bytes-like input support; snapshot mutable/sliced buffers before
+  suspension or retention. Keep `None` versus present-empty/zero and ordered,
+  duplicate User Properties. Never represent User Properties as a dictionary.
+- Prefer typed native conversion. If private JSON remains, version its shape
+  and test bytes, wide integers, optional fields, ordering and errors. Callables
+  require typed PyO3 registrations; JSON cannot carry their identity/ownership.
+- Redact secret-bearing reprs (`repr=False` or audited custom repr), exceptions,
+  callback exception chains and native output. Include passwords, keys, auth
+  data, headers, checkpoints and payloads. Do not promise zeroization of Python,
+  OS or TLS-library copies.
+
+### Structured errors and results
+
+Record each core-to-Rust-to-Python field mapping. Preserve existing exception
+classes, code/kind, retryability, delivery, operation ID and broker reason. Add
+typed optional store, auth, redirect/resolver failures and `ErrorContext`
+protocol/phase/generation. Absence differs from zero. Caller observation timeout
+must not replace a cached operation result. Messages are not the data contract.
+Later failure domains are tracked in PY-WC-17.
+
+Test local rejection, admitted failure, broker rejection, ambiguity and repeated
+observation after client destruction. Richer results must preserve existing
+coarse completion fields and their meaning. Retained results/events must not
+keep drivers, execution contexts or callback registrations alive through ownership
+cycles; test final release after both normal close and driver failure.
+
+### Callback dispatch and ownership
+
+Implement one bounded foundation before storage/auth/SRV:
+
+1. Own requests and registrations before scheduling onto the client's loop.
+   Invoke Python with the correct interpreter/GIL context and no core lifecycle
+   or admission lock. Never synchronously block a native worker awaiting Python.
+2. Define count/data bounds and overload results. Store/SRV calls serialize per
+   client; shared owners may serve clients concurrently. Auth has one active
+   response per client. Reusing a store object preserves its core owner/lease
+   identity instead of creating an independent lease domain per registration.
+3. Model pending/completed/cancelled calls. Exactly one native result wins.
+   Dropping core observation requests cancellation on a live loop; cancellation
+   is cooperative. Detached work owns its data and late results have no effect.
+   A cancelled save/clear may have committed and must remain crash-consistent.
+4. Cancelling an MQTT waiter never recalls admitted work. Document callback
+   reentry: do not await MQTT completion, close or join that needs the callback
+   to return. Keep callback completion independent of saturated MQTT admission.
+   Permit nonblocking admission where core allows it; independent tasks may be
+   scheduled without awaiting their progress from the active callback.
+5. Retain owners through active invocations; release after quiescence, accounting
+   for Python-held configuration references. Break client/task/registration
+   cycles on driver failure. Finalizers request nonblocking cleanup. Explicit
+   close retains its total budget and cancellation-safe escalation.
+6. Cover failed start, graceful/immediate close, deadline, exception, last-reference
+   drop, loop closure and interpreter shutdown. Do not schedule into dead loops
+   or call Python after interpreter finalization. Consume late task exceptions
+   without printing secrets. Dispatch authority failure notifications once while
+   the loop is live; teardown must not depend on executing them on a dead loop.
+
+Use barriers/subprocess deadlines to test completion/cancellation races,
+never-returning and cancellation-suppressing callbacks, shared owners, reentry,
+GC cycles, owner release and shutdown at every transition. Count native terminal
+results separately from attempts to interrupt host work.
+
+### Loaded-artifact capabilities
+
+Provide a typed query without client startup: protocols, TLS backends/provider
+build, WS, proxy kinds, Unix/platform network controls, custom/system SRV, SCRAM,
+async callbacks and tracing. Later features have separate support indicators.
+Distinguish compiled support, platform availability and broker negotiation.
+Unknown future native flags must not break consumers. Unsupported selections
+fail before socket creation, with no silent fallback.
+
+## Milestone A feature slices
+
+Each slice includes facade, bridge, mapping tests, Python host fixtures,
+documentation and installed-artifact coverage. C fixture names below specify
+behavior to exercise through Python, not substitutes for Python tests.
 
 ### PY-WC-01: Last Will and Testament
 
-Add a `LastWill` value with topic, bytes payload, QoS, retain, and optional
-MQTT 5 will properties. Validate and copy it at client construction; distinguish
-absent properties from present-empty data. Test exact v4/v5 broker-observed
-will packets, graceful close, abrupt termination, and invalid combinations.
+Add `LastWill` and typed v5 Will properties; copy topic/payload/properties at
+construction and reject protocol mismatch. Test exact v4/v5 CONNECT values,
+present-empty fields and overwritten caller buffers. Test independent clients
+with changed/absent Wills: Python immutability replaces C set/replace/clear, but
+ownership/default-restoration outcomes remain required. Use a real broker and
+child process for graceful suppression and abrupt-exit delivery on both protocols
+(`native_wire_options`, `native_will_process`).
 
-### PY-WC-02: Durable session storage
+### PY-WC-02: Durable sessions
 
-Define an async Python store protocol with load, save, and clear; load returns
-an explicit not-found result distinct from failure. Carry protocol/checkpoint
-version metadata and an explicit stable scope. Expose checkpoint size and the
-MQTT 5 broker-session-resume policy. Specify one-active-client-per-key,
-per-key serialization, atomic-save requirements, callback timeout, and close
-behavior. A file adapter may be offered separately; do not make a path option
-the only store interface. Test v4/v5 restart recovery, corrupt and oversized
-checkpoints, cancellation, callback exceptions, and loop shutdown.
+Define an async store `Protocol`: `load(key)` returns opaque bytes or `None` for
+not found; `save(key, checkpoint)` and `clear(key)` return no value. Use a frozen
+key with protocol, explicit stable scope and client ID. Document supported format
+metadata; applications store checkpoints unchanged rather than edit envelopes.
+Expose callback timeout, checkpoint limit and v5 strict/broker-only resume policy.
+Check loaded buffer size before an additional native copy; validate the envelope
+again in core. Validate persistent identity/clean-session/start/expiry combinations.
+
+Preserve per-client ordering, cross-client concurrency and one active core key
+lease. Cross-process fencing/atomic replacement remain store obligations.
+Corruption/version failure never silently clears data. This is protocol recovery,
+not an application outbox. The native file adapter is PY-WC-20, not a replacement
+for the generic protocol.
+
+Acceptance follows `native_store_restart`, `native_store_atomic`,
+`native_store_write_failure`, `native_store_ownership` and callback-race fixtures:
+recover mixed subscriptions, outgoing QoS1/QoS2 IDs and incoming QoS2 without
+redelivery on both protocols; cover session loss/resume policies, corrupt/wrong
+version/protocol/oversized data, save/clear errors, interrupted atomic replacement,
+lease conflicts/release, callback cancellation and process restart. Sample stores
+must demonstrate atomicity and cleanup as well as successful persistence.
 
 ### PY-WC-03: Packet and runtime limits
 
-Expose request/read batch settings, pending throttle, v4 incoming/outgoing
-packet and inflight limits, and the distinct MQTT 5 local input limit,
-advertised Maximum Packet Size, and outgoing inflight upper limit. Use named
-limit modes where default, unlimited, and a numeric bound differ. Test wire
-limits, checked conversions, defaults, and resource-bounded behavior.
+Expose request/read batches, pending throttle, v4 input/output/inflight limits,
+and separate v5 local input, advertised Maximum Packet Size and outgoing inflight
+controls. Name default/unlimited/bounded modes. Zero request batch means one
+request; zero read batch uses native adaptive behavior. Throttle paces pending
+replay, not general publishing. Live tuning belongs in PY-WC-16.
 
-### PY-WC-04: MQTT 5 CONNECT properties and aliases
+Observe exact packet boundaries, local versus advertised limits, local/broker
+inflight interaction, restored defaults and resource bounds. Test batches at
+0/1/8 using preadmitted work, broker barriers and queue backpressure; successful
+option conversion alone proves no runtime effect (`native_runtime_limits`,
+`native_runtime_batching`).
 
-Add a typed `V5ConnectProperties` value for all supported fields and an
-outgoing topic-alias policy. Keep explicit PUBLISH aliases separate. Preserve
-presence and User Property order, validate authentication method/data pairing,
-and reject these options on MQTT 3.1.1. Test exact CONNECT packets and alias
-reset/replay across reconnects.
+### PY-WC-04: MQTT 5 CONNECT and aliases
+
+Add `V5ConnectProperties`: Session Expiry, Receive Maximum, Maximum Packet Size,
+Topic Alias Maximum, Request Response/Problem Information, Method/Data and ordered
+User Properties. Resolve overlap with existing expiry/input options by normalization
+or explicit conflict errors. Validate pairing, booleans, nonzero rules and presence.
+Keep automatic outgoing alias policy separate from explicit PUBLISH aliases.
+Test exact CONNECT values, defaults, copied inputs, v4 rejection and reconnect
+under changed alias limits, including concrete-topic replay and unrecoverable
+alias-only terminal results.
 
 ### PY-WC-05: Enhanced authentication
 
-Provide an async authenticator protocol over owned challenge/action values,
-including exchange kind, method, reason, data, and User Properties. Expose
-client-initiated reauthentication with a tracked result. Offer the core SCRAM
-convenience configuration when built, without making it the only auth path.
-Specify timeout, overlapping exchange, reconnect, callback failure, and close
-semantics. Test multi-step and reauth broker flows, late replies, secret
-redaction, and loop teardown.
+Adapt `AsyncAuthenticator` with async responses over owned context,
+Start/Continue/final-Success challenges and Send/Complete actions. Preserve client
+ID, exchange kind, generation, method, reason, data and ordered properties.
+Expose tracked `reauthenticate()` and optional per-client SCRAM. Response properties
+come from the sole configured authority; lifecycle events are observations.
+The async core already exists; stale sync-only prose is not an implementation gap.
 
-### PY-WC-06: Redirect and DNS SRV
+Acceptance must prove:
 
-Expose the core's fixed reject/follow redirect policy and an async SRV resolver
-protocol with priority, weight, port, and target records. Surface redirect
-events and selected endpoints with typed values. Expose system SRV only when
-built. Test all reference forms, weighted/empty/failing answers, loop limits,
-shutdown, and isolation of session-store scope across redirects. An
-application redirect-policy callback needs a core contract first.
+- Initial/multi-step/repeated reauth, async final server verification, exact
+  AUTH/CONNECT properties, malformed AUTH/method changes and invalid SCRAM proof.
+  Validate broker CONNACK capabilities before reporting authentication success.
+- One deadline includes callbacks, broker waits and final verification. Even an
+  immediately ready answer after expiry fails. Late/duplicate answers cannot
+  revive an exchange; immediate close wakes pending callback work.
+- An overlap gets its own operation ID and `Overlapping`/`NotAdmitted`, sends no
+  extra AUTH and leaves the first exchange able to succeed. A later exchange
+  becomes admissible after the active exchange finishes.
+- Broker rejection, host exception and transport loss preserve typed failures
+  and broker AUTH details. Active reauth reports Failed/ConnectionClosed before
+  Disconnected/reconnect; authority failure notification occurs once. Preceding
+  queued events remain observable before terminal cleanup.
+- Retained events/outcomes survive teardown; failed start, GC, loop closure and
+  cancelled callbacks release owners; captured output is redacted.
+
+Use deterministic broker barriers as in `native_auth*` and core authentication
+tests, not sleeps that merely make overlap likely.
+
+### PY-WC-06: Fixed redirects and DNS SRV
+
+Expose reject/bounded-follow policy and an async resolver with owned priority,
+weight, port and target records. Custom resolution works independently of the
+optional system resolver. Native code owns weighting, fallback, loops/deadlines.
+Fixed follow isolates targets from origin credentials, store, proxy and headers.
+
+Preserve source/reason/reference, decision/failure, selected endpoint,
+attempt/limit/visited counts and candidate position/count. Unresolved SRV has no
+selected endpoint; failed target attempts retain context. Test both redirect
+sources, supported reference/transport forms, loops/exhaustion, empty/failing/
+invalid answers, priority/weight conversion, fallback, cancellation, disabled
+features and origin-store isolation (`native_redirect*`, `native_srv*`). Reuse
+seeded Rust weighting evidence; avoid flaky host frequency tests. Current
+application-directed redirects are PY-WC-14, not absent from core.
 
 ### PY-WC-07: Proxy transports
 
-Add typed HTTP CONNECT, HTTPS proxy, and SOCKS5 options with endpoint, DNS
-policy, credentials, and independent proxy TLS where supported. Reject
-unsupported proxy kinds before connecting; never silently connect directly.
-Test authentication, remote/local DNS, TLS/WSS composition, reconnect, and
-redaction for both MQTT versions.
+Add HTTP CONNECT/HTTPS/SOCKS5 records separating broker/proxy endpoints,
+credentials, supported DNS policy and independent proxy TLS. Mirror actual core
+DNS modes. Unsupported choices never fall back to direct networking. Test both
+protocols over supported TCP/TLS/WS/WSS compositions, independent roots, auth,
+recoverable/terminal failures, timeouts, reconnect and redaction
+(`native_proxy_matrix`), including installed disabled-feature builds.
 
-### PY-WC-08: Unix sockets
+### PY-WC-08: Unix endpoints
 
-Add an explicit Unix endpoint/transport option with documented path encoding
-and early unsupported-platform failure. Test path validation, reconnect, and
-both close modes. Custom socket connectors are intentionally omitted in the
-current core parity matrix; revisit only after core support and native wakeup,
-partial-I/O, and destruction tests exist.
+Add an explicit Unix target with documented Python path normalization/encoding,
+empty/NUL rejection and early unsupported-platform errors. Test missing paths,
+timeouts, reconnect and both close modes; Unix and TCP configurations remain
+independent. Custom connectors are supported in core and tracked in PY-WC-14.
 
-### PY-WC-09: WebSocket handshake edits
+### PY-WC-09: Declarative WebSocket edits
 
-Expose ordered declarative header add/replace/remove edits, with validation of
-protected names and sensitive values. Test reconnect/redirect behavior and
-WSS/proxy composition. Dynamic handshake callbacks are intentionally omitted
-in the current core parity matrix; add a Python callback only after the core
-contract is supported and tested.
+Expose copied ordered add/replace/remove edits, protected-header validation,
+canonicalization/duplicate rules and redacted reprs. Test exact handshakes,
+default restoration, reconnect/redirect isolation, WS/WSS/proxy composition and
+invalid/disabled features. Current dynamic async authority is PY-WC-14.
 
-### PY-WC-10: MQTT 5 DISCONNECT options
+### PY-WC-10: MQTT 5 DISCONNECT
 
-Extend graceful and immediate close with optional typed reason/properties
-without changing calls that omit options. Preserve first-admitted-options-wins
-on coalesced close; report incompatible later options. Reject v5 options on
-v4. Test exact packets, concurrent callers, escalation, and timeouts.
+Add typed reason/properties as compatible keyword options to `close()` and
+`close_now()`. Copy before admission; first admitted payload wins and conflicting
+later calls fail. Caller deadlines remain independent. Escalation/finalization
+preserves the payload. Test exact packets, validation, explicit-default v5 values
+on v4, concurrent callers, cancellation/escalation, repeatability and destruction
+after custom close (`native_close_options`). Ordinary graceful drain must not
+silently become ordered publish shutdown.
 
 ### PY-WC-11: Rich events
 
-Audit existing `Connected`, `ConnectionRejected`, `BrokerDisconnect`,
-`Authentication`, `Redirect`, and `Outgoing` dataclasses against supported
-core fields. Add missing typed details and operation/packet IDs without
-converting events into mutable shared views. Test absent versus present-empty
-properties, ordered lists, event lifetime, and bounded delivery. Keep protocol
-ACK internals represented by tracked completions, as the core matrix decides.
+Map all supported CONNACK fields/rejection details, broker DISCONNECT, AUTH
+properties/failure, redirect context and outgoing packet/operation IDs. Keep owned
+frozen values, presence and ordered properties. Compare IDs against broker packets;
+retain events after client destruction/subsequent receives. Saturate the bounded
+queue with large events and prove close/terminal status progresses without an
+unbounded side queue or silent incoming-message loss. Adapt `event_contract`,
+`native_event_properties` and `native_event_queue` into Python value/type tests.
+Default ACK internals stay completion-owned; opt-in observations are PY-WC-17.
 
-### PY-WC-12: Network options and observability
+### PY-WC-12: Network controls and observability
 
-Add portable socket options and supported platform controls with typed
-validation and early unsupported-platform errors. Expose build capabilities.
-Document how Python applications receive Rust tracing/log output without
-installing or replacing process-global subscribers implicitly. Test socket
-effects, platform guards, diagnostics, and captured-output redaction.
+Expose connection timeout, buffers, TCP_NODELAY, bind address and supported
+device/MPTCP settings. Preserve existing timeout rules. Observe socket effects,
+broker bind ports, restored defaults, OS buffer adjustment, invalid devices,
+MPTCP/fallback and unsupported-platform failure (`native_network_options`). Use
+reference sockets/test-only native instrumentation; do not expose raw descriptors.
+Document ambient tracing without replacing global subscribers. Audit reprs,
+exceptions and process output. Owned structured logging is PY-WC-19.
 
 ### PY-WC-13: TLS backend and credentials
 
-Extend `TlsOptions` with explicit rustls/native backend, platform/custom roots,
-PEM or PKCS#12 identity, and ordered ALPN protocols. Preserve today's PEM
-defaults. Reject unavailable backends before connecting; copy and protect
-secret input. Test TLS and WSS trust, mutual TLS, malformed input, hostname
-failure, replacement, and redaction across supported wheel builds.
+Extend `TlsOptions` with rustls/native selection, platform/custom roots, PEM or
+PKCS#12 identity/password and ordered ALPN. Preserve PEM defaults and reject
+contradictory legacy/nested settings. Broker, proxy and redirect TLS own separate
+values. Validate malformed inputs/unavailable backends before sockets.
 
-## Delivery and definition of done
+Test TLS/WSS for both protocols/backends: trusted/untrusted platform roots,
+custom roots, PEM/PKCS#12 mutual TLS, ALPN, wrong hostname/password, malformed
+credentials, failed-start cleanup, independent configurations, input mutation and
+redaction (`native_tls_matrix`). Reuse isolated platform trust with unconditional
+cleanup. Mocked cleanup tests do not prove OS trust. Advanced profiles/hooks are
+PY-WC-15.
 
-Implement value-only configuration first (PY-WC-01, 03, 04, 07, Unix 08,
-declarative 09, 10, 12, 13), then callback-backed storage, auth, and SRV
-(PY-WC-02, 05, 06), then finish event/observability gaps (PY-WC-11). Shared
-callback dispatch and capability reporting precede callback-backed features.
+## Milestone B: current-core additions pending for Python
 
-For each slice, update the typed facade, private bridge, tests, examples when
-the normal client flow changes, `native-wrappers/python/README.md`, and the
-repository `CHANGELOG.md`. Run focused `pytest` and broker fixtures during
-development, then the Python suite and native-wrapper workspace tests. Verify
-installed wheels on supported platforms and supported Python versions. Include
-static type checks and tests for both MQTT protocols, failures, cancellation,
-reconnect, and shutdown where applicable.
+These entries extend A; they are not implicitly complete or intentionally omitted.
+Audit actual support before each slice. A Python-only omission requires a specific
+rationale and compatibility/test impact. Reuse the existing contracts below.
 
-Python parity is complete when every supported core capability in PY-WC-01
-through PY-WC-13 is bound and tested or has an explicit reviewed Python-only
-omission. Carry the core matrix's intentionally omitted decisions forward;
-do not describe core parity as Python API parity.
+### PY-WC-14: Transport authorities
+
+Define async connector/stream protocols with owned buffers, partial I/O, EOF,
+concurrent read/serialized writer, real flush, native absolute deadline,
+socket-policy acknowledgement, base/established modes and fresh streams after
+reconnect/cancellation. Adapt `asyncio` stream buffering/`drain()` semantics
+explicitly instead of treating a successful `write()` as a completed native flush.
+Expose async WS authority while preserving protected fields and refreshing per
+attempt. Application redirect authority is synchronous in core. Add and test a
+shared async authority contract once for Python and JavaScript before exposing
+deferred decisions; preserve the existing synchronous/C contract. Do not block a
+driver waiting for the Python loop. Preserve explicit credential/session reuse,
+decision deadlines, bounded requests, stale-response rejection and key leases.
+Sources: core `transport.rs`, `websocket.rs`, `redirect.rs`, [TODO31](TODO31.md).
+
+### PY-WC-15: Advanced TLS
+
+Bind immutable profiles, combined roots, versions/pins, backend masks, cipher/SNI/
+resumption policy and async supplemental verification/external identity/signing.
+Preserve standard authentication, exact signing input/validation, independent
+layers, absolute deadlines, cancellation and typed stage/reason/layer failures.
+Reject unenforceable policy. Sources: [TODO27](TODO27.md) and core TLS contracts/
+profile/advanced fixtures.
+
+### PY-WC-16: Runtime configuration, reconnect, and recovery
+
+Bind typed reconnect/backoff/budgets, atomic unchanged/replace/clear updates with
+staging/activation receipts, and tracked explicit session abandonment/recovery.
+Preserve fixed identity, discarded-work ambiguity, checkpoint-clear failures,
+supersession and shutdown. Use typed update variants or a private unchanged
+sentinel so `None` does not conflate unchanged and clear.
+Sources: [runtime applicability](native-wrappers/wrapper-core/runtime-configuration.md),
+[TODO34](TODO34.md), [TODO35](TODO35.md), [TODO36](TODO36.md).
+
+### PY-WC-17: Observations and acknowledgements
+
+Bind terminal broker ACK details on success/error, v5 manual ACK content, incoming
+packet ID/generation, opt-in protocol/AUTH observations, diagnostic freshness and
+structured native failures. Preserve default behavior, single-use authority and
+retained outcomes without callback ownership. Python integers preserve wide IDs
+without floating-point conversion.
+Sources: [TODO28](TODO28.md), [TODO29](TODO29.md), [TODO37](TODO37.md),
+[TODO43](TODO43.md), [TODO44](TODO44.md), [native failures](native-wrappers/native-failures.md).
+
+### PY-WC-18: Admission and ordered shutdown
+
+Bind publish policy/budget/recovery-pending and explicitly named ordered close.
+Preserve finite replay/checkpoint accounting, native fences, conservative delivery,
+pre-admission cancellation rollback and independent first-connect observation.
+Prove which existing async admissions/ACK values satisfy C deferred/detached-handle
+behavior rather than add redundant handles. Keep payload copies unless safe
+immutable native storage has a measured use case; a read-only `memoryview` alone
+does not prove its backing allocation cannot change.
+Sources: [publish admission](native-wrappers/wrapper-core/publish-admission.md),
+[TODO30](TODO30.md), [TODO32](TODO32.md), [TODO41](TODO41.md), [TODO46](TODO46.md),
+[TODO47](TODO47.md), [TODO48](TODO48.md), [TODO51](TODO51.md).
+
+### PY-WC-19: Execution and structured logging
+
+Expose explicit shared execution with async shutdown/join, capacity and peer
+independence; bounded typed logging with independent flush/quiescence. Benchmark
+contexts are not a public API. Do not revive the rejected scheduler. Public
+readiness/descriptors need a separate measured use case; arbitrary runtime
+injection remains outside managed execution.
+Sources: [TODO33](TODO33.md), [TODO40](TODO40.md), [TODO42](TODO42.md), Python bridge ADR.
+
+### PY-WC-20: Maintained file stores
+
+Expose optional native store/context values alongside the generic protocol,
+bounded async inspect/quarantine/clear, leases, codec/allocation limits, cancellation
+versus commit and joined teardown. Test C/Rust/Python checkpoint interoperability,
+restart and failure. Sources: [file-store contract](native-wrappers/file-session-stores.md),
+[TODO50](TODO50.md).
+
+Application-owned TLS-layer injection remains the parked [TODO49](TODO49.md)
+experiment. Browser/Wasm is [TODO23](TODO23.md). PyPy, free-threaded CPython,
+subinterpreters and the limited API remain outside the documented runtime contract.
+
+## Delivery and validation
+
+1. Record actual Python exposure per core field/operation/event with mapping,
+   status, restrictions/omission rationale and test references. Existing Session
+   Present policy/raw-effective diagnostics are already bound; test their new
+   persistence interactions rather than re-add them. Review fields and semantics,
+   not only method names. The old inventory sentinel can skip execution;
+   [TODO52](TODO52.md) tracks repair. A skipped audit is not parity evidence;
+   maintain explicit boundary tests meanwhile.
+2. Deliver PY-BASE; value options (01/03/04/07/08/09/10/12/13); storage (02);
+   auth (05); SRV/redirects (06); final event audit (11). Event/error conversion
+   needed by a slice lands with it. Deliver B separately from historical A.
+3. Add Cargo feature forwarding/default policy and Maturin profiles. Preserve
+   current default wheels. Exercise isolated minimal, rustls, native, mixed,
+   rustls-proxy, native-proxy and mixed-proxy builds, plus focused AWS-LC/Ring,
+   system-SRV, SCRAM, tracing/log compatibility and disabled features. Avoid
+   workspace feature unification masking missing Python support. No-provider
+   builds need a real provider-installation path; do not advertise unusable builds.
+4. Test installed wheels in fresh environments outside the checkout: types and
+   `py.typed`, exports, contents, native dependencies, source installs and all
+   advertised tags. Retain the README/release CPython 3.10–3.14 and Linux/macOS/
+   Windows matrix unless deliberately changed with evidence.
+5. Extend existing broker/proxy/auth/DNS/WS fixtures for Python consumers. Require
+   Mosquitto for all four v4/v5 graceful/abrupt Will cases in CI. Use barriers,
+   bounded waits, fault injection, lifecycle subprocesses and supported native
+   sanitizer/leak checks. C tests alone never verify the PyO3/loop boundary.
+6. Update examples, Python README and repository `CHANGELOG.md` per implemented
+   slice. Examples drain events, close with `async with`/`finally`, and show
+   callback failure/cleanup. Plan-only edits do not claim shipped functionality.
+
+From the repository root:
+
+```bash
+cargo fmt --manifest-path native-wrappers/Cargo.toml --all --check
+cargo check --manifest-path native-wrappers/Cargo.toml --workspace
+cargo test --manifest-path native-wrappers/Cargo.toml --workspace
+```
+
+From `native-wrappers/python`:
+
+```bash
+uv sync --group dev
+uv run maturin develop --features panic-testing
+uv run ruff check python tests
+uv run ruff format --check python tests
+uv run pyrefly check python tests
+uv run pytest -q
+uv run maturin build --release --out ../../target/python-wheels
+```
+
+Also run broker integration, lifecycle subprocesses, installed-wheel consumers
+and feature/release matrices using existing CI commands. Core/native changes
+require focused regressions, full affected crate tests and feature-sensitive CI
+checks. The unit suite alone is insufficient.
+
+Record revision, OS/architecture, Python version, features/provider, command,
+pass/fail/skip and logs/JUnit artifacts for each slice/profile. Separate fixture
+implementation, local execution, pending CI and unsupported configurations.
+Historical C evidence at the endpoint was Linux-only for several matrices;
+macOS/Windows wiring was not execution. C ABI/header/CMake checks are C obligations.
+
+Milestone A requires every A mapping and lifecycle assertion above through Python
+and execution evidence for the advertised wheel matrix. Record outstanding
+validation as pending, never passed, and do not declare the milestone verified
+while required execution remains outstanding. Complete current-core parity also
+requires resolving B and newly audited additions as implemented or specifically
+justified Python omissions.
