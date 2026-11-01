@@ -95,9 +95,11 @@ static void run_case(rumqttc_protocol_t protocol) {
 }
 
 int main(void) {
-    size_t baseline = native_process_thread_count();
     run_case(RUMQTTC_PROTOCOL_V4);
     run_case(RUMQTTC_PROTOCOL_V5);
+    /* First use can initialize process-wide OS networking/thread-pool workers.
+       Measure repeated context teardown after that initialization. */
+    size_t baseline = native_process_thread_count();
     for (unsigned i = 0; i < 32; ++i) {
         rumqttc_execution_context_t *context = NULL;
         CHECK(rumqttc_execution_context_new(NULL, &context, NULL));
@@ -105,8 +107,8 @@ int main(void) {
         CHECK(rumqttc_execution_context_join_timeout_ms(context, NATIVE_DEADLINE_MS, NULL));
         rumqttc_execution_context_release(context);
     }
-    for (unsigned i = 0; i < 100 && native_process_thread_count() != baseline; ++i)
+    for (unsigned i = 0; i < 100 && native_process_thread_count() > baseline; ++i)
         native_sleep_ms(10);
-    REQUIRE(native_process_thread_count() == baseline);
+    REQUIRE(native_process_thread_count() <= baseline);
     return 0;
 }

@@ -4,6 +4,11 @@ project(rumqttc_native_tests LANGUAGES C)
 include(CTest)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_test(NAME rumqttc-broker-fixture
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_LIST_DIR}" -p test_broker_fixture.py)
+set_tests_properties(rumqttc-broker-fixture PROPERTIES LABELS "native;fixture" TIMEOUT 30)
+
 set(RUMQTTC_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." CACHE PATH "rumqttc-c source directory")
 set(RUMQTTC_LIBRARY_DIR "${RUMQTTC_ROOT}/../target/debug" CACHE PATH "directory containing rumqttc")
 

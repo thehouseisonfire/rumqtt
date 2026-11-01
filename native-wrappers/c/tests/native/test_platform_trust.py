@@ -71,6 +71,8 @@ class PlatformTrustTests(unittest.TestCase):
 
         def powershell(script, state):
             scripts.append(script)
+            self.assertIn("Cert:\\CurrentUser\\Root", script)
+            self.assertNotIn("\\\\", script)
             if "Import-Certificate" in script:
                 persisted = json.loads(next(self.state.glob("*.json")).read_text())
                 self.assertTrue(persisted["owned"])

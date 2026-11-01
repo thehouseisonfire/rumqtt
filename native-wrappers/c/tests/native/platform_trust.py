@@ -70,10 +70,13 @@ def powershell(script: str, state: dict[str, object]) -> str:
     environment = os.environ.copy()
     environment["RUMQTTC_PLATFORM_CA"] = str(state["root"])
     environment["RUMQTTC_PLATFORM_THUMBPRINT"] = str(state["thumbprint"])
-    return command(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + script],
-        environment,
-    )
+    try:
+        return command(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + script],
+            environment,
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"platform trust command failed: {error.stdout}\n{error.stderr}") from error
 
 
 def mac_trust_settings() -> dict:
@@ -216,7 +219,7 @@ def cleanup(path: Path) -> None:
     if state["platform"] == "win32":
         if state["owned"]:
             powershell(
-                "$path = 'Cert:\\CurrentUser\\Root\\' + $env:RUMQTTC_PLATFORM_THUMBPRINT; "
+                r"$path = 'Cert:\CurrentUser\Root\' + $env:RUMQTTC_PLATFORM_THUMBPRINT; "
                 "if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }; "
                 "if (Test-Path $path) { throw 'test root survived cleanup' }",
                 state,
@@ -266,7 +269,7 @@ def trusted_root(root: Path, environment: dict[str, str]) -> Iterator[None]:
         # Persist cleanup intent before every side effect, including partial installation.
         if sys.platform == "win32":
             powershell(
-                "if (Test-Path ('Cert:\\CurrentUser\\Root\\' + $env:RUMQTTC_PLATFORM_THUMBPRINT)) "
+                r"if (Test-Path ('Cert:\CurrentUser\Root\' + $env:RUMQTTC_PLATFORM_THUMBPRINT)) "
                 "{ throw 'test root already exists' }",
                 state,
             )
@@ -274,8 +277,8 @@ def trusted_root(root: Path, environment: dict[str, str]) -> Iterator[None]:
             save_state(path, state)
             powershell(
                 "Import-Certificate -FilePath $env:RUMQTTC_PLATFORM_CA "
-                "-CertStoreLocation Cert:\\CurrentUser\\Root | Out-Null; "
-                "if (-not (Test-Path ('Cert:\\CurrentUser\\Root\\' + $env:RUMQTTC_PLATFORM_THUMBPRINT))) "
+                r"-CertStoreLocation Cert:\CurrentUser\Root | Out-Null; "
+                r"if (-not (Test-Path ('Cert:\CurrentUser\Root\' + $env:RUMQTTC_PLATFORM_THUMBPRINT))) "
                 "{ throw 'test root was not installed' }",
                 state,
             )

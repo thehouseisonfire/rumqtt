@@ -2,6 +2,13 @@
 
 ### Changed
 
+- Wrapper-core: Deliver queued events before terminal driver status even when a
+  blocking receiver selects the terminal channel concurrently with event delivery.
+- Wrapper validation: Handle expected TLS handshake cancellation, portable socket
+  option values and platform trust paths in native fixtures. Remove scheduler and
+  process initialization assumptions from admission and execution checks, and keep
+  TLS ownership tests independent of platform roots under Miri.
+
 - Rust v4/v5: Fairly arbitrate normal requests, incoming packets and keepalive so
   sustained publish traffic cannot starve broker acknowledgements. Bound request
   bursts to amortize idle socket probes, and keep ordinary outbound I/O separate

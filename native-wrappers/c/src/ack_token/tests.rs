@@ -10,7 +10,7 @@ use std::sync::{Barrier, mpsc};
 use std::thread;
 use std::time::Duration;
 
-const DEADLINE: Duration = Duration::from_secs(3);
+const DEADLINE: Duration = Duration::from_secs(if cfg!(miri) { 60 } else { 3 });
 
 struct FlushControl {
     hold: AtomicBool,

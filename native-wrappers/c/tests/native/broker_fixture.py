@@ -670,6 +670,7 @@ class Broker:
         self.barrier(f"{name}-release-{attempt}")
         stream.sendall(frame(2, 0, bytes((int(attempt > 1), 0, 0))))
         acknowledged = 0
+        expected_acknowledgements = 0
         while packet := read_frame(stream):
             kind, flags, body = packet
             if kind == 14:
@@ -685,11 +686,13 @@ class Broker:
             if qos:
                 if acknowledged == 0:
                     self.signal(f"{name}-held-{attempt}")
-                    self.barrier(f"{name}-ack-{attempt}")
+                    expected_acknowledgements = self.barrier(f"{name}-ack-{attempt}")
+                    if not 1 <= expected_acknowledgements <= (1 if bytes_only else 3):
+                        raise AssertionError("unexpected capacity admission count")
                 stream.sendall(frame(4, 0, identifier))
                 acknowledged += 1
             elif acknowledged:
-                if attempt != 1 or acknowledged != (1 if bytes_only else 2):
+                if attempt != 1 or acknowledged != expected_acknowledgements:
                     raise AssertionError("capacity fixture disconnected before completion")
                 return
 
@@ -1417,9 +1420,13 @@ class Broker:
                     PRIVATE_VALUES.append(secret)
                     properties = method + b"\x16" + struct.pack("!H", len(secret)) + secret
                     stream.sendall(frame(15, 0, bytes((code,)) + encode_remaining(len(properties)) + properties))
-        except (BrokenPipeError, ConnectionResetError) as error:
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError) as error:
+            # TLS 1.3 can finish server-side before a rejecting verifier closes
+            # the client. Session-ticket writes then fail before MQTT CONNECT.
+            if isinstance(error, ssl.SSLEOFError) and client_id is None and self.tls_context is not None:
+                self.tls_disconnects_before_connect += 1
             # The cancellation consumer closes while TLS/application writes are pending.
-            if client_id is None or not client_id.startswith(b"native-external-cancel-"):
+            elif client_id is None or not client_id.startswith(b"native-external-cancel-"):
                 with self.failure_lock:
                     self.failures.append(repr(error))
         except Exception as error:
@@ -2069,7 +2076,8 @@ def main() -> int:
         environment["RUMQTTC_TEST_CONTROL_DIR"] = directory
         environment["RUMQTTC_TEST_HOST"] = "127.0.0.1"
         environment["RUMQTTC_TEST_PORT"] = str(broker.port)
-        # Bound sockets without listen keep these local refusal endpoints deterministic.
+        # Linux refuses connects to bound, non-listening sockets. Darwin can
+        # instead leave the SYN pending; release its reservations before dialing.
         refused = [socket.socket(), socket.socket()]
         for index, reservation in enumerate(refused, 1):
             reservation.bind(("127.0.0.1", 0))
@@ -2236,6 +2244,9 @@ def main() -> int:
                 print("platform trust: pending; requires an explicitly disposable runner")
             trust = trusted_root(Path(ca_cert), environment) if platform_roots else contextlib.nullcontext()
             with trust:
+                if sys.platform == "darwin":
+                    for reservation in refused:
+                        reservation.close()
                 return run_native(
                     [*launcher, args.binary, *child_arguments, *address_arguments],
                     environment,
