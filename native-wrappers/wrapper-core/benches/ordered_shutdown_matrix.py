@@ -8,12 +8,12 @@ import io
 import itertools
 import json
 import os
-from pathlib import Path
 import platform
 import shutil
 import subprocess
 import tarfile
 import tempfile
+from pathlib import Path
 
 
 def build(workspace: Path, output: Path, enabled: bool, target: Path) -> None:
@@ -130,7 +130,7 @@ def main() -> None:
                         output.flush()
                         if repetition == 0:
                             allocation_row = json.loads(
-                                subprocess.check_output(command + ["--allocations"], text=True, timeout=90)
+                                subprocess.check_output([*command, "--allocations"], text=True, timeout=90)
                             )
                             allocation_row.update(profile=name, repetition=0)
                             output.write(json.dumps(allocation_row) + "\n")

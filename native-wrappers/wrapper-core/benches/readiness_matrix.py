@@ -11,14 +11,14 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
-from typing import Any
 import platform
 import socket
 import statistics
 import subprocess
 import tempfile
 import time
+from pathlib import Path
+from typing import Any
 
 import psutil
 from execution_matrix import broker_start, distribution, snapshot, stop

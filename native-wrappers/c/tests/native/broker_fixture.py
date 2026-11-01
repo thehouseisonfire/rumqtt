@@ -765,9 +765,12 @@ class Broker:
                 self.signal(name + "-ready")
                 self.barrier(name + "-drop")
                 return
-            if client_id == b"native-admission-unbound" and flags & 8:
-                if identifier != self.restart_packet_ids[(client_id, b"unbound")]:
-                    raise AssertionError("window filler replay identifier changed")
+            if (
+                client_id == b"native-admission-unbound"
+                and flags & 8
+                and identifier != self.restart_packet_ids[(client_id, b"unbound")]
+            ):
+                raise AssertionError("window filler replay identifier changed")
             if topic == b"matrix/drop":
                 return
             if topic == b"hold":

@@ -62,7 +62,7 @@ def summarize(source: pathlib.Path, repetitions: int, allocations: bool = False)
         external_p99 = statistics.median(float(row["p99_us"]) for row in external)
         throughput_ratio = external_rate / native_rate
         latency_ratio = external_p99 / native_p99
-        summary: dict[str, object] = dict(zip(("execution", "mqtt", "nested", "payload"), key))
+        summary: dict[str, object] = dict(zip(("execution", "mqtt", "nested", "payload"), key, strict=True))
         summary.update(
             {
                 "native_messages_per_second": round(native_rate, 3),

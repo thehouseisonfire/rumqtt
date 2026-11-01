@@ -42,7 +42,7 @@ async def main():
     client = None
     rounds = int(os.environ.get("RUMQTTC_EXECUTION_ROUNDS", "10"))
     contexts = [
-        getattr(_native, "_BenchmarkExecutionContext")(count)
+        _native._BenchmarkExecutionContext(count)
         for _ in range(0 if mode == "dedicated" else 2 if mode == "shards" else 1)
     ]
     transport_name = os.environ.get("RUMQTTC_EXECUTION_TRANSPORT", "tcp")
@@ -72,7 +72,7 @@ async def main():
             )
         )
         if contexts:
-            getattr(client._native, "_benchmark_set_execution")(contexts[index % len(contexts)])
+            client._native._benchmark_set_execution(contexts[index % len(contexts)])
         try:
             await client.connect()
         except Exception as error:
