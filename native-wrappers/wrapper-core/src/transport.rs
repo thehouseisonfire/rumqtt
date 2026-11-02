@@ -163,7 +163,7 @@ impl SavedFailure {
 
 type HostWork<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 
-pub(crate) fn discard_panic_payload(payload: Box<dyn std::any::Any + Send>) {
+pub fn discard_panic_payload(payload: Box<dyn std::any::Any + Send>) {
     // Standard panic messages have no host destructor and can be reclaimed.
     // Opaque panic_any payloads may panic or block in Drop; preserve containment
     // without invoking arbitrary host code during driver teardown.

@@ -74,6 +74,8 @@ def powershell(script: str, state: dict[str, object]) -> str:
     environment = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
     environment["RUMQTTC_PLATFORM_CA"] = str(state["root"])
     environment["RUMQTTC_PLATFORM_THUMBPRINT"] = str(state["thumbprint"])
+    # Old cleanup manifests predate the switch to the machine store.
+    environment["RUMQTTC_PLATFORM_STORE"] = str(state.get("store", r"Cert:\CurrentUser\Root"))
     # Every command starts a fresh -NoProfile session. PKI's Import-Certificate
     # does not load the Security module that provides the Cert: drive.
     prelude = "$ErrorActionPreference = 'Stop'; Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; "
@@ -226,7 +228,7 @@ def cleanup(path: Path) -> None:
     if state["platform"] == "win32":
         if state["owned"]:
             powershell(
-                r"$path = 'Cert:\CurrentUser\Root\' + $env:RUMQTTC_PLATFORM_THUMBPRINT; "
+                r"$path = $env:RUMQTTC_PLATFORM_STORE + '\' + $env:RUMQTTC_PLATFORM_THUMBPRINT; "
                 "if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }; "
                 "if (Test-Path $path) { throw 'test root survived cleanup' }",
                 state,
@@ -266,7 +268,12 @@ def trusted_root(root: Path, environment: dict[str, str]) -> Iterator[None]:
         "root": str(saved_root),
         "owned": False,
     }
-    if sys.platform == "darwin":
+    if sys.platform == "win32":
+        # CurrentUser\Root can require a confirmation dialog even with
+        # Import-Certificate. The elevated disposable CI runner can import into
+        # LocalMachine\Root without UI; persist the store for interrupted cleanup.
+        state["store"] = r"Cert:\LocalMachine\Root"
+    elif sys.platform == "darwin":
         # Admin-domain certificate enumeration searches System.keychain, not
         # temporary user keychains (SecTrustSettingsCopyCertificates_internal).
         state["keychain"] = "/Library/Keychains/System.keychain"
@@ -276,7 +283,7 @@ def trusted_root(root: Path, environment: dict[str, str]) -> Iterator[None]:
         # Persist cleanup intent before every side effect, including partial installation.
         if sys.platform == "win32":
             powershell(
-                r"if (Test-Path ('Cert:\CurrentUser\Root\' + $env:RUMQTTC_PLATFORM_THUMBPRINT)) "
+                r"if (Test-Path ($env:RUMQTTC_PLATFORM_STORE + '\' + $env:RUMQTTC_PLATFORM_THUMBPRINT)) "
                 "{ throw 'test root already exists' }",
                 state,
             )
@@ -284,8 +291,8 @@ def trusted_root(root: Path, environment: dict[str, str]) -> Iterator[None]:
             save_state(path, state)
             powershell(
                 "Import-Certificate -FilePath $env:RUMQTTC_PLATFORM_CA "
-                r"-CertStoreLocation Cert:\CurrentUser\Root | Out-Null; "
-                r"if (-not (Test-Path ('Cert:\CurrentUser\Root\' + $env:RUMQTTC_PLATFORM_THUMBPRINT))) "
+                "-CertStoreLocation $env:RUMQTTC_PLATFORM_STORE | Out-Null; "
+                r"if (-not (Test-Path ($env:RUMQTTC_PLATFORM_STORE + '\' + $env:RUMQTTC_PLATFORM_THUMBPRINT))) "
                 "{ throw 'test root was not installed' }",
                 state,
             )

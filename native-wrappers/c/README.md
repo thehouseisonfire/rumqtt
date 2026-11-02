@@ -1098,8 +1098,9 @@ for each enabled backend and both MQTT versions. Linux uses isolated
 `SSL_CERT_FILE`/`SSL_CERT_DIR` inputs. macOS and Windows execution requires
 `RUMQTTC_DISPOSABLE_TRUST_RUNNER=1` on a disposable runner: macOS temporarily
 adds its root certificate to `System.keychain` and an administrator trust entry,
-while Windows uses the current user's Root store. Cleanup removes only the
-fixture's own certificate, including after child-process failure; it does not
+while Windows requires an elevated process and uses the local machine's Root
+store to avoid the current-user root import confirmation dialog. Cleanup removes
+only the fixture's own certificate, including after child-process failure; it does not
 change the macOS keychain search list.
 An interrupted run leaves a cleanup manifest; CI unconditionally runs
 `python3 native-wrappers/c/tests/native/platform_trust.py --cleanup`.

@@ -71,11 +71,13 @@ class PlatformTrustTests(unittest.TestCase):
 
         def powershell(script, state):
             scripts.append(script)
-            self.assertIn("Cert:\\CurrentUser\\Root", script)
+            self.assertEqual(state["store"], r"Cert:\LocalMachine\Root")
+            self.assertIn("$env:RUMQTTC_PLATFORM_STORE", script)
             self.assertNotIn("\\\\", script)
             if "Import-Certificate" in script:
                 persisted = json.loads(next(self.state.glob("*.json")).read_text())
                 self.assertTrue(persisted["owned"])
+                self.assertEqual(persisted["store"], state["store"])
             return ""
 
         with (
@@ -90,6 +92,25 @@ class PlatformTrustTests(unittest.TestCase):
             raise RuntimeError("child failed")
         self.assertIn("Remove-Item", scripts[-1])
         self.assert_clean()
+
+    def test_windows_cleanup_selects_store_from_manifest_including_legacy_user_store(self):
+        for store in (None, r"Cert:\LocalMachine\Root"):
+            with self.subTest(store=store):
+                self.state.mkdir(exist_ok=True)
+                root = self.state / "fixture.cer"
+                root.touch()
+                manifest = self.state / "fixture.json"
+                state = {"platform": "win32", "thumbprint": "FIXTURE", "root": str(root), "owned": True}
+                if store is not None:
+                    state["store"] = store
+                platform_trust.save_state(manifest, state)
+                with patch.object(platform_trust, "command", return_value="") as command:
+                    platform_trust.cleanup(manifest)
+                arguments, environment = command.call_args.args
+                self.assertIn("Remove-Item", arguments[-1])
+                self.assertIn("$env:RUMQTTC_PLATFORM_STORE", arguments[-1])
+                self.assertEqual(environment["RUMQTTC_PLATFORM_STORE"], store or r"Cert:\CurrentUser\Root")
+                self.assert_clean()
 
     def test_windows_partial_import_is_removed(self):
         scripts = []
@@ -469,6 +490,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; " + script, arguments[-1])
         self.assertEqual(environment["RUMQTTC_PLATFORM_CA"], "fixture.cer")
         self.assertEqual(environment["RUMQTTC_PLATFORM_THUMBPRINT"], "FIXTURE")
+        self.assertEqual(environment["RUMQTTC_PLATFORM_STORE"], r"Cert:\CurrentUser\Root")
 
     def test_powershell_does_not_inherit_parent_module_search_path(self):
         state: dict[str, object] = {"root": "fixture.cer", "thumbprint": "FIXTURE"}
