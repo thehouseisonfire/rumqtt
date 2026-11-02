@@ -30,6 +30,14 @@ rumqtt is licensed under the permissive [Apache License Version 2.0][license] an
 
 Before you start, please make yourself familiar with the architecture of rumqtt and read the [design docs][design] before making your first contribution to increase it's chances of being adopted.
 
+Native client, wrapper-core and C API changes require a parity decision review.
+Run `cargo run --locked --manifest-path native-wrappers/Cargo.toml -p rumqttc-parity-audit -- check`
+and the audit tool tests. Review new or changed declarations in the authoritative
+ledger, record each boundary's mapping or omission, and refresh its generated
+documentation. Declaration coverage does not replace behavior or C ABI tests.
+See the [parity review workflow](native-wrappers/parity-audit/README.md) for
+commands, discovery limits, package behavior and the conversion regression test.
+
 [convention]: https://www.conventionalcommits.org/en/v1.0.0/
 [license]: LICENSE
 [design]: docs/design.md

@@ -11,8 +11,9 @@ repository.workspace = true
 license.workspace = true
 authors.workspace = true
 readme = "README.md"
-# Raw performance evidence belongs in the repository, not the published library.
+# Repository audit data and raw performance evidence are not published library inputs.
 exclude = [
+    "parity.json",
     "benches/execution-results/**",
     "benches/readiness-results/**",
     "benches/tls-connector-results/**",
@@ -105,7 +106,6 @@ crc32c = "0.6"
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 async-tungstenite = { version = "0.35", default-features = false, features = ["tokio-runtime", "futures-03-sink"] }
 log = { version = "0.4", features = ["std"] }
-syn = { version = "3", features = ["full"] }
 tempfile = "3"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }

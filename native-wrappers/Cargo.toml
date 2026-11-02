@@ -1,5 +1,5 @@
 [workspace]
-members = ["wrapper-core", "c", "js", "python"]
+members = ["wrapper-core", "c", "js", "python", "parity-audit"]
 resolver = "3"
 
 [workspace.package]

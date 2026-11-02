@@ -13,6 +13,7 @@ on:
       - 'mqttbytes-v4/**'
       - 'mqttbytes-v5/**'
       - 'CHANGELOG.md'
+      - 'CONTRIBUTING.md'
       - 'docs/c-abi-*.md'
       - 'pyproject.toml'
       - '.pre-commit-config.yaml'
@@ -133,7 +134,13 @@ jobs:
           cargo clippy --locked --workspace --all-targets --features rumqttc-c-next/ordered-shutdown
 
       - name: Audit native API parity
-        run: cargo test --locked -p rumqttc-wrapper-core-next --test parity_inventory
+        run: |
+          cargo run --locked -p rumqttc-parity-audit -- check
+          cargo test --locked -p rumqttc-parity-audit -- --nocapture
+
+      - name: Prove core-to-C conversion regression detection
+        if: ${{ runner.os == 'Linux' }}
+        run: python3 parity-audit/tests/conversion_mutation.py
 
       - name: Private C stream adapter proof
         run: |

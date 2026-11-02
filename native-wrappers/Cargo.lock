@@ -1735,6 +1735,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumqttc-parity-audit"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 3.0.9",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "rumqttc-python-next"
 version = "0.1.0-alpha.0"
 dependencies = [
@@ -1843,7 +1855,6 @@ dependencies = [
  "rustls-webpki",
  "scram-rs",
  "sha2",
- "syn 3.0.9",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

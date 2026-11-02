@@ -11,11 +11,13 @@ native APIs for the MQTT 3.1.1 and MQTT 5 clients:
   Node.js, local Deno, and Bun.
 - [`python`](python/README.md) exposes one typed `asyncio` package for CPython
   through a private PyO3 extension.
+- [`parity-audit`](parity-audit/README.md) is unpublished repository tooling for
+  reviewing declaration coverage and mappings at both native boundaries.
 
-The two crates share one workspace because the C API directly adapts wrapper
-core and changes to their command, event, completion, and lifecycle contracts
-must remain coordinated. The workspace stays in this repository because
-wrapper core tracks both client implementations closely.
+These crates share a workspace because the native APIs adapt wrapper core and
+their command, event, completion, and lifecycle contracts must remain coordinated.
+The workspace stays in this repository because wrapper core tracks both client
+implementations closely.
 
 From the repository root, run:
 
@@ -25,6 +27,13 @@ cargo test --manifest-path native-wrappers/Cargo.toml --workspace
 
 Wrapper-specific build, packaging, and runtime checks are documented in each
 crate's README.
+
+The unpublished [parity audit tool](parity-audit/README.md) checks reviewed
+native-to-core and core-to-C declarations and mappings across the complete
+checkout. Its authoritative ledger generates the decision tables in
+[`wrapper-core/PARITY.md`](wrapper-core/PARITY.md). Published crate tests do not
+claim repository parity coverage; mapping behavior and C ABI consistency have
+separate execution checks.
 
 C manual-ACK callers can transfer event authority into a small owned token and
 release publication data before deferred application work finishes. Retained
