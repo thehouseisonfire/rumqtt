@@ -368,7 +368,9 @@ impl EventConsumer {
         if self.terminal_seen {
             return Ok(None);
         }
-        if let Ok(status) = self.terminal.recv_async().await { Ok(Some(self.deliver_terminal(status))) } else {
+        if let Ok(status) = self.terminal.recv_async().await {
+            Ok(Some(self.deliver_terminal(status)))
+        } else {
             self.mark_terminal_seen();
             Ok(None)
         }

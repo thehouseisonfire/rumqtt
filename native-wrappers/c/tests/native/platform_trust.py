@@ -67,7 +67,11 @@ def command(arguments: list[str], environment: dict[str, str] | None = None, *, 
 
 
 def powershell(script: str, state: dict[str, object]) -> str:
-    environment = os.environ.copy()
+    # CI launches us from pwsh, whose module search path includes PowerShell 7
+    # modules incompatible with Windows PowerShell. Let powershell.exe build its
+    # own default path, including the Security module with the Cert: provider.
+    # Windows environment variable names are case-insensitive.
+    environment = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
     environment["RUMQTTC_PLATFORM_CA"] = str(state["root"])
     environment["RUMQTTC_PLATFORM_THUMBPRINT"] = str(state["thumbprint"])
     # Every command starts a fresh -NoProfile session. PKI's Import-Certificate
