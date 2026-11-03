@@ -29,10 +29,16 @@ def main() -> None:
     environment = dict(os.environ)
     # Keep mutant build outputs separate from ordinary libraries and tests.
     environment["CARGO_TARGET_DIR"] = str(target / "parity-conversion-build")
-    files = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-        cwd=root, check=True, capture_output=True,
-    ).stdout.decode().split("\0")
+    files = (
+        subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode()
+        .split("\0")
+    )
     with tempfile.TemporaryDirectory(prefix="parity-conversion-", dir=target) as directory:
         scratch = Path(directory)
         for relative in filter(None, files):
@@ -46,8 +52,19 @@ def main() -> None:
         assert run(audit, scratch, environment).returncode == 0, "baseline inventory failed"
         test_name = "publish_budget_snapshot_empty_restore_reconnect_and_terminal_reads"
         command = [
-            "cargo", "test", "--locked", "--offline", "--manifest-path", "native-wrappers/Cargo.toml",
-            "-p", "rumqttc-c-next", "--no-default-features", "--lib", test_name, "--", "--nocapture",
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--manifest-path",
+            "native-wrappers/Cargo.toml",
+            "-p",
+            "rumqttc-c-next",
+            "--no-default-features",
+            "--lib",
+            test_name,
+            "--",
+            "--nocapture",
         ]
         baseline = run(command, scratch, environment)
         assert baseline.returncode == 0 and "running 1 test" in baseline.stdout, (
@@ -67,7 +84,9 @@ def main() -> None:
         )
         assert f"{test_name} ... FAILED" in mutant.stdout, "unrelated failure is not conversion evidence"
         assert "assertion" in mutant.stderr, "expected the retained-value assertion to fail"
-        print("Declaration audit stayed green; the recovery_pending retention assertion rejected the conversion mutation.")
+        print(
+            "Declaration audit stayed green; the recovery_pending retention assertion rejected the conversion mutation."
+        )
 
 
 if __name__ == "__main__":
