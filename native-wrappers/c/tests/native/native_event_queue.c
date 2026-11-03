@@ -1,5 +1,6 @@
 #include "native_common.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #define EVENT_COUNT 512u
@@ -15,8 +16,12 @@ static void check_payload(const rumqttc_event_t *event, unsigned index) {
 }
 
 static void run(rumqttc_protocol_t protocol, int backpressure) {
+  char client_id[64];
+  int length = snprintf(client_id, sizeof(client_id), "native-events-%s-v%u",
+                        backpressure ? "backpressure" : "retained", protocol);
+  REQUIRE(length > 0 && (size_t)length < sizeof(client_id));
   rumqttc_client_t *client =
-      native_start_client(protocol, backpressure ? "native-events-backpressure" : "native-events-retained",
+      native_start_client(protocol, client_id,
                           RUMQTTC_ACK_AUTOMATIC, 8, backpressure ? 4 : EVENT_COUNT + 8, NATIVE_DEADLINE_MS);
   rumqttc_publish_options_t options = native_publish_options(RUMQTTC_QOS_0);
   rumqttc_completion_t *completion = NULL;
@@ -25,6 +30,9 @@ static void run(rumqttc_protocol_t protocol, int backpressure) {
                                        &completion, NULL));
   native_wait_completion(completion, RUMQTTC_COMPLETION_QOS0_FLUSHED);
   rumqttc_completion_destroy(completion);
+  /* A full event queue can pause completion handling. Release the broker burst
+   * only after observing the trigger's completion, with a unique barrier per run. */
+  native_fixture_write(client_id, 1);
   unsigned count = backpressure ? 1 : EVENT_COUNT;
   for (unsigned index = 0; index < count; ++index) {
     events[index] = native_wait_event(client, RUMQTTC_EVENT_INCOMING_PUBLISH);

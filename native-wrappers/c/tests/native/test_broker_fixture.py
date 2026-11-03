@@ -8,6 +8,26 @@ from broker_fixture import Broker, Connection
 
 
 class BrokerFailureTests(unittest.TestCase):
+    def test_event_burst_waits_for_trigger_completion_in_each_queue_case(self):
+        broker = Broker()
+        self.addCleanup(broker.listener.close)
+        topic = b"native/events/burst"
+        for protocol in (4, 5):
+            for mode in ("retained", "backpressure"):
+                with self.subTest(protocol=protocol, mode=mode):
+                    name = f"native-events-{mode}-v{protocol}"
+                    connection = Connection(MagicMock(), protocol, name.encode("ascii"))
+                    body = len(topic).to_bytes(2, "big") + topic + (b"\x00" if protocol == 5 else b"")
+                    with patch.object(connection, "publish") as publish:
+
+                        def ready(_barrier_name):
+                            publish.assert_not_called()
+
+                        with patch.object(broker, "barrier", side_effect=ready) as barrier:
+                            self.assertTrue(broker.handle_publish(connection, 0, body))
+                        barrier.assert_called_once_with(name)
+                        self.assertEqual(publish.call_count, 512)
+
     def test_integration_overflow_waits_for_subscription_observation_and_socket_close(self):
         broker = Broker()
         self.addCleanup(broker.listener.close)

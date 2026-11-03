@@ -1513,6 +1513,8 @@ class Broker:
             connection.send(frame(14, 0, b"\x80" + encode_remaining(len(properties)) + properties))
             return True
         if topic == b"native/events/burst":
+            # Queue pressure must not race the C consumer's trigger-completion wait.
+            self.barrier(connection.client_id.decode("ascii"))
             for index in range(512):
                 connection.publish(b"native/events/item", struct.pack("!I", index) + b"\x00\xff", qos=0)
             return True
