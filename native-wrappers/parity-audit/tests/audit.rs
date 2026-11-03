@@ -6093,7 +6093,7 @@ fn conditional_explicit_imports_leave_only_the_globs_unshadowed_configurations()
             .iter()
             .find(|d| d.id.contains("right::Options"))
             .unwrap();
-        assert!(!selected.conditions.is_empty());
+        assert_ne!(selected.conditions, Vec::<String>::new());
         replace(root, "core", "unix", "windows");
         validate(root, &ledger, &inventory(root, &ledger).unwrap()).unwrap_err();
     }

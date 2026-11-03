@@ -63,6 +63,6 @@ fn command_fails_for_absent_repository_instead_of_reporting_coverage() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     assert!(String::from_utf8_lossy(&output.stderr).contains("parity audit failed"));
 }
