@@ -115,7 +115,9 @@ def accept_websocket(stream: socket.socket) -> WebSocketStream:
         authority = f"customer-{token}.example:8443"
         if [v for n, v in ordered_headers if n == "host"] != [authority]:
             raise AssertionError("dynamic WebSocket authority did not replace Host")
-        expected = hmac.new(b"fixture-signing-key", f"GET\n{authority}\n{path}\n{authorization}".encode(), hashlib.sha256).hexdigest()
+        expected = hmac.new(
+            b"fixture-signing-key", f"GET\n{authority}\n{path}\n{authorization}".encode(), hashlib.sha256
+        ).hexdigest()
         if headers.get("authorization") != authorization or headers.get("x-signature") != expected:
             raise AssertionError("dynamic WebSocket signature does not match final request")
         if [v for n, v in ordered_headers if n == "x-static"] != ["one", "two", ""] or "x-remove" in headers:
@@ -300,6 +302,7 @@ class Connection:
     pressure_release_started: bool = False
     pressure_released: bool = False
     pressure_lock: threading.Lock = field(default_factory=threading.Lock)
+    ordered_expected: list[int] | None = None
     limit_packet_ids: list[bytes] = field(default_factory=list)
     limit_admitted: threading.Event = field(default_factory=threading.Event)
 
@@ -338,6 +341,7 @@ class Broker:
         self.tls_context = tls_context
         self.websocket = websocket
         self.tls_proxy = tls_proxy
+        self.file_store_interop = False
         self.stopping = threading.Event()
         self.threads: list[threading.Thread] = []
         self.failures: list[str] = []
@@ -460,9 +464,18 @@ class Broker:
         value = b"terminal-private-value"
         PRIVATE_VALUES.extend((reason, key, value))
         properties = (
-            b"\x1f" + struct.pack("!H", len(reason)) + reason
-            + b"\x26" + struct.pack("!H", len(key)) + key + struct.pack("!H", len(value)) + value
-            + b"\x26" + struct.pack("!H", len(key)) + key + b"\x00\x00"
+            b"\x1f"
+            + struct.pack("!H", len(reason))
+            + reason
+            + b"\x26"
+            + struct.pack("!H", len(key))
+            + key
+            + struct.pack("!H", len(value))
+            + value
+            + b"\x26"
+            + struct.pack("!H", len(key))
+            + key
+            + b"\x00\x00"
         )
         self.client_ids.add(client_id)
         while not self.stopping.is_set():
@@ -499,7 +512,7 @@ class Broker:
                                 raise AssertionError("unknown PUBREL did not produce negative PUBCOMP")
                         stream.sendall(frame(3, 0, b"\x00\x01z" + (b"\x00" if protocol == 5 else b"") + b"done"))
                     continue
-                packet_id = body[offset:offset + 2]
+                packet_id = body[offset : offset + 2]
                 if topic == b"pending":
                     suffix = "v5" if protocol == 5 else "v4"
                     self.signal("terminal-pending-" + suffix)
@@ -521,7 +534,11 @@ class Broker:
                 stream.sendall(frame(7, 0, body[:2] + suffix))
             elif kind in {8, 10}:
                 codes = bytes((1, 0x87, 2)) if kind == 8 else bytes((0, 0x11, 0x87))
-                suffix = encode_remaining(len(properties)) + properties + codes if protocol == 5 else (bytes((1, 0x80, 2)) if kind == 8 else b"")
+                suffix = (
+                    encode_remaining(len(properties)) + properties + codes
+                    if protocol == 5
+                    else (bytes((1, 0x80, 2)) if kind == 8 else b"")
+                )
                 self.signal("terminal-ack-id-" + suffix_name, int.from_bytes(body[:2], "big"))
                 stream.sendall(frame(9 if kind == 8 else 11, 0, body[:2] + suffix))
             else:
@@ -602,7 +619,8 @@ class Broker:
                     if read_frame(stream) != (7, 0, expected_comp):
                         raise AssertionError("manual PUBREC rejection left successful QoS2 state")
         stream.sendall(frame(3, 0, b"\x00\x01a" + (b"\x00" if protocol == 5 else b"") + b"done"))
-        if read_frame(stream)[0] != 14:
+        packet = read_frame(stream)
+        if packet is None or packet[0] != 14:
             raise AssertionError("unexpected packet after manual ACK fixture")
 
     def publish_admission(self, stream: socket.socket, client_id: bytes, attempt: int) -> None:
@@ -637,7 +655,9 @@ class Broker:
             self.barrier(name + "-release")
         restricted = not replay or attempt == 4
         properties = b"\x24\x00\x25\x00" if restricted else b""
-        stream.sendall(frame(2, 0, bytes((int(replay and attempt > 1), 0)) + encode_remaining(len(properties)) + properties))
+        stream.sendall(
+            frame(2, 0, bytes((int(replay and attempt > 1), 0)) + encode_remaining(len(properties)) + properties)
+        )
         original = None
         while packet := read_frame(stream):
             kind, flags, body = packet
@@ -652,8 +672,8 @@ class Broker:
                 if flags != (2 if attempt == 1 else 10) + int(retained):
                     raise AssertionError("replayed publish flags changed")
                 topic, offset = string_at(body, 0)
-                identifier = body[offset:offset + 2]
-                if topic != b"a" or body[offset + 2:] != b"\x00data":
+                identifier = body[offset : offset + 2]
+                if topic != b"a" or body[offset + 2 :] != b"\x00data":
                     raise AssertionError("replayed publish data changed")
                 original = self.restart_packet_ids.setdefault((client_id, b"admission"), identifier)
                 if identifier != original:
@@ -669,6 +689,7 @@ class Broker:
         self.barrier(f"{name}-release-{attempt}")
         stream.sendall(frame(2, 0, bytes((int(attempt > 1), 0, 0))))
         acknowledged = 0
+        expected_acknowledgements = 0
         while packet := read_frame(stream):
             kind, flags, body = packet
             if kind == 14:
@@ -677,18 +698,20 @@ class Broker:
                 raise AssertionError("unexpected capacity fixture packet")
             topic, offset = string_at(body, 0)
             qos = flags >> 1 & 3
-            identifier = body[offset:offset + 2] if qos else b""
+            identifier = body[offset : offset + 2] if qos else b""
             offset += 2 if qos else 0
             if topic != b"a" or body[offset:] != b"\x00data":
                 raise AssertionError("capacity fixture publish data changed")
             if qos:
                 if acknowledged == 0:
                     self.signal(f"{name}-held-{attempt}")
-                    self.barrier(f"{name}-ack-{attempt}")
+                    expected_acknowledgements = self.barrier(f"{name}-ack-{attempt}")
+                    if not 1 <= expected_acknowledgements <= (1 if bytes_only else 3):
+                        raise AssertionError("unexpected capacity admission count")
                 stream.sendall(frame(4, 0, identifier))
                 acknowledged += 1
             elif acknowledged:
-                if attempt != 1 or acknowledged != (1 if bytes_only else 2):
+                if attempt != 1 or acknowledged != expected_acknowledgements:
                     raise AssertionError("capacity fixture disconnected before completion")
                 return
 
@@ -697,8 +720,7 @@ class Broker:
         if client_id != b"native-admission-unbound":
             self.signal(f"{name}-ready-{attempt}")
             self.barrier(f"{name}-release-{attempt}")
-        stream.sendall(frame(2, 0, bytes((int(attempt > 1), 0))
-                             + b"\x03\x22\x00\x02"))
+        stream.sendall(frame(2, 0, bytes((int(attempt > 1), 0)) + b"\x03\x22\x00\x02"))
         aliases: dict[int, bytes] = {}
         held: list[bytes] = []
         qos2: dict[bytes, bool] = {}
@@ -719,7 +741,7 @@ class Broker:
                 raise AssertionError("unexpected admission matrix packet")
             qos = flags >> 1 & 3
             topic, offset = string_at(body, 0)
-            identifier = body[offset:offset + 2] if qos else b""
+            identifier = body[offset : offset + 2] if qos else b""
             offset += 2 if qos else 0
             properties, offset = properties_at(body, offset)
             if properties:
@@ -743,9 +765,12 @@ class Broker:
                 self.signal(name + "-ready")
                 self.barrier(name + "-drop")
                 return
-            if client_id == b"native-admission-unbound" and flags & 8:
-                if identifier != self.restart_packet_ids[(client_id, b"unbound")]:
-                    raise AssertionError("window filler replay identifier changed")
+            if (
+                client_id == b"native-admission-unbound"
+                and flags & 8
+                and identifier != self.restart_packet_ids[(client_id, b"unbound")]
+            ):
+                raise AssertionError("window filler replay identifier changed")
             if topic == b"matrix/drop":
                 return
             if topic == b"hold":
@@ -1012,7 +1037,9 @@ class Broker:
                 return
             if client_id.startswith((b"native-unix-reconnect-", b"native-websocket-reconnect-")) and attempt == 1:
                 return
-            if (client_id.startswith(b"native-dynamic-websocket-") or client_id == b"c-websocket-token-example") and attempt == 1:
+            if (
+                client_id.startswith(b"native-dynamic-websocket-") or client_id == b"c-websocket-token-example"
+            ) and attempt == 1:
                 stream.sendall(frame(2, 0, b"\x00\x00" + (b"\x00" if protocol == 5 else b"")))
                 return
             if client_id.startswith(b"python-attempt-recovery-") and attempt == 1:
@@ -1087,9 +1114,15 @@ class Broker:
                     stream.sendall(frame(2, 0, b"\x00\x00\x00"))
                 connection = Connection(stream, protocol, client_id)
                 self.client_ids.add(client_id)
-            elif client_id.startswith(b"native-redirect-authority-") or client_id.startswith(b"native-authority-target-"):
+            elif client_id.startswith(b"native-redirect-authority-") or client_id.startswith(
+                b"native-authority-target-"
+            ):
                 origin = client_id.startswith(b"native-redirect-authority-")
-                mode = client_id.decode().removeprefix("native-redirect-authority-").removeprefix("native-authority-target-")
+                mode = (
+                    client_id.decode()
+                    .removeprefix("native-redirect-authority-")
+                    .removeprefix("native-authority-target-")
+                )
                 if origin and attempt == 1:
                     reference = f"127.0.0.2:1 localhost:{self.port}".encode()
                     if mode.startswith("network-"):
@@ -1097,11 +1130,17 @@ class Broker:
                     properties = b"\x1c" + struct.pack("!H", len(reference)) + reference
                     stream.sendall(frame(2, 0, b"\x00\x9d" + encode_remaining(len(properties)) + properties))
                 else:
-                    if connect_flags != (0xC2 if mode == "isolated" or mode.startswith(("auth-", "network-")) else 0xC0):
+                    if connect_flags != (
+                        0xC2 if mode == "isolated" or mode.startswith(("auth-", "network-")) else 0xC0
+                    ):
                         raise AssertionError("application redirect session/credentials flags changed")
                     username, offset = string_at(body, offset)
                     password, offset = string_at(body, offset)
-                    if username != b"target-private-user" or password != b"target-private-password" or offset != len(body):
+                    if (
+                        username != b"target-private-user"
+                        or password != b"target-private-password"
+                        or offset != len(body)
+                    ):
                         raise AssertionError("application target credentials were not copied or isolated")
                     auth = b"\x15\x00\x04test"
                     if (auth in connect_properties) != (mode == "auth-reuse"):
@@ -1416,9 +1455,13 @@ class Broker:
                     PRIVATE_VALUES.append(secret)
                     properties = method + b"\x16" + struct.pack("!H", len(secret)) + secret
                     stream.sendall(frame(15, 0, bytes((code,)) + encode_remaining(len(properties)) + properties))
-        except (BrokenPipeError, ConnectionResetError) as error:
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError) as error:
+            # TLS 1.3 can finish server-side before a rejecting verifier closes
+            # the client. Session-ticket writes then fail before MQTT CONNECT.
+            if isinstance(error, ssl.SSLEOFError) and client_id is None and self.tls_context is not None:
+                self.tls_disconnects_before_connect += 1
             # The cancellation consumer closes while TLS/application writes are pending.
-            if client_id is None or not client_id.startswith(b"native-external-cancel-"):
+            elif client_id is None or not client_id.startswith(b"native-external-cancel-"):
                 with self.failure_lock:
                     self.failures.append(repr(error))
         except Exception as error:
@@ -1470,6 +1513,8 @@ class Broker:
             connection.send(frame(14, 0, b"\x80" + encode_remaining(len(properties)) + properties))
             return True
         if topic == b"native/events/burst":
+            # Queue pressure must not race the C consumer's trigger-completion wait.
+            self.barrier(connection.client_id.decode("ascii"))
             for index in range(512):
                 connection.publish(b"native/events/item", struct.pack("!I", index) + b"\x00\xff", qos=0)
             return True
@@ -1538,7 +1583,10 @@ class Broker:
                     raise AssertionError("alias state survived the reconnect limit change")
                 if count == 3 and (packet_id != self.alias_packet_ids.get(connection.client_id) or not flags & 8):
                     raise AssertionError("alias replay lost its concrete topic, packet id or DUP bit")
-        if connection.client_id.startswith((b"native-close-options-", b"native-ordered-")) and topic == b"native/close/stall":
+        if (
+            connection.client_id.startswith((b"native-close-options-", b"native-ordered-"))
+            and topic == b"native/close/stall"
+        ):
             if qos != 1:
                 raise AssertionError("close fixture did not send pending QoS1")
             with self.failure_lock:
@@ -1581,7 +1629,8 @@ class Broker:
                 b"rumqttc/native/restart/qos1": 1,
                 b"rumqttc/native/restart/qos2": 2,
             }.get(topic)
-            if expected_qos is None or payload != b"persist" or qos != expected_qos:
+            expected_payload = b"rust-ok" if attempt == 2 and self.file_store_interop else b"persist"
+            if expected_qos is None or payload != expected_payload or qos != expected_qos:
                 raise AssertionError("restart publish changed on the wire")
             key = (connection.client_id, topic)
             if attempt == 1:
@@ -1699,8 +1748,20 @@ class Broker:
                 for index in range(128):
                     connection.publish(topic, index.to_bytes(2, "big"), qos=1)
             elif topic == b"rumqttc/native/overflow":
+                if connection.client_id == b"native-overflow":
+                    self.barrier("integration-overflow-ready")
                 for index in range(8):
                     connection.publish(topic, bytes([index, 0]), qos=0)
+                if connection.client_id == b"native-overflow":
+                    # Socket closure proves the event delivery deadline expired
+                    # while the C consumer kept its one-slot queue full.
+                    try:
+                        remaining = connection.stream.recv(1)
+                    except ConnectionResetError:
+                        remaining = b""
+                    if remaining:
+                        raise AssertionError("overflow client did not close its transport")
+                    self.signal("integration-overflow-closed")
             elif topic == b"rumqttc/native/automatic/qos1":
                 connection.publish(topic, b"automatic-qos1", qos=1)
             elif topic == b"rumqttc/native/automatic/qos2":
@@ -1894,7 +1955,7 @@ class ProfileReconnectBroker(Broker):
             _, offset = string_at(packet[2], 0)
             protocol = packet[2][offset]
             self.attempts += 1
-            if stream.session_reused:
+            if isinstance(stream, ssl.SSLSocket) and stream.session_reused:
                 raise AssertionError("pinned TLS profile resumed without fresh verification")
             stream.sendall(frame(2, 0, b"\x00\x00" + (b"\x00" if protocol == 5 else b"")))
             if self.attempts == 1:
@@ -1920,11 +1981,27 @@ def profile_rotated_certificates(directory: str) -> tuple[str, str, str]:
         ["openssl", "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost", "-keyout", key, "-out", csr],
     ]
     for serial, source, output in ((1002, "server.csr", renewed), (1003, "rotated.csr", rotated)):
-        commands.append([
-            "openssl", "x509", "-req", "-days", "1", "-in", os.path.join(directory, source),
-            "-CA", os.path.join(directory, "ca.pem"), "-CAkey", os.path.join(directory, "ca.key"),
-            "-set_serial", str(serial), "-extfile", os.path.join(directory, "server.ext"), "-out", output,
-        ])
+        commands.append(
+            [
+                "openssl",
+                "x509",
+                "-req",
+                "-days",
+                "1",
+                "-in",
+                os.path.join(directory, source),
+                "-CA",
+                os.path.join(directory, "ca.pem"),
+                "-CAkey",
+                os.path.join(directory, "ca.key"),
+                "-set_serial",
+                str(serial),
+                "-extfile",
+                os.path.join(directory, "server.ext"),
+                "-out",
+                output,
+            ]
+        )
     for command in commands:
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return renewed, rotated, key
@@ -1984,6 +2061,7 @@ def main() -> int:
     parser.add_argument("--binary", required=True)
     parser.add_argument("--atomic-restart", action="store_true")
     parser.add_argument("--file-store-restart", action="store_true")
+    parser.add_argument("--file-store-rust-helper", help="native Rust reader/writer between C restart stages")
     parser.add_argument("--redact", action="store_true")
     parser.add_argument("--proxy-matrix", action="store_true")
     parser.add_argument("--tls-matrix", action="store_true")
@@ -2001,6 +2079,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="rumqttc-native-tls-") as directory:
         tls_context, mtls_context, ca_cert, wrong_cert, client_cert, client_key = make_tls_fixture(directory)
         broker = Broker()
+        broker.file_store_interop = bool(args.file_store_rust_helper)
         untrusted_broker = None
         if args.tls_matrix:
             untrusted_directory = os.path.join(directory, "untrusted")
@@ -2021,8 +2100,10 @@ def main() -> int:
                 for mode in ("cert", "spki", "key"):
                     label = f"profile-reconnect-{protocol}-{mode}"
                     item = ProfileReconnectBroker(
-                        directory, rotated if mode == "key" else renewed,
-                        rotated_key if mode == "key" else os.path.join(directory, "server.key"), label,
+                        directory,
+                        rotated if mode == "key" else renewed,
+                        rotated_key if mode == "key" else os.path.join(directory, "server.key"),
+                        label,
                     )
                     item.start()
                     rotation_brokers[(protocol, mode)] = item
@@ -2059,13 +2140,16 @@ def main() -> int:
             for label, item in zip(("12", "13"), profile_brokers, strict=True):
                 environment[f"RUMQTTC_TEST_TLS_{label}_PORT"] = str(item.port)
 
-            environment["RUMQTTC_TEST_UNTRUSTED_CA_PEM"] = Path(untrusted_directory, "ca.pem").read_text(encoding="utf-8")
+            environment["RUMQTTC_TEST_UNTRUSTED_CA_PEM"] = Path(directory, "untrusted", "ca.pem").read_text(
+                encoding="utf-8"
+            )
         if args.tls_profiles or args.tls_profile_example:
             profile_pins(directory, environment, "RUMQTTC_TEST_")
         environment["RUMQTTC_TEST_CONTROL_DIR"] = directory
         environment["RUMQTTC_TEST_HOST"] = "127.0.0.1"
         environment["RUMQTTC_TEST_PORT"] = str(broker.port)
-        # Bound sockets without listen keep these local refusal endpoints deterministic.
+        # Linux refuses connects to bound, non-listening sockets. Darwin can
+        # instead leave the SYN pending; release its reservations before dialing.
         refused = [socket.socket(), socket.socket()]
         for index, reservation in enumerate(refused, 1):
             reservation.bind(("127.0.0.1", 0))
@@ -2106,13 +2190,50 @@ def main() -> int:
             ec_csr = os.path.join(directory, "ec-client.csr")
             ec_cert = os.path.join(directory, "ec-client.pem")
             for command in (
-                ["openssl", "req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=external EC client", "-keyout", ec_key, "-out", ec_csr],
-                ["openssl", "x509", "-req", "-days", "1", "-in", ec_csr, "-CA", ca_cert, "-CAkey", os.path.join(directory, "ca.key"), "-CAcreateserial", "-extfile", os.path.join(directory, "client.ext"), "-out", ec_cert],
+                [
+                    "openssl",
+                    "req",
+                    "-newkey",
+                    "ec",
+                    "-pkeyopt",
+                    "ec_paramgen_curve:P-256",
+                    "-nodes",
+                    "-subj",
+                    "/CN=external EC client",
+                    "-keyout",
+                    ec_key,
+                    "-out",
+                    ec_csr,
+                ],
+                [
+                    "openssl",
+                    "x509",
+                    "-req",
+                    "-days",
+                    "1",
+                    "-in",
+                    ec_csr,
+                    "-CA",
+                    ca_cert,
+                    "-CAkey",
+                    os.path.join(directory, "ca.key"),
+                    "-CAcreateserial",
+                    "-extfile",
+                    os.path.join(directory, "client.ext"),
+                    "-out",
+                    ec_cert,
+                ],
             ):
                 subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             environment["RUMQTTC_TEST_EC_CLIENT_CERT_PEM"] = Path(ec_cert).read_text(encoding="utf-8")
             environment["RUMQTTC_TEST_EC_CLIENT_KEY_PEM"] = Path(ec_key).read_text(encoding="utf-8")
-            PRIVATE_VALUES.extend((environment["RUMQTTC_TEST_CLIENT_KEY_PEM"].encode(), environment["RUMQTTC_TEST_EC_CLIENT_KEY_PEM"].encode(), b"host-key"))
+            PRIVATE_VALUES.extend(
+                (
+                    environment["RUMQTTC_TEST_CLIENT_KEY_PEM"].encode(),
+                    environment["RUMQTTC_TEST_EC_CLIENT_KEY_PEM"].encode(),
+                    b"host-key",
+                )
+            )
         if args.tls_matrix:
             archive = os.path.join(directory, "client.p12")
             subprocess.run(
@@ -2145,7 +2266,9 @@ def main() -> int:
             os.mkdir(proxy_directory)
             proxy_context, _, proxy_ca, _, _, _ = make_tls_fixture(proxy_directory)
             ports = {broker.port, tls_broker.port, wss_broker.port, mtls_broker.port, mtls_wss_broker.port}
-            tunnel_brokers = {item.port: item for item in (broker, tls_broker, wss_broker, mtls_broker, mtls_wss_broker)}
+            tunnel_brokers = {
+                item.port: item for item in (broker, tls_broker, wss_broker, mtls_broker, mtls_wss_broker)
+            }
             if args.custom_transport:
                 ports.add(websocket_broker.port)
                 tunnel_brokers[websocket_broker.port] = websocket_broker
@@ -2203,6 +2326,14 @@ def main() -> int:
                     )
                     if status:
                         return status
+                    if stage.startswith("seed-") and args.file_store_rust_helper:
+                        status = run_native(
+                            [args.file_store_rust_helper, stage.removeprefix("seed-"), directory],
+                            environment,
+                            args.redact,
+                        )
+                        if status:
+                            return status
                 return 0
             if args.atomic_restart:
                 environment["RUMQTTC_TEST_ATOMIC_FILE"] = os.path.join(directory, "checkpoint")
@@ -2224,6 +2355,9 @@ def main() -> int:
                 print("platform trust: pending; requires an explicitly disposable runner")
             trust = trusted_root(Path(ca_cert), environment) if platform_roots else contextlib.nullcontext()
             with trust:
+                if sys.platform == "darwin":
+                    for reservation in refused:
+                        reservation.close()
                 return run_native(
                     [*launcher, args.binary, *child_arguments, *address_arguments],
                     environment,

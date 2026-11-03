@@ -3177,6 +3177,7 @@
     {"id": "core|rumqttc_wrapper_core::@use:runtime::EventConsumer#reexport", "surface": "core", "kind": "reexport", "shape": "use runtime::EventConsumer", "conditions": [], "source": "native-wrappers/wrapper-core/src/lib.rs"},
     {"id": "core|rumqttc_wrapper_core::@use:runtime::NativeClient#reexport", "surface": "core", "kind": "reexport", "shape": "use runtime::NativeClient", "conditions": [], "source": "native-wrappers/wrapper-core/src/lib.rs"},
     {"id": "core|rumqttc_wrapper_core::@use:runtime::NativeClientCloser#reexport", "surface": "core", "kind": "reexport", "shape": "use runtime::NativeClientCloser", "conditions": [], "source": "native-wrappers/wrapper-core/src/lib.rs"},
+    {"id": "core|rumqttc_wrapper_core::@use:runtime::with_host_callback#reexport", "surface": "core", "kind": "reexport", "shape": "use runtime::with_host_callback", "conditions": [], "source": "native-wrappers/wrapper-core/src/lib.rs"},
     {"id": "core|rumqttc_wrapper_core::@use:scram::ScramConfig#reexport", "surface": "core", "kind": "reexport", "shape": "use scram::ScramConfig", "conditions": [], "source": "native-wrappers/wrapper-core/src/lib.rs"},
     {"id": "core|rumqttc_wrapper_core::@use:session::BrokerSessionResumePolicy#reexport", "surface": "core", "kind": "reexport", "shape": "use session::BrokerSessionResumePolicy", "conditions": [], "source": "native-wrappers/wrapper-core/src/lib.rs"},
     {"id": "core|rumqttc_wrapper_core::@use:session::SessionCheckpoint#reexport", "surface": "core", "kind": "reexport", "shape": "use session::SessionCheckpoint", "conditions": [], "source": "native-wrappers/wrapper-core/src/lib.rs"},
@@ -4580,6 +4581,7 @@
     {"id": "core|rumqttc_wrapper_core::runtime::NativeClientCloser::close_now#method", "surface": "core", "kind": "method", "shape": "  fn close_now (& self , timeout : Duration) -> Result < () >", "conditions": [], "source": "native-wrappers/wrapper-core/src/runtime.rs"},
     {"id": "core|rumqttc_wrapper_core::runtime::NativeClientCloser::close_now_with_options#method", "surface": "core", "kind": "method", "shape": "  fn close_now_with_options (& self , timeout : Duration , protocol : crate :: DisconnectProtocolOptions ,) -> Result < () >", "conditions": [], "source": "native-wrappers/wrapper-core/src/runtime.rs"},
     {"id": "core|rumqttc_wrapper_core::runtime::NativeClientCloser::close_with_options#method", "surface": "core", "kind": "method", "shape": "  fn close_with_options (& self , timeout : Duration , protocol : crate :: DisconnectProtocolOptions ,) -> Result < Completion >", "conditions": [], "source": "native-wrappers/wrapper-core/src/runtime.rs"},
+    {"id": "core|rumqttc_wrapper_core::runtime::with_host_callback#function", "surface": "core", "kind": "function", "shape": " fn with_host_callback < T > (call : impl FnOnce () -> T) -> T", "conditions": [], "source": "native-wrappers/wrapper-core/src/runtime.rs"},
     {"id": "core|rumqttc_wrapper_core::rust_session_store#module", "surface": "core", "kind": "module", "shape": "pub mod rust_session_store", "conditions": [], "source": "native-wrappers/wrapper-core/src/lib.rs"},
     {"id": "core|rumqttc_wrapper_core::rust_session_store::@macro:adapter!(from_v4 , V4Store , rumqttc_v4 , V4 , 4)#macro", "surface": "core", "kind": "macro", "shape": "adapter ! (from_v4 , V4Store , rumqttc_v4 , V4 , 4)", "conditions": [], "source": "native-wrappers/wrapper-core/src/rust_session_store.rs"},
     {"id": "core|rumqttc_wrapper_core::rust_session_store::@macro:adapter!(from_v5 , V5Store , rumqttc_v5 , V5 , 5)#macro", "surface": "core", "kind": "macro", "shape": "adapter ! (from_v5 , V5Store , rumqttc_v5 , V5 , 5)", "conditions": [], "source": "native-wrappers/wrapper-core/src/rust_session_store.rs"},
@@ -4928,6 +4930,7 @@
     {"id": "c|rumqttc_c::ffi::@use:observation::*#reexport", "surface": "c", "kind": "reexport", "shape": "use observation::*", "conditions": [], "source": "native-wrappers/c/src/ffi.rs"},
     {"id": "c|rumqttc_c::ffi::@use:ordered::*#reexport", "surface": "c", "kind": "reexport", "shape": "use ordered::*", "conditions": [], "source": "native-wrappers/c/src/ffi.rs"},
     {"id": "c|rumqttc_c::ffi::@use:pending_admission::*#reexport", "surface": "c", "kind": "reexport", "shape": "use pending_admission::*", "conditions": [], "source": "native-wrappers/c/src/ffi.rs"},
+    {"id": "c|rumqttc_c::ffi::@use:publish_buffer::*#reexport", "surface": "c", "kind": "reexport", "shape": "use publish_buffer::*", "conditions": [], "source": "native-wrappers/c/src/ffi.rs"},
     {"id": "c|rumqttc_c::ffi::@use:readiness::*#reexport", "surface": "c", "kind": "reexport", "shape": "use readiness::*", "conditions": [], "source": "native-wrappers/c/src/ffi.rs"},
     {"id": "c|rumqttc_c::ffi::@use:reconnect::*#reexport", "surface": "c", "kind": "reexport", "shape": "use reconnect::*", "conditions": [], "source": "native-wrappers/c/src/ffi.rs"},
     {"id": "c|rumqttc_c::ffi::@use:recovery::*#reexport", "surface": "c", "kind": "reexport", "shape": "use recovery::*", "conditions": [], "source": "native-wrappers/c/src/ffi.rs"},
@@ -5420,6 +5423,22 @@
     {"id": "c|rumqttc_c::ffi::pending_admission::rumqttc_pending_admission_release#function", "surface": "c", "kind": "function", "shape": "unsafe (no_mangle) unsafe extern \"C\" fn rumqttc_pending_admission_release (handle : * mut rumqttc_pending_admission)", "conditions": [], "source": "native-wrappers/c/src/pending_admission.rs"},
     {"id": "c|rumqttc_c::ffi::pending_admission::rumqttc_pending_admission_retain#function", "surface": "c", "kind": "function", "shape": "unsafe (no_mangle) unsafe extern \"C\" fn rumqttc_pending_admission_retain (handle : * const rumqttc_pending_admission , out : * mut * mut rumqttc_pending_admission , error_out : * mut * mut rumqttc_error ,) -> u32", "conditions": [], "source": "native-wrappers/c/src/pending_admission.rs"},
     {"id": "c|rumqttc_c::ffi::pending_admission::rumqttc_pending_admission_wait_timeout_ms#function", "surface": "c", "kind": "function", "shape": "unsafe (no_mangle) unsafe extern \"C\" fn rumqttc_pending_admission_wait_timeout_ms (handle : * const rumqttc_pending_admission , timeout_ms : u64 , state_out : * mut u32 , operation_id_out : * mut u64 , completion_out : * mut * mut rumqttc_completion , error_out : * mut * mut rumqttc_error ,) -> u32", "conditions": [], "source": "native-wrappers/c/src/pending_admission.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::@use:std::ffi::c_void#reexport", "surface": "c", "kind": "reexport", "shape": "use std::ffi::c_void visibility=private", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_bytes_view_t#reexport", "surface": "c", "kind": "reexport", "shape": "use super::rumqttc_bytes_view_t visibility=private", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_client#reexport", "surface": "c", "kind": "reexport", "shape": "use super::rumqttc_client visibility=private", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_completion#reexport", "surface": "c", "kind": "reexport", "shape": "use super::rumqttc_completion visibility=private", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_error#reexport", "surface": "c", "kind": "reexport", "shape": "use super::rumqttc_error visibility=private", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_pending_admission#reexport", "surface": "c", "kind": "reexport", "shape": "use super::rumqttc_pending_admission visibility=private", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_publish_options_t#reexport", "surface": "c", "kind": "reexport", "shape": "use super::rumqttc_publish_options_t visibility=private", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_string_view_t#reexport", "surface": "c", "kind": "reexport", "shape": "use super::rumqttc_string_view_t visibility=private", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::rumqttc_client_publish_buffer_deferred#function", "surface": "c", "kind": "function", "shape": "unsafe (no_mangle) unsafe extern \"C\" fn rumqttc_client_publish_buffer_deferred (client : * mut rumqttc_client , topic : rumqttc_string_view_t , buffer : * const rumqttc_publish_buffer , options : * const rumqttc_publish_options_t , out : * mut * mut rumqttc_pending_admission , error_out : * mut * mut rumqttc_error ,) -> u32", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::rumqttc_client_publish_buffer_tracked#function", "surface": "c", "kind": "function", "shape": "unsafe (no_mangle) unsafe extern \"C\" fn rumqttc_client_publish_buffer_tracked (client : * mut rumqttc_client , topic : rumqttc_string_view_t , buffer : * const rumqttc_publish_buffer , options : * const rumqttc_publish_options_t , completion_out : * mut * mut rumqttc_completion , error_out : * mut * mut rumqttc_error ,) -> u32", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::rumqttc_client_try_publish_buffer#function", "surface": "c", "kind": "function", "shape": "unsafe (no_mangle) unsafe extern \"C\" fn rumqttc_client_try_publish_buffer (client : * mut rumqttc_client , topic : rumqttc_string_view_t , buffer : * const rumqttc_publish_buffer , options : * const rumqttc_publish_options_t , operation_id_out : * mut u64 , error_out : * mut * mut rumqttc_error ,) -> u32", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer#struct", "surface": "c", "kind": "struct", "shape": " struct rumqttc_publish_buffer  form=named private_fields=unconditional", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer_create#function", "surface": "c", "kind": "function", "shape": "unsafe (no_mangle) unsafe extern \"C\" fn rumqttc_publish_buffer_create (data : rumqttc_bytes_view_t , release : rumqttc_publish_buffer_release_fn , userdata : * mut c_void , out : * mut * mut rumqttc_publish_buffer , error_out : * mut * mut rumqttc_error ,) -> u32", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer_release#function", "surface": "c", "kind": "function", "shape": "unsafe (no_mangle) unsafe extern \"C\" fn rumqttc_publish_buffer_release (buffer : * mut rumqttc_publish_buffer)", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer_release_fn#alias", "surface": "c", "kind": "alias", "shape": "type rumqttc_publish_buffer_release_fn = Option < unsafe extern \"C\" fn (* mut c_void , * const u8 , usize) >", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
+    {"id": "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer_retain#function", "surface": "c", "kind": "function", "shape": "unsafe (no_mangle) unsafe extern \"C\" fn rumqttc_publish_buffer_retain (buffer : * const rumqttc_publish_buffer , out : * mut * mut rumqttc_publish_buffer , error_out : * mut * mut rumqttc_error ,) -> u32", "conditions": [], "source": "native-wrappers/c/src/publish_buffer.rs"},
     {"id": "c|rumqttc_c::ffi::readiness::@use:std::ffi::c_void#reexport", "surface": "c", "kind": "reexport", "shape": "use std::ffi::c_void visibility=private", "conditions": [], "source": "native-wrappers/c/src/readiness.rs"},
     {"id": "c|rumqttc_c::ffi::readiness::@use:super::rumqttc_client#reexport", "surface": "c", "kind": "reexport", "shape": "use super::rumqttc_client visibility=private", "conditions": [], "source": "native-wrappers/c/src/readiness.rs"},
     {"id": "c|rumqttc_c::ffi::readiness::@use:super::rumqttc_completion#reexport", "surface": "c", "kind": "reexport", "shape": "use super::rumqttc_completion visibility=private", "conditions": [], "source": "native-wrappers/c/src/readiness.rs"},
@@ -6827,7 +6846,7 @@
     {"id": "native-v4|rumqttc_v4::eventloop::EventLoop::establish_session_for_recovery#method [cfg (feature = \"session-recovery\")]", "surface": "native-v4", "kind": "method", "shape": "  async fn establish_session_for_recovery (& mut self , still_running : impl Fn () -> bool ,) -> Result < Event , ConnectionError >", "conditions": ["cfg (feature = \"session-recovery\")"], "source": "rumqttc-v4/src/eventloop_recovery.rs"},
     {"id": "native-v4|rumqttc_v4::eventloop::EventLoop::into_stream#method [cfg (feature = \"stream\") && cfg_attr (docsrs , doc (cfg (feature = \"stream\")))]", "surface": "native-v4", "kind": "method", "shape": "  fn into_stream (self) -> impl futures_core :: Stream < Item = Result < Event , ConnectionError > >", "conditions": ["cfg (feature = \"stream\")", "cfg_attr (docsrs , doc (cfg (feature = \"stream\")))"], "source": "rumqttc-v4/src/eventloop.rs"},
     {"id": "native-v4|rumqttc_v4::eventloop::EventLoop::mqtt_options#field", "surface": "native-v4", "kind": "field", "shape": "2: MqttOptions", "conditions": [], "source": "rumqttc-v4/src/eventloop.rs"},
-    {"id": "native-v4|rumqttc_v4::eventloop::EventLoop::network_options#field", "surface": "native-v4", "kind": "field", "shape": "20: NetworkOptions", "conditions": [], "source": "rumqttc-v4/src/eventloop.rs"},
+    {"id": "native-v4|rumqttc_v4::eventloop::EventLoop::network_options#field", "surface": "native-v4", "kind": "field", "shape": "22: NetworkOptions", "conditions": [], "source": "rumqttc-v4/src/eventloop.rs"},
     {"id": "native-v4|rumqttc_v4::eventloop::EventLoop::network_options#method", "surface": "native-v4", "kind": "method", "shape": "  fn network_options (& self) -> NetworkOptions", "conditions": [], "source": "rumqttc-v4/src/eventloop.rs"},
     {"id": "native-v4|rumqttc_v4::eventloop::EventLoop::new#method", "surface": "native-v4", "kind": "method", "shape": "  fn new (mqtt_options : MqttOptions , cap : usize) -> Self", "conditions": [], "source": "rumqttc-v4/src/eventloop.rs"},
     {"id": "native-v4|rumqttc_v4::eventloop::EventLoop::pending_is_empty#method", "surface": "native-v4", "kind": "method", "shape": "  fn pending_is_empty (& self) -> bool", "conditions": [], "source": "rumqttc-v4/src/eventloop.rs"},
@@ -10744,6 +10763,14 @@
         "c|rumqttc_c::ffi::pending_admission::@use:super::rumqttc_subscribe_options_t#reexport",
         "c|rumqttc_c::ffi::pending_admission::@use:super::rumqttc_subscription_t#reexport",
         "c|rumqttc_c::ffi::pending_admission::@use:super::rumqttc_unsubscribe_options_t#reexport",
+        "c|rumqttc_c::ffi::publish_buffer::@use:std::ffi::c_void#reexport",
+        "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_bytes_view_t#reexport",
+        "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_client#reexport",
+        "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_completion#reexport",
+        "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_error#reexport",
+        "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_pending_admission#reexport",
+        "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_publish_options_t#reexport",
+        "c|rumqttc_c::ffi::publish_buffer::@use:super::rumqttc_string_view_t#reexport",
         "c|rumqttc_c::ffi::readiness::@use:std::ffi::c_void#reexport",
         "c|rumqttc_c::ffi::readiness::@use:super::rumqttc_client#reexport",
         "c|rumqttc_c::ffi::readiness::@use:super::rumqttc_completion#reexport",
@@ -11179,6 +11206,7 @@
         "c|rumqttc_c::ffi::@use:observation::*#reexport",
         "c|rumqttc_c::ffi::@use:ordered::*#reexport",
         "c|rumqttc_c::ffi::@use:pending_admission::*#reexport",
+        "c|rumqttc_c::ffi::@use:publish_buffer::*#reexport",
         "c|rumqttc_c::ffi::@use:readiness::*#reexport",
         "c|rumqttc_c::ffi::@use:reconnect::*#reexport",
         "c|rumqttc_c::ffi::@use:recovery::*#reexport",
@@ -22905,6 +22933,72 @@
       "restrictions": "Empty supplements cover no additional standalone public declarations. This review makes no runtime trait-behavior or native-to-core parity claim.",
       "evidence": [],
       "validation_limits": "Source and binding review for the listed inputs only. Changes to selectors, derive attributes or complete generator inputs require renewed review. Dependency-internal expansion and executed behavior remain outside declaration coverage."
+    },
+    {
+      "id": "core.host-callback-bridge",
+      "boundary": "core-to-c",
+      "sources": [
+        "core|rumqttc_wrapper_core::@use:runtime::with_host_callback#reexport",
+        "core|rumqttc_wrapper_core::runtime::with_host_callback#function"
+      ],
+      "targets": [
+        "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer_release_fn#alias"
+      ],
+      "disposition": "partial",
+      "rationale": "The hidden Rust callback bridge marks foreign buffer-release callbacks as host callbacks and restores the previous thread-local guard on return or unwinding. The C adapter invokes it around final storage release.",
+      "restrictions": "No arbitrary Rust closure is exposed in the C ABI. Release callbacks obey managed blocking-wait restrictions and may run on the final owner thread; buffer release is independent of MQTT completion and context join.",
+      "evidence": [
+        {
+          "path": "native-wrappers/c/src/publish_buffer/controlled_tests.rs",
+          "symbol": "public_buffer_callback_reentry_is_guarded_even_on_a_caller_thread"
+        }
+      ],
+      "validation_limits": "Evidence checks callback reentry and wait rejection; it does not establish arbitrary foreign callback safety or execution on every platform."
+    },
+    {
+      "id": "c.publish_buffer.binding-adapters",
+      "boundary": "c-contract",
+      "sources": [
+        "c|rumqttc_c::ffi::publish_buffer::rumqttc_client_publish_buffer_deferred#function",
+        "c|rumqttc_c::ffi::publish_buffer::rumqttc_client_publish_buffer_tracked#function",
+        "c|rumqttc_c::ffi::publish_buffer::rumqttc_client_try_publish_buffer#function",
+        "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer#struct",
+        "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer_create#function",
+        "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer_release#function",
+        "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer_release_fn#alias",
+        "c|rumqttc_c::ffi::publish_buffer::rumqttc_publish_buffer_retain#function"
+      ],
+      "targets": [
+        "core|rumqttc_wrapper_core::command::PublishCommand#struct",
+        "core|rumqttc_wrapper_core::handle::ClientHandle::try_admit#method",
+        "core|rumqttc_wrapper_core::runtime::with_host_callback#function"
+      ],
+      "disposition": "partial",
+      "rationale": "C opaque buffer handles adopt immutable application storage through Bytes::from_owner. Immediate, tracked and deferred publish entry points clone that storage into the existing PublishCommand and bounded admission paths; independent handles share final release authority.",
+      "restrictions": "The caller guarantees stable immutable storage and a thread-safe release callback until final release. Failed creation retains caller ownership. Topics and MQTT 5 properties still copy, UTF-8 checks remain enabled, and each admitted use pays its logical payload charge. Completion and join do not imply final storage release; no end-to-end zero-copy or RSS bound is claimed.",
+      "evidence": [
+        {
+          "path": "native-wrappers/c/src/publish_buffer.rs",
+          "symbol": "creation_is_transactional_and_independent_handles_release_once"
+        },
+        {
+          "path": "native-wrappers/c/src/publish_buffer.rs",
+          "symbol": "metadata_parsing_shares_the_exact_application_pointer"
+        },
+        {
+          "path": "native-wrappers/c/src/publish_buffer/controlled_tests.rs",
+          "symbol": "public_buffer_native_budget_charges_each_shared_use"
+        },
+        {
+          "path": "native-wrappers/c/src/publish_buffer/controlled_tests.rs",
+          "symbol": "public_buffer_deferred_limits_and_cancellation_preserve_owner"
+        },
+        {
+          "path": "native-wrappers/c/tests/native/native_publish_buffer.c",
+          "symbol": "main"
+        }
+      ],
+      "validation_limits": "Ownership, admission, callback and retained-value behavior require executing the named tests. Native C ABI/export and Windows/macOS checks remain separate evidence; declaration review does not certify performance."
     }
   ],
   "capabilities": [
@@ -22952,9 +23046,9 @@
     },
     {
       "name": "Owned immutable C publish buffers",
-      "disposition": "pending",
-      "rationale": "Planned ownership optimization; existing borrowed-view C publish calls copy payloads.",
-      "validation_limits": "No public owned-buffer API or end-to-end zero-copy claim."
+      "disposition": "supported",
+      "rationale": "C immutable application-owned buffers are implemented with retained handles, final release callbacks and immediate, tracked and deferred admission through the existing native Bytes publish path. Borrowed-view APIs still copy.",
+      "validation_limits": "Ownership and controlled-transport tests plus native C fixtures provide evidence. Topics/properties still copy; no end-to-end zero-copy or RSS bound is claimed. Platform execution and performance remain separate checks."
     },
     {
       "name": "Caller pumping and runtime injection",

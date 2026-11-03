@@ -11,6 +11,8 @@ repository.workspace = true
 license.workspace = true
 authors.workspace = true
 readme = "README.md"
+# Keep raw development measurements out of the published library.
+exclude = ["benches/publish-buffer-results/**"]
 
 [lib]
 name = "rumqttc"
@@ -35,9 +37,11 @@ tracing = ["rumqttc-wrapper-core-next/tracing"]
 tracing-log-compat = ["tracing", "rumqttc-wrapper-core-next/tracing-log-compat"]
 
 file-session-store = ["rumqttc-wrapper-core-next/file-session-store"]
+# Private ownership/measurement fixture; does not change the C capability set.
+publish-buffer-proof = ["dep:cc"]
 
 [dependencies]
-bytes = "1.5"
+bytes = "1.12.1"
 rumqttc-wrapper-core-next = { path = "../wrapper-core", version = "0.34.0-alpha", default-features = false }
 tokio = { version = "1.40", features = ["sync"] }
 
@@ -47,3 +51,4 @@ tokio = { version = "1.40", features = ["rt", "macros"] }
 
 [build-dependencies]
 cbindgen = "0.29"
+cc = { version = "1", optional = true }

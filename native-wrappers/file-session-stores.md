@@ -123,3 +123,28 @@ Run the `file-store-minimal` and `file-store-composed` installed package profile
 the native C restart fixture and both workspaces' storage regressions. The
 [checkpoint harness](wrapper-core/benches/file_store.md) reports conversion and
 allocation cost separately from network throughput.
+
+The optional native interoperability test cross-opens both protocols sequentially:
+C writes a checkpoint and exits, a native Rust process validates and replaces it,
+then C recovers it. The broker checks the Rust-written payloads, original packet
+identifiers, subscription replay and incoming QoS 2 completion. Run from the
+repository root:
+
+```sh
+cargo build --locked --manifest-path native-wrappers/Cargo.toml \
+  -p rumqttc-c-next --no-default-features --features file-session-store
+cargo build --locked --manifest-path native-wrappers/Cargo.toml \
+  -p rumqttc-wrapper-core-next --no-default-features --features file-session-store \
+  --example file-store-interop
+cmake -S native-wrappers/c/tests/native -B native-wrappers/target/c-file-store \
+  -DRUMQTTC_FILE_STORE_INTEROP=ON
+cmake --build native-wrappers/target/c-file-store --config Debug \
+  --target rumqttc-native-file-store-restart
+ctest --test-dir native-wrappers/target/c-file-store -C Debug \
+  -R 'file-store-(restart|interop)' --output-on-failure
+```
+
+For a different Cargo target/profile directory, set `RUMQTTC_LIBRARY_DIR` and,
+if needed, `RUMQTTC_FILE_STORE_RUST_HELPER` when configuring CMake. Enabling the
+interoperability test requires the helper executable; a missing file fails
+configuration, and disabled C file-store support fails the interoperability test.

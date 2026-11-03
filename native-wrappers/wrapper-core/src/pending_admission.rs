@@ -380,10 +380,14 @@ impl Job {
             tokio::pin!(cancel);
             cancel.as_mut().enable();
             poll_fn(|cx| {
-                if budget
+                #[allow(
+                    deprecated,
+                    reason = "Atomic fetch_update is available at the Rust 1.88 MSRV"
+                )]
+                let consumed = budget
                     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
-                    .is_ok()
-                {
+                    .is_ok();
+                if consumed {
                     std::task::Poll::Ready(())
                 } else {
                     cx.waker().wake_by_ref();
@@ -619,7 +623,7 @@ pub fn validate_command(command: &Command, backend: &crate::backend::BackendClie
             }
             for f in &p.filters {
                 crate::validation::validate_mqtt_utf8_string(&f.filter, "topic filter")?;
-                if !rumqttc_v5::valid_filter(&f.filter) {
+                if !crate::backend::v5::valid_filter(&f.filter) {
                     return Err(invalid("invalid topic filter"));
                 }
                 if f.filter.starts_with("$share/")
@@ -639,7 +643,7 @@ pub fn validate_command(command: &Command, backend: &crate::backend::BackendClie
             }
             for f in &p.filters {
                 crate::validation::validate_mqtt_utf8_string(f, "topic filter")?;
-                if !rumqttc_v5::valid_filter(f) {
+                if !crate::backend::v5::valid_filter(f) {
                     return Err(invalid("invalid topic filter"));
                 }
             }

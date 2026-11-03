@@ -47,9 +47,9 @@ def connect(peer, version, password):
         cursor += properties
     values = []
     for _ in range(3):
-        size = int.from_bytes(body[cursor:cursor + 2], "big")
+        size = int.from_bytes(body[cursor : cursor + 2], "big")
         cursor += 2
-        values.append(body[cursor:cursor + size])
+        values.append(body[cursor : cursor + size])
         cursor += size
     assert values == [b"c-rotation", b"rotation-user", password], "unexpected CONNECT profile"
     peer.sendall(b"\x20\x03\x00\x00\x00" if version == 5 else b"\x20\x02\x00\x00")
@@ -79,10 +79,16 @@ def run(binary, version):
 
         worker = threading.Thread(target=broker, daemon=True)
         worker.start()
-        env = dict(os.environ, RUMQTTC_AWAIT_RECONNECT="1", RUMQTTC_USERNAME="rotation-user",
-                   RUMQTTC_PASSWORD="initial-token", RUMQTTC_NEXT_PASSWORD="replacement-token")
-        result = subprocess.run([binary, "127.0.0.1", str(listener.getsockname()[1]), str(version)],
-                                env=env, timeout=20, check=False)
+        env = dict(
+            os.environ,
+            RUMQTTC_AWAIT_RECONNECT="1",
+            RUMQTTC_USERNAME="rotation-user",
+            RUMQTTC_PASSWORD="initial-token",
+            RUMQTTC_NEXT_PASSWORD="replacement-token",
+        )
+        result = subprocess.run(
+            [binary, "127.0.0.1", str(listener.getsockname()[1]), str(version)], env=env, timeout=20, check=False
+        )
         worker.join(12)
         assert not worker.is_alive(), "broker did not finish"
         if errors:

@@ -262,7 +262,10 @@ static void test_backpressure_and_overflow(void) {
                                            &completion, NULL));
     native_wait_completion(completion, RUMQTTC_COMPLETION_SUBSCRIBE);
     rumqttc_completion_destroy(completion);
-    native_sleep_ms(200);
+    /* Arm overflow only after observing SUBACK. The full event queue can stop
+     * completion delivery, so the burst must not race subscription setup. */
+    native_fixture_write("integration-overflow-ready", 1);
+    REQUIRE(native_fixture_read("integration-overflow-closed") == 1);
     event = native_wait_event(client, RUMQTTC_EVENT_INCOMING_PUBLISH);
     rumqttc_event_destroy(event);
     event = native_wait_event(client, RUMQTTC_EVENT_DRIVER_TERMINATED);

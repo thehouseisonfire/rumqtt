@@ -17,8 +17,7 @@ def summarize(source: pathlib.Path, repetitions: int, allocations: bool = False)
     content = source.read_text()
     if not re.search(r"^test result: ok\. 1 passed; 0 failed;", content, re.MULTILINE):
         raise ValueError("the measurement process did not report successful completion")
-    lines = [line.removeprefix("TLS_PROOF,") for line in content.splitlines()
-             if line.startswith("TLS_PROOF,")]
+    lines = [line.removeprefix("TLS_PROOF,") for line in content.splitlines() if line.startswith("TLS_PROOF,")]
     if not lines:
         raise ValueError("no prototype measurements found")
     rows = list(csv.DictReader(lines))
@@ -29,7 +28,7 @@ def summarize(source: pathlib.Path, repetitions: int, allocations: bool = False)
         instrumented = int(row["allocation_calls"]) > 0
         if instrumented != allocations:
             raise ValueError("allocation instrumentation does not match the selected summary mode")
-        key = tuple(row[field] for field in ("execution", "mqtt", "nested", "payload"))
+        key = (row["execution"], row["mqtt"], row["nested"], row["payload"])
         run = int(row["repetition"]), row["external"]
         group = groups.setdefault(key, {})
         if run in group:
@@ -47,12 +46,11 @@ def summarize(source: pathlib.Path, repetitions: int, allocations: bool = False)
         expected_chains = (2 if row["nested"] == "true" else 1) if row["external"] == "true" else 0
         if int(row["peak_chains"]) != expected_chains:
             raise ValueError(f"sample did not exercise the selected TLS composition: {key}, {run}")
-    expected_groups = set(itertools.product(("dedicated", "shared"), ("4", "5"),
-                                           ("false", "true"), ("1024", "16384")))
+    expected_groups = set(itertools.product(("dedicated", "shared"), ("4", "5"), ("false", "true"), ("1024", "16384")))
     if set(groups) != expected_groups:
         raise ValueError(f"incomplete/unexpected matrix: {set(groups) ^ expected_groups}")
     expected_runs = set(itertools.product(range(repetitions), ("false", "true")))
-    result = []
+    result: list[dict[str, object]] = []
     for key, group in sorted(groups.items()):
         if set(group) != expected_runs:
             raise ValueError(f"incomplete/unexpected repetitions for {key}: {set(group) ^ expected_runs}")
@@ -64,22 +62,26 @@ def summarize(source: pathlib.Path, repetitions: int, allocations: bool = False)
         external_p99 = statistics.median(float(row["p99_us"]) for row in external)
         throughput_ratio = external_rate / native_rate
         latency_ratio = external_p99 / native_p99
-        result.append(dict(zip(("execution", "mqtt", "nested", "payload"), key)) | {
-            "native_messages_per_second": round(native_rate, 3),
-            "external_messages_per_second": round(external_rate, 3),
-            "throughput_ratio": round(throughput_ratio, 4),
-            "native_p99_us": round(native_p99, 3),
-            "external_p99_us": round(external_p99, 3),
-            "p99_ratio": round(latency_ratio, 4),
-            "peak_bytes": max(int(row["peak_bytes"]) for row in external),
-            "peak_operations": max(int(row["peak_operations"]) for row in external),
-            "peak_chains": max(int(row["peak_chains"]) for row in external),
-            "native_allocation_calls": statistics.median(int(row["allocation_calls"]) for row in native),
-            "external_allocation_calls": statistics.median(int(row["allocation_calls"]) for row in external),
-            "native_allocated_bytes": statistics.median(int(row["allocation_bytes"]) for row in native),
-            "external_allocated_bytes": statistics.median(int(row["allocation_bytes"]) for row in external),
-            "gate_passed": None if allocations else throughput_ratio >= 0.75 and latency_ratio <= 1.5,
-        })
+        summary: dict[str, object] = dict(zip(("execution", "mqtt", "nested", "payload"), key, strict=True))
+        summary.update(
+            {
+                "native_messages_per_second": round(native_rate, 3),
+                "external_messages_per_second": round(external_rate, 3),
+                "throughput_ratio": round(throughput_ratio, 4),
+                "native_p99_us": round(native_p99, 3),
+                "external_p99_us": round(external_p99, 3),
+                "p99_ratio": round(latency_ratio, 4),
+                "peak_bytes": max(int(row["peak_bytes"]) for row in external),
+                "peak_operations": max(int(row["peak_operations"]) for row in external),
+                "peak_chains": max(int(row["peak_chains"]) for row in external),
+                "native_allocation_calls": statistics.median(int(row["allocation_calls"]) for row in native),
+                "external_allocation_calls": statistics.median(int(row["allocation_calls"]) for row in external),
+                "native_allocated_bytes": statistics.median(int(row["allocation_bytes"]) for row in native),
+                "external_allocated_bytes": statistics.median(int(row["allocation_bytes"]) for row in external),
+                "gate_passed": None if allocations else throughput_ratio >= 0.75 and latency_ratio <= 1.5,
+            }
+        )
+        result.append(summary)
     return result
 
 

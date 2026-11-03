@@ -49,7 +49,7 @@ fn immutable_results_notify_once_per_registration_and_remain_readable() {
     let context = NotificationContext::new(2).unwrap();
     let (cell, handle) = completion();
     let key = context.register_completion(&handle, 7).unwrap();
-    assert!(entries(&context).is_empty());
+    assert_eq!(entries(&context), [] as [ReadyEntry; 0]);
     assert!(context.acknowledge(key, 1).is_err());
     assert!(!context.prepare_wait().unwrap());
     cell.complete(Ok(Completion::Acknowledged));
@@ -61,7 +61,7 @@ fn immutable_results_notify_once_per_registration_and_remain_readable() {
     context.acknowledge(key, entry.revision).unwrap();
     assert!(!context.prepare_wait().unwrap());
     assert_eq!(handle.try_wait().unwrap(), Some(Completion::Acknowledged));
-    assert!(entries(&context).is_empty());
+    assert_eq!(entries(&context), [] as [ReadyEntry; 0]);
     let late = context.register_completion(&handle, 8).unwrap();
     assert_eq!(entries(&context)[0].key, late);
     context.deregister(key).unwrap();
@@ -289,7 +289,7 @@ fn reused_slots_reject_old_keys_and_acknowledgements() {
     assert_ne!(old.generation, new.generation);
     release.send(()).unwrap();
     worker.join().unwrap();
-    assert!(entries(&context).is_empty());
+    assert_eq!(entries(&context), [] as [ReadyEntry; 0]);
     assert!(context.deregister(old).is_err());
     assert!(context.acknowledge(old, 1).is_err());
     second.complete(Ok(Completion::Acknowledged));
@@ -397,7 +397,7 @@ fn first_connection_results_notify_once_and_late_registrations_observe_them() {
         let context = NotificationContext::new(2).unwrap();
         let handle = crate::ConnectionHandle::new();
         let key = context.register_first_connection(&handle, 12).unwrap();
-        assert!(entries(&context).is_empty());
+        assert_eq!(entries(&context), [] as [ReadyEntry; 0]);
         assert!(!context.prepare_wait().unwrap());
         if success {
             handle.connected(crate::ConnectionResult {
@@ -414,7 +414,7 @@ fn first_connection_results_notify_once_and_late_registrations_observe_them() {
         );
         context.acknowledge(key, entry.revision).unwrap();
         assert!(!context.prepare_wait().unwrap());
-        assert!(entries(&context).is_empty());
+        assert_eq!(entries(&context), [] as [ReadyEntry; 0]);
         assert_eq!(handle.try_wait().unwrap().is_ok(), success);
         let late = context.register_first_connection(&handle, 13).unwrap();
         assert_eq!(entries(&context)[0].key, late);
@@ -508,7 +508,7 @@ fn first_connection_retired_slot_cannot_receive_stale_publication() {
     assert_ne!(new.generation, old.generation);
     release.send(()).unwrap();
     worker.join().unwrap();
-    assert!(entries(&context).is_empty());
+    assert_eq!(entries(&context), [] as [ReadyEntry; 0]);
     handle.connected(crate::ConnectionResult {
         protocol: crate::ProtocolVersion::V5,
         session_present: false,

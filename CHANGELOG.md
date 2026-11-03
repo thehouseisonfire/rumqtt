@@ -2,9 +2,75 @@
 
 ### Changed
 
+- Wrapper-core: Reclaim string panic payloads caught at custom transport boundaries
+  while keeping opaque host payload destructors outside driver teardown.
+- Wrapper validation: Load the Windows certificate provider explicitly in each
+  platform trust fixture command, including preflight checks and cleanup. Gate
+  the native integration overflow burst on observed subscription completion and
+  wait for transport closure before draining events.
+- Wrapper-core: Deliver queued events before terminal driver status even when a
+  blocking receiver selects the terminal channel concurrently with event delivery.
+- Wrapper validation: Handle expected TLS handshake cancellation, portable socket
+  option values and platform trust paths in native fixtures. Remove scheduler and
+  process initialization assumptions from admission and execution checks, and keep
+  TLS ownership tests independent of platform roots under Miri.
+
+- Rust v4/v5: Fairly arbitrate normal requests, incoming packets and keepalive so
+  sustained publish traffic cannot starve broker acknowledgements. Bound request
+  bursts to amortize idle socket probes, and keep ordinary outbound I/O separate
+  from response deadlines to avoid per-publish timeout wrappers. Admit buffered
+  requests without constructing receive futures and create response timers only
+  when writes block. Preserve
+  immediate disconnect and control request priority. Check ready incoming packets
+  before declaring a missing PINGRESP after a scheduling stall, including with
+  ordered shutdown enabled. Deliver events from that scan before surfacing a
+  connection failure so acknowledged incoming publishes survive timeout cleanup.
+  Select on initial frame reads and finish protocol batches after arbitration so
+  write backpressure cannot cause normal requests or keepalive timers to cancel
+  acknowledgements. Bound response feeding and flushing with one
+  `NetworkOptions::connection_timeout` budget in both clients. Expiry closes the
+  transport and reports an I/O `TimedOut` error after delivering committed events
+  and completing collected notices. Restore the previous response deadline when
+  polling is cancelled so an expired budget cannot affect later requests. Probe
+  ready keepalive responses independently of Tokio's cooperative budget so a
+  scheduling yield cannot be mistaken for a missing PINGRESP.
+  Resume keepalive scans across polls when their packet budget is exhausted,
+  delivering committed events between batches. Share one absolute
+  `connection_timeout` budget across those scans so continuous unrelated traffic
+  cannot indefinitely mask a missing response.
+  On ordered deadline cancellation, close the transport and resolve the shutdown
+  notice immediately while delivering committed incoming events before the final
+  polling error. Preserve event delivery when cancellation interrupts a keepalive
+  scan or an ordinary read batch after an acknowledgement was flushed.
+  Enforce expired ordered deadlines before delivering events deferred by an
+  earlier read failure, closing the transport and resolving the shutdown notice
+  on that poll while retaining the queued notifications and acknowledgements.
+- Wrapper-core: Cancel synchronous TLS callback relay waits during deferred
+  handshake teardown, including callbacks queued as cancellation begins, so
+  driver joins cannot deadlock. Fix native C fixtures and the redirect example
+  to compile with strict Darwin and MSVC warnings.
+
+- Wrapper validation: Keep atomic updates compatible with Rust 1.88 while passing
+  Rust 1.99 deprecation checks, and mark terminal result observations as must-use.
+  Cache and checksum the Windows Mosquitto installer and retry transient download
+  failures before running broker-dependent suites.
+
+- Wrapper validation: Check production protocol dependencies using Rust syntax,
+  allowing test-only code and the maintained storage bridges. Keep acknowledgement
+  packet conversion and topic-filter validation inside the backend. Add native
+  C/Rust checkpoint cross-open tests for both MQTT versions, including Rust-written
+  payloads verified on the wire after C recovery.
+
 - Wrapper-core/C: Account for all peak administration key buffers in optional file
   stores. Rust operation results now return `FileStoreValue<T>`, retaining byte
   reservations until the final shared result owner releases them. The C ABI is unchanged.
+
+- C: Add retained immutable application publish buffers with exactly-once release
+  callbacks and immediate, tracked and deferred publish APIs. Owned payloads avoid
+  the obligatory FFI copy while preserving validation, admission and completion
+  behavior. Existing view APIs still copy. Document callback threading, logical
+  accounting, pool pressure and final release/unload boundaries; include a bounded
+  ownership example and reproducible copy/allocation measurements.
 
 - Wrapper development: Park TODO49's external-TLS C API and further bridge
   redesign after corrected performance measurements and targeted profiling.
@@ -24,6 +90,7 @@
   [the ownership contract](native-wrappers/file-session-stores.md).
   Wrapper-core Rust `StoreFailure` adds classifications; exhaustive matches must
   handle the new variants.
+
 - Rust v4/v5: Add default-forwarding owned-save and bounded-load store hooks,
   bounded checkpoint encoding and allocation-budgeted decoding. The optional
   `owned-session-store` feature lets managed wrappers transfer snapshots to

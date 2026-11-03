@@ -220,6 +220,7 @@ pub struct EventConsumer {
     _readiness_view: Arc<crate::readiness::EventView>,
     events: Receiver<WrapperEvent>,
     terminal: Receiver<TerminalStatus>,
+    pending_terminal: Option<TerminalStatus>,
     terminal_seen: bool,
 }
 
@@ -298,10 +299,7 @@ impl EventConsumer {
                 let remaining = timeout.saturating_sub(started.elapsed());
                 Ok(self.recv_terminal_timeout(remaining))
             }
-            Ok(TimedReceive::Terminal(Ok(status))) => {
-                self.mark_terminal_seen();
-                Ok(Some(status.into_event()))
-            }
+            Ok(TimedReceive::Terminal(Ok(status))) => Ok(Some(self.deliver_terminal(status))),
             Ok(TimedReceive::Terminal(Err(_))) => {
                 self.mark_terminal_seen();
                 Ok(None)
@@ -330,21 +328,34 @@ impl EventConsumer {
                 Err(_) => self.recv_terminal_async().await,
             },
             terminal = self.terminal.recv_async() => {
-                self.mark_terminal_seen();
-                Ok(terminal.ok().map(TerminalStatus::into_event))
+                if let Ok(status) = terminal { Ok(Some(self.deliver_terminal(status))) } else {
+                    self.mark_terminal_seen();
+                    Ok(None)
+                }
             }
         }
+    }
+
+    fn deliver_terminal(&mut self, status: TerminalStatus) -> WrapperEvent {
+        // A selector may choose terminal status after the driver enqueues its
+        // final ordinary events. Drain those events before reporting termination.
+        if let Ok(event) = self.events.try_recv() {
+            self.pending_terminal = Some(status);
+            return event;
+        }
+        self.mark_terminal_seen();
+        status.into_event()
     }
 
     fn try_terminal(&mut self) -> Option<WrapperEvent> {
         if self.terminal_seen {
             return None;
         }
+        if let Some(status) = self.pending_terminal.take() {
+            return Some(self.deliver_terminal(status));
+        }
         match self.terminal.try_recv() {
-            Ok(status) => {
-                self.mark_terminal_seen();
-                Some(status.into_event())
-            }
+            Ok(status) => Some(self.deliver_terminal(status)),
             Err(flume::TryRecvError::Empty) => None,
             Err(flume::TryRecvError::Disconnected) => {
                 self.mark_terminal_seen();
@@ -357,9 +368,12 @@ impl EventConsumer {
         if self.terminal_seen {
             return Ok(None);
         }
-        let terminal = self.terminal.recv_async().await;
-        self.mark_terminal_seen();
-        Ok(terminal.ok().map(TerminalStatus::into_event))
+        if let Ok(status) = self.terminal.recv_async().await {
+            Ok(Some(self.deliver_terminal(status)))
+        } else {
+            self.mark_terminal_seen();
+            Ok(None)
+        }
     }
 
     fn recv_terminal_timeout(&mut self, timeout: Duration) -> Option<WrapperEvent> {
@@ -367,10 +381,7 @@ impl EventConsumer {
             return None;
         }
         match self.terminal.recv_timeout(timeout) {
-            Ok(status) => {
-                self.mark_terminal_seen();
-                Some(status.into_event())
-            }
+            Ok(status) => Some(self.deliver_terminal(status)),
             Err(flume::RecvTimeoutError::Disconnected) => {
                 self.mark_terminal_seen();
                 None
@@ -953,6 +964,7 @@ impl NativeClient {
                 _readiness_view: readiness_view,
                 events: event_rx,
                 terminal: terminal_rx,
+                pending_terminal: None,
                 terminal_seen: false,
             },
         })
@@ -1396,6 +1408,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selected_terminal_status_follows_every_queued_event() {
+        let (event_tx, event_rx) = flume::bounded(2);
+        let (_terminal_tx, terminal_rx) = flume::bounded(1);
+        #[cfg(feature = "readiness")]
+        let source = crate::readiness::Source::new(crate::readiness::SourceKind::Events);
+        let mut consumer = EventConsumer {
+            #[cfg(feature = "readiness")]
+            readiness: crate::readiness::EventReadiness(source.clone()),
+            #[cfg(feature = "readiness")]
+            _readiness_view: source.event_view(event_tx.clone()),
+            events: event_rx,
+            terminal: terminal_rx,
+            pending_terminal: None,
+            terminal_seen: false,
+        };
+        event_tx
+            .send(WrapperEvent::GracefulShutdownCompleted)
+            .unwrap();
+        event_tx
+            .send(WrapperEvent::ImmediateShutdownCompleted)
+            .unwrap();
+        // Simulate a selector choosing terminal status while events are ready.
+        assert!(matches!(
+            consumer.deliver_terminal(TerminalStatus::Failed(Error::new(
+                ErrorKind::Network,
+                "test"
+            ))),
+            WrapperEvent::GracefulShutdownCompleted
+        ));
+        assert!(!consumer.terminal_seen);
+        assert!(matches!(
+            consumer.try_recv().unwrap(),
+            Some(WrapperEvent::ImmediateShutdownCompleted)
+        ));
+        assert!(matches!(
+            consumer.try_recv().unwrap(),
+            Some(WrapperEvent::DriverTerminated(_))
+        ));
+        assert!(consumer.try_recv().unwrap().is_none());
+    }
+
+    #[test]
     fn unpolled_driver_cancellation_retains_initial_diagnostic_capture() {
         for config in [
             ClientConfig::v4("unpolled", "localhost", 1883),
@@ -1767,6 +1821,7 @@ mod readiness_tests {
             _readiness_view: view,
             events: event_rx,
             terminal: terminal_rx,
+            pending_terminal: None,
             terminal_seen: false,
         };
         assert!(events.recv_terminal_async().now_or_never().is_none());

@@ -4,6 +4,7 @@ import asyncio
 import gc
 import os
 import sys
+import time
 import weakref
 
 import psutil
@@ -59,7 +60,8 @@ async def repetition() -> None:
             warmup._native.abandon()
         reference = weakref.ref(warmup)
         del warmup
-        for _ in range(200):
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
             gc.collect()
             if reference() is None:
                 break
@@ -87,8 +89,10 @@ async def repetition() -> None:
         # Abandonment is deliberately nonblocking. Slow and instrumented CI runners may need
         # several seconds to schedule all signaled native drivers through runtime teardown.
         # Windows and macOS runners have been observed needing beyond 5s under load, so allow
-        # up to ~10s while remaining a bounded leak check.
-        for _ in range(400):
+        # up to 10s while remaining a bounded leak check. Bound elapsed time rather than
+        # iterations: GC work and timer scheduling add to each polling interval.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
             gc.collect()
             if all(reference() is None for reference in references) and native_thread_count() <= baseline:
                 break

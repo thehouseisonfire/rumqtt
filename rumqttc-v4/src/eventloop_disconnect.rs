@@ -40,6 +40,9 @@ impl EventLoop {
     /// Drive protocol progress and the total post-admission ordered deadline.
     /// Poll the event loop while applying the ordered-shutdown fence.
     ///
+    /// Deadline expiry closes the transport and resolves the shutdown notice immediately.
+    /// Committed application notifications are delivered before the terminal polling error.
+    ///
     /// # Errors
     ///
     /// Returns connection, protocol, request-processing, or ordered-shutdown errors.
@@ -49,6 +52,9 @@ impl EventLoop {
     /// Panics if the admission gate reports a fence without its required sequence.
     pub async fn poll(&mut self) -> Result<Event, ConnectionError> {
         if self.disconnect_complete {
+            if self.terminal_error.is_some() {
+                return self.pop_terminal_event_or_error();
+            }
             if let Some(checkpoint) = self.terminal_checkpoint.as_mut() {
                 let result = checkpoint.await;
                 self.terminal_checkpoint = None;
@@ -57,7 +63,12 @@ impl EventLoop {
             return self.poll_inner().await;
         }
         let gate = Arc::clone(self.requests_rx.gate());
+        // poll_inner drains failed-read events under the deadline select below.
+        // Preserve their priority over immediate teardown without bypassing expiry.
+        let has_deferred_events =
+            self.pending_connection_error.is_some() && !self.state.events.is_empty();
         if gate.has_fence()
+            && !has_deferred_events
             && let Ok(envelope) = self.immediate_disconnect_rx.try_recv()
         {
             gate.terminate();
@@ -139,21 +150,50 @@ impl EventLoop {
         };
         self.network = None;
         self.keepalive_timeout = None;
+        self.keepalive_scan_deadline = None;
         self.pending_disconnect = None;
         self.discard_shutdown_work(false);
         self.disconnect_complete = true;
-        if matches!(reason, crate::DisconnectNoticeError::DisconnectTimeout)
-            && self.session_store.loaded
-        {
+        let preserve_deferred_events = self.pending_connection_error.take().is_some();
+        let checkpoint_required = matches!(reason, crate::DisconnectNoticeError::DisconnectTimeout)
+            && self.session_store.loaded;
+        let mut error = ConnectionError::OrderedDisconnect(reason);
+        if checkpoint_required {
             self.prepare_terminal_checkpoint();
             if let Some(checkpoint) = self.terminal_checkpoint.as_mut()
                 && let Some(result) = futures_util::FutureExt::now_or_never(checkpoint.as_mut())
             {
                 self.terminal_checkpoint = None;
-                result?;
+                if let Err(checkpoint_error) = result {
+                    error = checkpoint_error;
+                }
             }
         }
-        Err(ConnectionError::OrderedDisconnect(reason))
+        // A cancelled read or authentication transition can have committed
+        // application notifications before its final write completed. Close and
+        // resolve shutdown immediately, then drain that finite queue in order.
+        // A failed read can also leave only acknowledgement events after its
+        // last incoming event was delivered. Preserve that suffix as well.
+        // Outbound-only failed writes still report their error directly.
+        if !self.state.events.is_empty()
+            && (preserve_deferred_events
+                || self
+                    .state
+                    .events
+                    .iter()
+                    .any(|event| !matches!(event, Event::Outgoing(_))))
+        {
+            self.terminal_error = Some(Box::new(error));
+            return self.pop_terminal_event_or_error();
+        }
+        Err(error)
+    }
+
+    fn pop_terminal_event_or_error(&mut self) -> Result<Event, ConnectionError> {
+        let Some(event) = self.state.events.pop_front() else {
+            return Err(*self.terminal_error.take().expect("pending terminal error"));
+        };
+        Ok(event)
     }
 
     fn prepare_terminal_checkpoint(&mut self) {

@@ -67,13 +67,25 @@ def command(arguments: list[str], environment: dict[str, str] | None = None, *, 
 
 
 def powershell(script: str, state: dict[str, object]) -> str:
-    environment = os.environ.copy()
+    # CI launches us from pwsh, whose module search path includes PowerShell 7
+    # modules incompatible with Windows PowerShell. Let powershell.exe build its
+    # own default path, including the Security module with the Cert: provider.
+    # Windows environment variable names are case-insensitive.
+    environment = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
     environment["RUMQTTC_PLATFORM_CA"] = str(state["root"])
     environment["RUMQTTC_PLATFORM_THUMBPRINT"] = str(state["thumbprint"])
-    return command(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; " + script],
-        environment,
-    )
+    # Old cleanup manifests predate the switch to the machine store.
+    environment["RUMQTTC_PLATFORM_STORE"] = str(state.get("store", r"Cert:\CurrentUser\Root"))
+    # Every command starts a fresh -NoProfile session. PKI's Import-Certificate
+    # does not load the Security module that provides the Cert: drive.
+    prelude = "$ErrorActionPreference = 'Stop'; Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; "
+    try:
+        return command(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", prelude + script],
+            environment,
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"platform trust command failed: {error.stdout}\n{error.stderr}") from error
 
 
 def mac_trust_settings() -> dict:
@@ -216,7 +228,7 @@ def cleanup(path: Path) -> None:
     if state["platform"] == "win32":
         if state["owned"]:
             powershell(
-                "$path = 'Cert:\\CurrentUser\\Root\\' + $env:RUMQTTC_PLATFORM_THUMBPRINT; "
+                r"$path = $env:RUMQTTC_PLATFORM_STORE + '\' + $env:RUMQTTC_PLATFORM_THUMBPRINT; "
                 "if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }; "
                 "if (Test-Path $path) { throw 'test root survived cleanup' }",
                 state,
@@ -256,7 +268,12 @@ def trusted_root(root: Path, environment: dict[str, str]) -> Iterator[None]:
         "root": str(saved_root),
         "owned": False,
     }
-    if sys.platform == "darwin":
+    if sys.platform == "win32":
+        # CurrentUser\Root can require a confirmation dialog even with
+        # Import-Certificate. The elevated disposable CI runner can import into
+        # LocalMachine\Root without UI; persist the store for interrupted cleanup.
+        state["store"] = r"Cert:\LocalMachine\Root"
+    elif sys.platform == "darwin":
         # Admin-domain certificate enumeration searches System.keychain, not
         # temporary user keychains (SecTrustSettingsCopyCertificates_internal).
         state["keychain"] = "/Library/Keychains/System.keychain"
@@ -266,7 +283,7 @@ def trusted_root(root: Path, environment: dict[str, str]) -> Iterator[None]:
         # Persist cleanup intent before every side effect, including partial installation.
         if sys.platform == "win32":
             powershell(
-                "if (Test-Path ('Cert:\\CurrentUser\\Root\\' + $env:RUMQTTC_PLATFORM_THUMBPRINT)) "
+                r"if (Test-Path ($env:RUMQTTC_PLATFORM_STORE + '\' + $env:RUMQTTC_PLATFORM_THUMBPRINT)) "
                 "{ throw 'test root already exists' }",
                 state,
             )
@@ -274,8 +291,8 @@ def trusted_root(root: Path, environment: dict[str, str]) -> Iterator[None]:
             save_state(path, state)
             powershell(
                 "Import-Certificate -FilePath $env:RUMQTTC_PLATFORM_CA "
-                "-CertStoreLocation Cert:\\CurrentUser\\Root | Out-Null; "
-                "if (-not (Test-Path ('Cert:\\CurrentUser\\Root\\' + $env:RUMQTTC_PLATFORM_THUMBPRINT))) "
+                "-CertStoreLocation $env:RUMQTTC_PLATFORM_STORE | Out-Null; "
+                r"if (-not (Test-Path ($env:RUMQTTC_PLATFORM_STORE + '\' + $env:RUMQTTC_PLATFORM_THUMBPRINT))) "
                 "{ throw 'test root was not installed' }",
                 state,
             )

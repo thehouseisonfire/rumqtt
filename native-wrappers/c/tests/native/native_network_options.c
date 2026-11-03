@@ -184,17 +184,19 @@ typedef struct socket_settings {
 } socket_settings;
 
 static int socket_setting(inspected_socket_t socket, int level, int option) {
-  int value = -1;
+  int value = 0;
   inspected_length_t length = sizeof(value);
   REQUIRE(getsockopt(socket, level, option, (char *)&value, &length) == 0);
-  REQUIRE(length == sizeof(value));
+  /* Winsock providers may return TCP_NODELAY as a single byte. The zeroed
+     storage also accepts that representation without reading uninitialized bytes. */
+  REQUIRE(length == sizeof(value) || (option == TCP_NODELAY && level == IPPROTO_TCP && length == 1));
   return value;
 }
 
 static socket_settings settings(inspected_socket_t socket) {
   socket_settings result = {socket_setting(socket, SOL_SOCKET, SO_SNDBUF),
                             socket_setting(socket, SOL_SOCKET, SO_RCVBUF),
-                            socket_setting(socket, IPPROTO_TCP, TCP_NODELAY)};
+                            socket_setting(socket, IPPROTO_TCP, TCP_NODELAY) != 0};
   return result;
 }
 

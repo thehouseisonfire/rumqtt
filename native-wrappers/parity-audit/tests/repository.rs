@@ -49,7 +49,9 @@ fn published_core_contains_no_repository_audit_test_or_dependency() {
     let manifest =
         std::fs::read_to_string(root().join("native-wrappers/wrapper-core/Cargo.toml")).unwrap();
     assert!(!manifest.contains("rumqttc-parity-audit"));
-    assert!(!manifest.contains("syn ="));
+    // The independent backend-boundary test still needs syn as a dev dependency.
+    let library_dependencies = manifest.split("[dev-dependencies]").next().unwrap();
+    assert!(!library_dependencies.contains("syn ="));
 }
 
 #[test]

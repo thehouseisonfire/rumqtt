@@ -1,0 +1,3 @@
+v4  262144 rejected  current/baseline=0.978 95%=[0.975,0.981]
+v5  262144 rejected  current/baseline=0.977 95%=[0.975,0.980]
+copying_regression_gate=True

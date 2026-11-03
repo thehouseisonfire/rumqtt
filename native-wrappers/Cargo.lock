@@ -1690,6 +1690,7 @@ version = "0.1.0-alpha"
 dependencies = [
  "bytes",
  "cbindgen",
+ "cc",
  "rumqttc-wrapper-core-next",
  "tempfile",
  "tokio",
@@ -1846,6 +1847,7 @@ dependencies = [
  "native-tls",
  "openssl-sys",
  "parking_lot",
+ "proc-macro2",
  "rcgen",
  "rumqttc-core-next",
  "rumqttc-session-store-file-next",
@@ -1855,6 +1857,7 @@ dependencies = [
  "rustls-webpki",
  "scram-rs",
  "sha2",
+ "syn 3.0.9",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

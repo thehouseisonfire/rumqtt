@@ -97,8 +97,8 @@ static uint32_t decide(void *data, const rumqttc_redirect_request_t *request, ru
                                                   native_bytes(password, sizeof(password) - 1), NULL));
   memset(username, 'x', sizeof(username) - 1);
   memset(password, 'x', sizeof(password) - 1);
-  CHECK(rumqttc_redirect_response_set_reuse(response, same_mode(context, "auth-reuse"),
-                                            same_mode(context, "network-reuse"), NULL));
+  CHECK(rumqttc_redirect_response_set_reuse(response, (uint8_t)same_mode(context, "auth-reuse"),
+                                            (uint8_t)same_mode(context, "network-reuse"), NULL));
   if (!isolated_mode(context))
     CHECK(rumqttc_redirect_response_set_session(response, RUMQTTC_REDIRECT_SESSION_REUSE,
                                                 native_string(same_mode(context, "same") ? "origin" : "target"), NULL));

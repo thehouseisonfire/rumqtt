@@ -4,6 +4,11 @@ project(rumqttc_native_tests LANGUAGES C)
 include(CTest)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_test(NAME rumqttc-broker-fixture
+    COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_LIST_DIR}" -p test_broker_fixture.py)
+set_tests_properties(rumqttc-broker-fixture PROPERTIES LABELS "native;fixture" TIMEOUT 30)
+
 set(RUMQTTC_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." CACHE PATH "rumqttc-c source directory")
 set(RUMQTTC_LIBRARY_DIR "${RUMQTTC_ROOT}/../target/debug" CACHE PATH "directory containing rumqttc")
 
@@ -82,6 +87,10 @@ if(WIN32)
             "${RUMQTTC_SHARED_LIBRARY}" "$<TARGET_FILE_DIR:rumqttc-native-integration>")
 endif()
 rumqttc_native_target(rumqttc-native-stress native_stress.c)
+rumqttc_native_target(rumqttc-native-publish-buffer native_publish_buffer.c)
+if(MSVC)
+    target_compile_options(rumqttc-native-publish-buffer PRIVATE /experimental:c11atomics)
+endif()
 rumqttc_native_target(rumqttc-native-execution native_execution.c)
 rumqttc_native_target(rumqttc-native-logging native_logging.c)
 if(MSVC)
@@ -176,6 +185,9 @@ if(MSVC)
 endif()
 
 set(BROKER_RUNNER "${CMAKE_CURRENT_LIST_DIR}/broker_fixture.py")
+add_test(NAME rumqttc-native-publish-buffer
+    COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-publish-buffer>)
+set_tests_properties(rumqttc-native-publish-buffer PROPERTIES LABELS "native;ownership" TIMEOUT 60)
 add_test(NAME rumqttc-native-logging COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --binary $<TARGET_FILE:rumqttc-native-logging>)
 set_tests_properties(rumqttc-native-logging PROPERTIES LABELS "native;logging" TIMEOUT 60)
 add_test(NAME rumqttc-native-integration
@@ -484,3 +496,18 @@ endif()
 add_test(NAME rumqttc-native-file-store-restart
     COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --file-store-restart --binary $<TARGET_FILE:rumqttc-native-file-store-restart>)
 set_tests_properties(rumqttc-native-file-store-restart PROPERTIES LABELS "native;persistence;ownership" TIMEOUT 90 SKIP_RETURN_CODE 77)
+
+option(RUMQTTC_FILE_STORE_INTEROP "Test sequential Rust/C checkpoint interoperability" OFF)
+if(RUMQTTC_FILE_STORE_INTEROP)
+    set(RUMQTTC_FILE_STORE_RUST_HELPER
+        "${RUMQTTC_LIBRARY_DIR}/examples/file-store-interop${CMAKE_EXECUTABLE_SUFFIX}"
+        CACHE FILEPATH "Rust checkpoint interoperability fixture executable")
+    if(NOT EXISTS "${RUMQTTC_FILE_STORE_RUST_HELPER}")
+        message(FATAL_ERROR "Build wrapper-core's file-store-interop example before enabling interoperability tests")
+    endif()
+    add_test(NAME rumqttc-native-file-store-interop
+        COMMAND "${Python3_EXECUTABLE}" "${BROKER_RUNNER}" --file-store-restart
+            --file-store-rust-helper "${RUMQTTC_FILE_STORE_RUST_HELPER}"
+            --binary $<TARGET_FILE:rumqttc-native-file-store-restart>)
+    set_tests_properties(rumqttc-native-file-store-interop PROPERTIES LABELS "native;persistence;ownership" TIMEOUT 90)
+endif()

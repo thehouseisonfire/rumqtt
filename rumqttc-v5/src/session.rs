@@ -405,7 +405,7 @@ impl PersistedSession {
     /// Allocator overhead is excluded. Saturates on overflow.
     #[must_use]
     pub fn allocated_size(&self) -> usize {
-        fn vec_size<T>(v: &Vec<T>) -> usize {
+        const fn vec_size<T>(v: &Vec<T>) -> usize {
             v.capacity().saturating_mul(std::mem::size_of::<T>())
         }
         fn strings(v: &Vec<String>) -> usize {
@@ -425,15 +425,13 @@ impl PersistedSession {
             size = size.saturating_add(match request {
                 PersistedRequest::Publish(p) => {
                     let size = p.topic.capacity().saturating_add(p.payload.capacity());
-                    if let Some(p) = &p.properties {
+                    p.properties.as_ref().map_or(size, |p| {
                         size.saturating_add(p.response_topic.as_ref().map_or(0, String::capacity))
                             .saturating_add(p.content_type.as_ref().map_or(0, String::capacity))
                             .saturating_add(p.correlation_data.as_ref().map_or(0, Vec::capacity))
                             .saturating_add(properties(&p.user_properties))
                             .saturating_add(vec_size(&p.subscription_identifiers))
-                    } else {
-                        size
-                    }
+                    })
                 }
                 PersistedRequest::PubRel(_) => 0,
                 PersistedRequest::Subscribe(s) => {

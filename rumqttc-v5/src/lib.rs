@@ -1821,8 +1821,9 @@ impl MqttOptions {
 
     /// Returns the socket-level network options.
     ///
-    /// The v5 event loop does not use the connection timeout inside these
-    /// options as a deadline; it only forwards them to the socket connector.
+    /// The connection timeout bounds feeding and flushing protocol responses.
+    /// It also bounds continuing an expired keepalive readiness scan across polls.
+    /// These options are also forwarded to the socket connector.
     /// Use `set_connect_timeout` for the connection establishment deadline.
     pub fn network_options(&self) -> NetworkOptions {
         self.network_options.clone()

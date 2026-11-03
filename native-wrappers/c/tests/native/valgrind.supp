@@ -11,3 +11,18 @@
    ...
    fun:*std*thread*current*init_current*
 }
+
+# x509-parser 0.18's lazy_static extension parser table lives until process exit.
+# HashMap retains an interior pointer into its allocation, reported as possibly
+# lost by Memcheck. Match only allocation during this specific static's init;
+# certificate/client allocations and definite leaks must remain visible.
+{
+   x509-parser-process-lifetime-extension-parser-table
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   ...
+   fun:*hashbrown*raw*RawTableInner*new_uninitialized*
+   ...
+   fun:*x509_parser*extensions*parser*EXTENSION_PARSERS*static_ref_initialize*
+}

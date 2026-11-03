@@ -37,6 +37,9 @@ async def until_event(client, wanted):
 async def main():
     mode, count, protocol, qos, scenario = sys.argv[1:]
     count, protocol, qos = int(count), int(protocol), int(qos)
+    if count <= 0:
+        raise ValueError("client count must be positive")
+    client = None
     rounds = int(os.environ.get("RUMQTTC_EXECUTION_ROUNDS", "10"))
     contexts = [
         _native._BenchmarkExecutionContext(count)
@@ -47,7 +50,7 @@ async def main():
     tls = (
         TlsOptions(ca=Path(os.environ["RUMQTTC_EXECUTION_CA"]).read_bytes())
         if transport_name in ["tls", "wss"]
-        else None
+        else TlsOptions()
     )
     transport = {
         "tcp": lambda: TcpTransport(),

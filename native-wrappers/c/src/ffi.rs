@@ -86,6 +86,10 @@ pub use logging::*;
 mod file_store;
 pub use file_store::*;
 
+#[path = "publish_buffer.rs"]
+mod publish_buffer;
+pub use publish_buffer::*;
+
 use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
@@ -147,6 +151,7 @@ const CAP_LOGGING_SINK: u64 = 1 << 18;
 const CAP_DEFERRED_ADMISSION: u64 = 1 << 19;
 const CAP_READINESS: u64 = 1 << 20;
 const CAP_FIRST_CONNECTION: u64 = 1 << 21;
+const CAP_OWNED_PUBLISH_BUFFER: u64 = 1 << 23;
 const MAX_CHECKPOINT_SIZE: usize = 256 * 1024 * 1024;
 
 #[repr(C)]
@@ -1303,6 +1308,7 @@ pub const extern "C" fn rumqttc_library_capabilities() -> u64 {
             0
         }
         | CAP_FIRST_CONNECTION
+        | CAP_OWNED_PUBLISH_BUFFER
         | CAP_DEFERRED_ADMISSION
         | CAP_SHARED_EXECUTION
         | CAP_RUNTIME_CONFIGURATION

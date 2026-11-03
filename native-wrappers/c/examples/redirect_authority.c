@@ -7,7 +7,7 @@
 typedef struct redirect_context {
   uint16_t port;
   size_t host_length;
-  char host[];
+  char host[sizeof("localhost")];
 } redirect_context;
 
 /* An exact application allowlist. The Server Reference itself is not authority. */
@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
   unsigned long port = strtoul(argv[2], &end, 10);
   if (end == argv[2] || *end != '\0' || port == 0 || port > UINT16_MAX)
     return 2;
-  redirect_context *context = malloc(sizeof(*context) + sizeof("localhost"));
+  redirect_context *context = malloc(sizeof(*context));
   if (context == NULL)
     return 1;
   context->port = (uint16_t)port;

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Summarize timing repetitions separately from instrumented allocation samples."""
+
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-from pathlib import Path
 import statistics
+from pathlib import Path
 
 
 def main() -> None:
@@ -37,7 +38,7 @@ def main() -> None:
         assert len(timings) == metadata["repetitions"], f"incomplete timing repetitions: {key}"
         assert {row["repetition"] for row in timings} == set(range(metadata["repetitions"])), key
         assert len(allocations) == metadata["allocation_repetitions"], f"incomplete allocation samples: {key}"
-        summary = dict(zip(("protocol", "qos", "producers", "capacity", "inflight", "profile"), key))
+        summary = dict(zip(("protocol", "qos", "producers", "capacity", "inflight", "profile"), key, strict=True))
         summary["timing_samples"] = len(timings)
         for metric in ("admissions_per_second", "completed_per_second", "shutdown_ms"):
             values = [row[metric] for row in timings]

@@ -498,6 +498,7 @@ typedef struct rumqttc_event_t rumqttc_event_t;
 typedef struct rumqttc_ack_token_t rumqttc_ack_token_t;
 typedef struct rumqttc_completion_t rumqttc_completion_t;
 typedef struct rumqttc_error_t rumqttc_error_t;
+typedef struct rumqttc_publish_buffer_t rumqttc_publish_buffer_t;
 typedef struct rumqttc_store_registration_t rumqttc_store_registration_t;
 typedef struct rumqttc_callback_completion_t rumqttc_callback_completion_t;
 typedef struct rumqttc_resolver_registration_t rumqttc_resolver_registration_t;
@@ -3269,6 +3270,59 @@ RUMQTTC_API uint32_t rumqttc_error_file_store_details(const struct rumqttc_error
 RUMQTTC_API uint32_t rumqttc_file_store_operation_cleanup_failure(const rumqttc_file_store_operation_t *handle,
                                                                   size_t index, rumqttc_file_store_error_details_t *out,
                                                                   rumqttc_error_t **error_out);
+
+/* Owned immutable application payload storage (available in every build).
+ * Creation success transfers release responsibility and returns one owned handle.
+ * Failure initializes *out to NULL, invokes no callback and transfers nothing.
+ * release is required; userdata may be NULL. NULL data requires len == 0;
+ * len must fit ptrdiff_t. Nonempty data must be one stable readable allocation,
+ * with byte alignment. Empty buffers retain their callback and original pointer.
+ * The caller may read, but must not mutate/free bytes until callback entry.
+ * Never adopt the same storage under competing release responsibilities.
+ *
+ * retain returns an independent handle. Do not race release with access through
+ * the same reference; independent handles may be used/released concurrently.
+ * Publishing borrows the handle, retains immutable bytes and copies metadata.
+ * Releasing a buffer handle never cancels pending or admitted work.
+ * Rejection leaves the handle reusable. Repeated success creates distinct MQTT
+ * operations. MQTT/pending limits charge logical bytes per publication/attempt,
+ * including shared storage; native retained publish byte budgets are MQTT 5-only.
+ * Logical length does not bound backing allocations, pool pressure or process RSS.
+ * MQTT packet limits are checked at publication, separately from creation.
+ *
+ * The exactly-once callback receives the original pointer/length on whichever
+ * thread drops the last owner. It must be thread-safe, prompt, and must not unwind
+ * or longjmp across Rust. It may reclaim data/userdata or enqueue host reclamation.
+ * Permitted reentry: retain/release of OTHER live buffer references and library
+ * version/capability queries. Client/operation observation reentry is unsupported;
+ * blocking wrapper waits/joins are forbidden even on caller threads. Never reuse
+ * the reference currently being destroyed. Callback code stays loaded through
+ * return. Finish host reclamation as well as all handles/calls before unloading.
+ *
+ * Buffers retain no client/runtime. MQTT completion and client/context join do
+ * not release caller-held buffers or prove their callbacks ran. Native/replay
+ * references retain storage through actual use; independent encoded/checkpoint
+ * copies need not retain it. Existing copying APIs and UTF-8 checks are unchanged.
+ * This avoids an FFI payload copy, not codec/persistence/transport/kernel copies.
+ */
+#define RUMQTTC_CAP_OWNED_PUBLISH_BUFFER (UINT64_C(1) << 23)
+typedef void (*rumqttc_publish_buffer_release_fn)(void *userdata, const uint8_t *data, size_t len);
+RUMQTTC_API rumqttc_status_t rumqttc_publish_buffer_create(
+    rumqttc_bytes_view_t data, rumqttc_publish_buffer_release_fn release, void *userdata,
+    rumqttc_publish_buffer_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_publish_buffer_retain(
+    const rumqttc_publish_buffer_t *buffer, rumqttc_publish_buffer_t **out, rumqttc_error_t **error_out);
+RUMQTTC_API void rumqttc_publish_buffer_release(rumqttc_publish_buffer_t *buffer);
+RUMQTTC_API rumqttc_status_t rumqttc_client_try_publish_buffer(
+    rumqttc_client_t *client, rumqttc_string_view_t topic, const rumqttc_publish_buffer_t *buffer,
+    const rumqttc_publish_options_t *options, uint64_t *operation_id_out, rumqttc_error_t **error_out);
+RUMQTTC_API rumqttc_status_t rumqttc_client_publish_buffer_tracked(
+    rumqttc_client_t *client, rumqttc_string_view_t topic, const rumqttc_publish_buffer_t *buffer,
+    const rumqttc_publish_options_t *options, rumqttc_completion_t **completion_out, rumqttc_error_t **error_out);
+/* Reserve pending capacity before retaining bytes; observe admission before MQTT completion. */
+RUMQTTC_API rumqttc_status_t rumqttc_client_publish_buffer_deferred(
+    rumqttc_client_t *client, rumqttc_string_view_t topic, const rumqttc_publish_buffer_t *buffer,
+    const rumqttc_publish_options_t *options, rumqttc_pending_admission_t **out, rumqttc_error_t **error_out);
 
 #ifdef __cplusplus
 }

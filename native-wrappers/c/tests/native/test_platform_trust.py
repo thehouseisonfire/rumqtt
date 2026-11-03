@@ -71,9 +71,13 @@ class PlatformTrustTests(unittest.TestCase):
 
         def powershell(script, state):
             scripts.append(script)
+            self.assertEqual(state["store"], r"Cert:\LocalMachine\Root")
+            self.assertIn("$env:RUMQTTC_PLATFORM_STORE", script)
+            self.assertNotIn("\\\\", script)
             if "Import-Certificate" in script:
                 persisted = json.loads(next(self.state.glob("*.json")).read_text())
                 self.assertTrue(persisted["owned"])
+                self.assertEqual(persisted["store"], state["store"])
             return ""
 
         with (
@@ -88,6 +92,25 @@ class PlatformTrustTests(unittest.TestCase):
             raise RuntimeError("child failed")
         self.assertIn("Remove-Item", scripts[-1])
         self.assert_clean()
+
+    def test_windows_cleanup_selects_store_from_manifest_including_legacy_user_store(self):
+        for store in (None, r"Cert:\LocalMachine\Root"):
+            with self.subTest(store=store):
+                self.state.mkdir(exist_ok=True)
+                root = self.state / "fixture.cer"
+                root.touch()
+                manifest = self.state / "fixture.json"
+                state = {"platform": "win32", "thumbprint": "FIXTURE", "root": str(root), "owned": True}
+                if store is not None:
+                    state["store"] = store
+                platform_trust.save_state(manifest, state)
+                with patch.object(platform_trust, "command", return_value="") as command:
+                    platform_trust.cleanup(manifest)
+                arguments, environment = command.call_args.args
+                self.assertIn("Remove-Item", arguments[-1])
+                self.assertIn("$env:RUMQTTC_PLATFORM_STORE", arguments[-1])
+                self.assertEqual(environment["RUMQTTC_PLATFORM_STORE"], store or r"Cert:\CurrentUser\Root")
+                self.assert_clean()
 
     def test_windows_partial_import_is_removed(self):
         scripts = []
@@ -448,6 +471,41 @@ class PlatformTrustTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows certificate provider")
+    def test_certificate_drive_is_available_in_a_fresh_windows_session(self):
+        state: dict[str, object] = {"root": "unused.cer", "thumbprint": "UNUSED"}
+        result = platform_trust.powershell(
+            r"if (-not (Test-Path Cert:\CurrentUser\Root)) { throw 'certificate drive unavailable' }; 'ready'",
+            state,
+        )
+        self.assertEqual(result.strip(), "ready")
+
+    def test_powershell_loads_certificate_provider_before_store_access(self):
+        state: dict[str, object] = {"root": "fixture.cer", "thumbprint": "FIXTURE"}
+        script = r"Test-Path Cert:\CurrentUser\Root"
+        with patch.object(platform_trust, "command", return_value="True") as command:
+            self.assertEqual(platform_trust.powershell(script, state), "True")
+        arguments, environment = command.call_args.args
+        self.assertIn("-NoProfile", arguments)
+        self.assertIn("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; " + script, arguments[-1])
+        self.assertEqual(environment["RUMQTTC_PLATFORM_CA"], "fixture.cer")
+        self.assertEqual(environment["RUMQTTC_PLATFORM_THUMBPRINT"], "FIXTURE")
+        self.assertEqual(environment["RUMQTTC_PLATFORM_STORE"], r"Cert:\CurrentUser\Root")
+
+    def test_powershell_does_not_inherit_parent_module_search_path(self):
+        state: dict[str, object] = {"root": "fixture.cer", "thumbprint": "FIXTURE"}
+        for key in ("PSModulePath", "PSMODULEPATH", "psmodulepath"):
+            with (
+                self.subTest(key=key),
+                patch.dict(os.environ, {key: r"C:\Program Files\PowerShell\7\Modules"}),
+                patch.object(platform_trust, "command", return_value="ready") as command,
+            ):
+                self.assertEqual(platform_trust.powershell("'ready'", state), "ready")
+                environment = command.call_args.args[1]
+                self.assertFalse(any(name.casefold() == "psmodulepath" for name in environment))
+                self.assertEqual(environment["RUMQTTC_PLATFORM_CA"], "fixture.cer")
+                self.assertEqual(os.environ[key], r"C:\Program Files\PowerShell\7\Modules")
+
     @unittest.skipIf(os.name == "nt", "POSIX process groups")
     def test_sudo_timeout_kills_privileged_group_before_returning(self):
         arguments = ["sudo", "-n", "security", "remove-trusted-cert"]

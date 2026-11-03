@@ -755,10 +755,23 @@ mod tests {
             },
             0
         );
+        // Ownership validation needs no platform trust or network access.
+        let tls = super::super::rumqttc_tls_options_t {
+            struct_size: struct_size::<super::super::rumqttc_tls_options_t>(),
+            backend: 0,
+            root_policy: 1,
+            reserved: 0,
+            ca_pem: view_bytes(include_bytes!("../tests/fixtures/tls-root.pem")),
+            pem_identity: ptr::null(),
+            pkcs12_identity: ptr::null(),
+            alpn_protocols: ptr::null(),
+            alpn_protocol_count: 0,
+            reserved_tail: [0; 2],
+        };
         let options = rumqttc_tls_profile_options_t {
             struct_size: struct_size::<rumqttc_tls_profile_options_t>(),
             version_policy: 0,
-            tls: ptr::null(),
+            tls: &raw const tls,
             pins: ptr::null(),
             pin_count: 0,
             reserved: [0; 2],

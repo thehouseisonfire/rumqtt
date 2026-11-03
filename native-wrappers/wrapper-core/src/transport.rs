@@ -163,6 +163,17 @@ impl SavedFailure {
 
 type HostWork<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 
+pub fn discard_panic_payload(payload: Box<dyn std::any::Any + Send>) {
+    // Standard panic messages have no host destructor and can be reclaimed.
+    // Opaque panic_any payloads may panic or block in Drop; preserve containment
+    // without invoking arbitrary host code during driver teardown.
+    if payload.is::<&'static str>() || payload.is::<String>() {
+        drop(payload);
+    } else {
+        std::mem::forget(payload);
+    }
+}
+
 /// Own the host future so cancellation/destruction retains the callback
 /// context too. A panicking destructor must not escape driver teardown.
 pub struct HostFuture<T, E> {
@@ -185,7 +196,7 @@ impl<T, E> HostFuture<T, E> {
         })) {
             Ok(()) => Ok(()),
             Err(payload) => {
-                std::mem::forget(payload);
+                discard_panic_payload(payload);
                 Err(TransportFailure::Panic)
             }
         }
@@ -211,7 +222,7 @@ impl<T, E> Future for HostFuture<T, E> {
                 Err(error) => Poll::Ready(Err((this.failure)(error))),
             },
             Err(payload) => {
-                std::mem::forget(payload);
+                discard_panic_payload(payload);
                 let _ = this.destroy();
                 Poll::Ready(Err((this.failure)(TransportFailure::Panic)))
             }
@@ -231,7 +242,7 @@ fn start_io<T: Send + 'static>(call: impl FnOnce() -> IoFuture<T>) -> IoFuture<T
     match result {
         Ok(future) => Box::pin(HostFuture::new(future, TransportFailure::into_io)),
         Err(payload) => {
-            std::mem::forget(payload);
+            discard_panic_payload(payload);
             Box::pin(async { Err(TransportFailure::Panic.into_io()) })
         }
     }
@@ -495,6 +506,48 @@ mod proof;
 #[cfg(test)]
 mod host_future_tests {
     use super::*;
+
+    #[test]
+    fn polling_and_starting_panics_are_contained() {
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let mut future = Box::pin(HostFuture::new(
+            Box::pin(std::future::poll_fn(
+                |_| -> Poll<Result<(), TransportFailure>> {
+                    std::panic::panic_any(String::from("host future polling failed"));
+                },
+            )),
+            std::convert::identity,
+        ));
+        assert!(matches!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Err(TransportFailure::Panic))
+        ));
+        drop(future);
+
+        let mut future: IoFuture<()> = start_io(|| {
+            std::panic::panic_any(String::from("host I/O callback failed"));
+        });
+        let Poll::Ready(Err(error)) = future.as_mut().poll(&mut cx) else {
+            panic!("callback panic must complete with an error");
+        };
+        assert_eq!(
+            crate::backend::transport_io_failure(&error),
+            Some(TransportFailure::Panic)
+        );
+    }
+
+    #[test]
+    fn opaque_panic_payload_destructors_are_not_invoked() {
+        // A zero-sized payload needs no allocation, including under LeakSanitizer.
+        struct HostPayload;
+        impl Drop for HostPayload {
+            fn drop(&mut self) {
+                panic!("opaque host payload must not be destroyed");
+            }
+        }
+        discard_panic_payload(Box::new(HostPayload));
+    }
+
     struct PanickingDrop {
         ready: bool,
     }

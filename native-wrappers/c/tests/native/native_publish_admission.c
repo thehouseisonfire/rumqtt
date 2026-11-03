@@ -351,18 +351,33 @@ static void capacity_matrix(unsigned policy, unsigned bytes_only) {
     first = publish(client, RUMQTTC_QOS_1, 0);
     REQUIRE(snprintf(barrier, sizeof(barrier), "%s-held-%u", id, generation) > 0);
     native_fixture_read(barrier);
-    // An unacknowledged PUBLISH closes the protocol window, so the next
-    // channel admission cannot be consumed until the broker releases it.
-    rumqttc_completion_t *queued = bytes_only ? NULL : publish(client, RUMQTTC_QOS_1, 0);
-    rejected(client, RUMQTTC_QOS_1, 0, RUMQTTC_BACKPRESSURE, reason, 1);
-    snapshot(client, bytes_only ? 1 : 2, bytes_only ? 5 : 10, 4, byte_limit);
+    // The driver can move one blocked request into its scheduling queue even
+    // while the protocol window is full. Fill until admission rejects, retaining
+    // every successful completion instead of assuming a particular interleaving.
+    rumqttc_completion_t *queued[2] = {NULL, NULL};
+    size_t queued_count = 0;
+    for (;;) {
+      rumqttc_publish_options_t options = native_publish_options(RUMQTTC_QOS_1);
+      rumqttc_completion_t *completion = NULL;
+      rumqttc_error_t *error = NULL;
+      uint32_t status = rumqttc_client_publish_tracked(client, native_string("a"),
+          native_bytes((const uint8_t *)"data", 4), &options, &completion, &error);
+      if (status == RUMQTTC_BACKPRESSURE) {
+        REQUIRE(completion == NULL);
+        failure(error, reason, 1, 1);
+        break;
+      }
+      REQUIRE(status == RUMQTTC_OK && error == NULL && !bytes_only && queued_count < 2);
+      queued[queued_count++] = completion;
+    }
+    snapshot(client, 1 + queued_count, (1 + queued_count) * 5, 4, byte_limit);
     REQUIRE(snprintf(barrier, sizeof(barrier), "%s-ack-%u", id, generation) > 0);
-    native_fixture_write(barrier, 1);
+    native_fixture_write(barrier, 1 + queued_count);
     native_wait_completion(first, RUMQTTC_COMPLETION_QOS1_ACKNOWLEDGED);
     rumqttc_completion_destroy(first);
-    if (queued) {
-      native_wait_completion(queued, RUMQTTC_COMPLETION_QOS1_ACKNOWLEDGED);
-      rumqttc_completion_destroy(queued);
+    for (size_t index = 0; index < queued_count; ++index) {
+      native_wait_completion(queued[index], RUMQTTC_COMPLETION_QOS1_ACKNOWLEDGED);
+      rumqttc_completion_destroy(queued[index]);
     }
     snapshot(client, 0, 0, 4, byte_limit);
     if (generation == 1) {

@@ -150,6 +150,10 @@ impl Source {
 
     pub(crate) fn publish(&self) {
         // Reaching u64::MAX latches a failure, never a wrapped/ambiguous revision.
+        #[allow(
+            deprecated,
+            reason = "Atomic fetch_update is available at the Rust 1.88 MSRV"
+        )]
         let previous = self
             .revision
             .fetch_update(SeqCst, SeqCst, |revision| revision.checked_add(1));

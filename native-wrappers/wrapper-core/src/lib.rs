@@ -138,6 +138,9 @@ pub use event::{
 };
 pub use handle::ClientHandle;
 pub use protocol::{OperationId, ProtocolVersion, QoS};
+/// Internal bridge for foreign callbacks that must obey managed wait restrictions.
+#[doc(hidden)]
+pub use runtime::with_host_callback;
 pub use runtime::{EventConsumer, NativeClient, NativeClientCloser};
 pub use shutdown::LifecycleState;
 pub use will::{LastWillConfig, LastWillProtocolOptions, V5WillProperties};

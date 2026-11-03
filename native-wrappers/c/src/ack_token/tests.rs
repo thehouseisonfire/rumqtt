@@ -10,7 +10,7 @@ use std::sync::{Barrier, mpsc};
 use std::thread;
 use std::time::Duration;
 
-const DEADLINE: Duration = Duration::from_secs(3);
+const DEADLINE: Duration = Duration::from_secs(if cfg!(miri) { 60 } else { 3 });
 
 struct FlushControl {
     hold: AtomicBool,
@@ -935,7 +935,7 @@ fn acknowledgement_racing_reconnect_never_enters_the_replacement_connection() {
             );
             assert_eq!(wait(completion), 0);
             assert_eq!(client.peer.frame(), (0x40, vec![0, 8]));
-            assert!(client.peer.buffered.is_empty());
+            assert_eq!(client.peer.buffered, [] as [u8; 0]);
             assert!(client.peer.output.try_recv().is_err());
             rumqttc_completion_destroy(completion);
             rumqttc_ack_token_release(current);
@@ -1141,3 +1141,6 @@ mod first_connection_tests;
 // Reuse the same controlled transport and owned-client harness for snapshot tests.
 #[path = "../publish_budget/tests.rs"]
 mod publish_budget_tests;
+
+#[path = "../publish_buffer/controlled_tests.rs"]
+mod publish_buffer_tests;

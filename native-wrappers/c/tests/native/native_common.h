@@ -43,8 +43,11 @@ native_start_client(rumqttc_protocol_t protocol, const char *client_id,
                     uint32_t event_capacity, uint64_t event_timeout_ms);
 rumqttc_event_t *native_wait_event(rumqttc_client_t *client,
                                    rumqttc_event_kind_t expected);
-void native_wait_completion(rumqttc_completion_t *completion,
-                            rumqttc_completion_kind_t expected);
+void native_wait_completion_at(rumqttc_completion_t *completion,
+                              rumqttc_completion_kind_t expected,
+                              const char *file, int line);
+#define native_wait_completion(completion, expected) \
+  native_wait_completion_at((completion), (expected), __FILE__, __LINE__)
 void native_close_destroy(rumqttc_client_t *client);
 void native_sleep_ms(uint32_t milliseconds);
 uint64_t native_monotonic_ms(void);

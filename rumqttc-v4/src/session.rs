@@ -339,7 +339,7 @@ impl PersistedSession {
     /// Allocator overhead is excluded. Saturates on overflow.
     #[must_use]
     pub fn allocated_size(&self) -> usize {
-        fn vec_size<T>(v: &Vec<T>) -> usize {
+        const fn vec_size<T>(v: &Vec<T>) -> usize {
             v.capacity().saturating_mul(std::mem::size_of::<T>())
         }
         fn strings(v: &Vec<String>) -> usize {

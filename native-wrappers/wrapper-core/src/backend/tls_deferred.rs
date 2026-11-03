@@ -44,6 +44,7 @@ struct Work {
 }
 struct Relay {
     requests: flume::Sender<Work>,
+    cancelled: flume::Receiver<()>,
     state: Arc<State>,
 }
 struct Clear<'a>(&'a State);
@@ -57,10 +58,19 @@ impl Relay {
         *self.state.pending.lock() = Some(request.stage());
         let _clear = Clear(&self.state);
         let (reply, receive) = flume::bounded(1);
-        self.requests
-            .send(Work { request, reply })
-            .map_err(|_| Reason::Failed)?;
-        receive.recv().unwrap_or(Err(Reason::Failed))
+        flume::Selector::new()
+            .send(&self.requests, Work { request, reply }, |sent| {
+                sent.map_err(|_| Reason::Failed)
+            })
+            .recv(&self.cancelled, |_| Err(Reason::Failed))
+            .wait()?;
+        // Rustls can invoke another hook before returning from the handshake poll.
+        // Cancellation must also interrupt this synchronous wait: an abandoned
+        // queued Work can retain its reply sender while this relay owns the queue.
+        flume::Selector::new()
+            .recv(&receive, |reply| reply.unwrap_or(Err(Reason::Failed)))
+            .recv(&self.cancelled, |_| Err(Reason::Failed))
+            .wait()
     }
 }
 impl TlsVerifier for Relay {
@@ -117,23 +127,25 @@ impl TlsIdentityProvider for Relay {
 
 pub(super) struct Dispatch {
     relay: Arc<Relay>,
+    // Sole sender: dropping the dispatcher broadcasts cancellation to both waits.
+    _stop: flume::Sender<()>,
     receive: flume::Receiver<Work>,
     verifier: Option<TlsVerifierConfig>,
     async_verifier: Option<AsyncTlsVerifierConfig>,
     external: Option<TlsExternalIdentityConfig>,
     async_external: Option<AsyncTlsExternalIdentityConfig>,
 }
-struct Stop(flume::Sender<()>);
-impl Drop for Stop {
-    fn drop(&mut self) {
-        let _ = self.0.try_send(());
-    }
-}
 impl Dispatch {
     pub(super) fn new(config: &Connector, state: Arc<State>) -> Self {
         let (requests, receive) = flume::bounded(1);
+        let (stop, cancelled) = flume::bounded(1);
         Self {
-            relay: Arc::new(Relay { requests, state }),
+            relay: Arc::new(Relay {
+                requests,
+                cancelled,
+                state,
+            }),
+            _stop: stop,
             receive,
             verifier: config.verifier.clone(),
             async_verifier: config.async_verifier.clone(),
@@ -260,8 +272,7 @@ impl Dispatch {
         T: rumqttc_core::AsyncReadWrite + 'static,
     {
         let state = self.relay.state.clone();
-        let (stop, cancelled) = flume::bounded(1);
-        let _stop = Stop(stop);
+        let cancelled = self.relay.cancelled.clone();
         let runtime = tokio::runtime::Handle::current();
         let blocking_work = crate::execution::register_blocking_work();
         let logging = crate::logging::ClientLogging::current();
@@ -368,5 +379,57 @@ impl<T> Future for HostFuture<T> {
 impl<T> Drop for HostFuture<T> {
     fn drop(&mut self) {
         let _ = self.destroy();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn cancellation_releases_queued_and_subsequent_synchronous_hooks() {
+        let (requests, receive) = flume::bounded(1);
+        let (stop, cancelled) = flume::bounded(1);
+        let relay = Relay {
+            requests,
+            cancelled,
+            state: Arc::new(State {
+                server_name: "localhost".into(),
+                layer: crate::TlsLayer::Broker,
+                deadline: None,
+                failure: parking_lot::Mutex::new(None),
+                pending: parking_lot::Mutex::new(None),
+                tls_callbacks: Arc::default(),
+            }),
+        };
+        let (done, finished) = flume::bounded(1);
+        let worker = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let result = relay.call(Request::Verify(AsyncTlsVerificationRequest {
+                    server_name: "localhost".into(),
+                    layer: crate::TlsLayer::Broker,
+                    certificates: Vec::new(),
+                    ocsp_response: Bytes::new(),
+                    unix_time: 0,
+                    deadline: None,
+                }));
+                assert!(matches!(result, Err(Reason::Failed)));
+            }
+            done.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while receive.is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "hook did not enter its reply wait"
+            );
+            std::thread::yield_now();
+        }
+        // Leave Work and its reply sender queued, as can happen when Rustls
+        // advances to another hook during dispatcher cancellation.
+        drop(stop);
+        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
     }
 }
