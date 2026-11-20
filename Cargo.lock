@@ -2387,9 +2387,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scram-rs"
-version = "0.24.1"
+version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42ea59268d69f5dbb2eb2ae88cd34476f1227c509a820a9a626014aa845f7aec"
+checksum = "f8876e6e7231344e5b2dd39b8a0440b7cfa6c316ac7dc268a2ba32bac08dd401"
 dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",

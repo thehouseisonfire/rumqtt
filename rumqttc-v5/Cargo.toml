@@ -79,7 +79,7 @@ percent-encoding = { version = "2", optional = true }
 url = { version = "2", default-features = false, optional = true }
 fixedbitset = "0.5.7"
 #auth
-scram = { package = "scram-rs", version = "0.24.0", default-features = false, features = ["std"], optional = true }
+scram = { package = "scram-rs", version = "0.25.0", default-features = false, features = ["std"], optional = true }
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]

@@ -2,6 +2,9 @@
 
 ### Changed
 
+- Native wrappers and Rust v5: Update SCRAM, Python bindings, and parity-audit
+  dependencies while retaining Rust 1.88 support.
+
 - Wrapper-core: Reclaim string panic payloads caught at custom transport boundaries
   while keeping opaque host payload destructors outside driver teardown.
 - Wrapper validation: Load the Windows certificate provider explicitly in each
