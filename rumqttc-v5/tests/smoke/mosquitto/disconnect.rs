@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tempfile::TempDir;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 
@@ -22,7 +23,7 @@ static NEXT_BROKER_PORT_SEED: AtomicU64 = AtomicU64::new(0);
 
 struct MosquittoBroker {
     child: Option<Child>,
-    dir: PathBuf,
+    _dir: TempDir,
     port: u16,
     stdout: PathBuf,
     stderr: PathBuf,
@@ -41,32 +42,35 @@ impl MosquittoBroker {
 
         for attempt in 0..BROKER_PORT_ATTEMPTS {
             let port = broker_port_candidate(attempt);
-            let dir = smoke_dir();
-            if let Err(err) = fs::create_dir_all(&dir) {
-                eprintln!(
-                    "WARN: skipping Mosquitto disconnect smoke test: cannot create temp dir {dir:?}: {err}"
-                );
-                return None;
-            }
+            let dir = match tempfile::Builder::new()
+                .prefix("rumqttc-v5-mosquitto-disconnect-")
+                .tempdir()
+            {
+                Ok(dir) => dir,
+                Err(err) => {
+                    eprintln!(
+                        "WARN: skipping Mosquitto disconnect smoke test: cannot create temp dir: {err}"
+                    );
+                    return None;
+                }
+            };
 
-            let config = dir.join("mosquitto.conf");
+            let config = dir.path().join("mosquitto.conf");
             if let Err(err) = write_config(&config, port) {
                 eprintln!(
                     "WARN: skipping Mosquitto disconnect smoke test: cannot write config {config:?}: {err}"
                 );
-                drop(fs::remove_dir_all(&dir));
                 return None;
             }
 
-            let stdout = dir.join("mosquitto.stdout.log");
-            let stderr = dir.join("mosquitto.stderr.log");
+            let stdout = dir.path().join("mosquitto.stdout.log");
+            let stderr = dir.path().join("mosquitto.stderr.log");
             let stdout_file = match fs::File::create(&stdout) {
                 Ok(file) => file,
                 Err(err) => {
                     eprintln!(
                         "WARN: skipping Mosquitto disconnect smoke test: cannot create stdout log {stdout:?}: {err}"
                     );
-                    drop(fs::remove_dir_all(&dir));
                     return None;
                 }
             };
@@ -76,7 +80,6 @@ impl MosquittoBroker {
                     eprintln!(
                         "WARN: skipping Mosquitto disconnect smoke test: cannot create stderr log {stderr:?}: {err}"
                     );
-                    drop(fs::remove_dir_all(&dir));
                     return None;
                 }
             };
@@ -94,14 +97,13 @@ impl MosquittoBroker {
                     eprintln!(
                         "WARN: skipping Mosquitto disconnect smoke test: cannot launch clean broker: {err}"
                     );
-                    drop(fs::remove_dir_all(&dir));
                     return None;
                 }
             };
 
             let mut broker = Self {
                 child: Some(child),
-                dir,
+                _dir: dir,
                 port,
                 stdout,
                 stderr,
@@ -131,13 +133,9 @@ impl MosquittoBroker {
 
         drop(child.kill());
         if let Err(err) = child.wait() {
-            drop(fs::remove_dir_all(&self.dir));
             return format!("failed to wait for mosquitto process: {err}");
         }
-        let logs = self.logs();
-        drop(fs::remove_dir_all(&self.dir));
-
-        logs
+        self.logs()
     }
 
     fn logs(&self) -> String {
@@ -164,7 +162,6 @@ impl Drop for MosquittoBroker {
             drop(child.kill());
             drop(child.wait());
         }
-        drop(fs::remove_dir_all(&self.dir));
     }
 }
 
@@ -189,17 +186,6 @@ fn broker_port_candidate(attempt: usize) -> u16 {
     let offset =
         seed.wrapping_add((attempt as u64).wrapping_mul(1_299_709)) % u64::from(BROKER_PORT_RANGE);
     BROKER_PORT_MIN + offset as u16
-}
-
-fn smoke_dir() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "rumqttc-mosquitto-disconnect-smoke-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after unix epoch")
-            .as_nanos()
-    ))
 }
 
 fn write_config(config: &Path, port: u16) -> io::Result<()> {
