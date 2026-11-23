@@ -334,7 +334,7 @@ fn callbacks_cannot_accept_results_after_the_original_attempt_deadline() {
             slow: true,
         });
         let mut tls = fixture.client(TlsBackend::Rustls);
-        tls.verifier = Some(TlsVerifierConfig(policy.clone()));
+        tls.verifier = Some(TlsVerifierConfig(policy));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut config = support::config(mqtt5, listener.local_addr().unwrap().port());
         config.common.connection_timeout = Duration::from_secs(1);

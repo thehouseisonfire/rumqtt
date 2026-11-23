@@ -7,12 +7,7 @@ pub fn has_wildcards(s: &str) -> bool {
 /// Checks if a topic is valid
 #[must_use]
 pub fn valid_topic(topic: &str) -> bool {
-    // topic can't contain wildcards
-    if topic.contains('+') || topic.contains('#') {
-        return false;
-    }
-
-    true
+    !has_wildcards(topic)
 }
 
 /// Checks if the filter is valid
@@ -89,12 +84,8 @@ pub fn matches(topic: &str, filter: &str) -> bool {
         }
     }
 
-    // topic has remaining elements and filter's last element isn't "#"
-    if topics.next().is_some() {
-        return false;
-    }
-
-    true
+    // The filter matched only if the topic has no remaining levels.
+    topics.next().is_none()
 }
 
 #[cfg(test)]

@@ -82,8 +82,8 @@ impl<T> OutboundScheduler<T> {
     {
         let mut can_bypass = true;
 
-        for index in 0..self.queue.len() {
-            let request = classify(&self.queue[index]);
+        for (index, item) in self.queue.iter().enumerate() {
+            let request = classify(item);
             // Stop searching at the boundary, including when it is blocked at
             // the front. No later application control may cross it.
             if request.class == RequestClass::Fence {
