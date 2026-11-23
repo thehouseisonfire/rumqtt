@@ -120,7 +120,7 @@ impl TerminalOutcome {
     /// # Errors
     ///
     /// The contained error is the operation's terminal failure, not an observation failure.
-    #[must_use]
+    #[must_use = "the result contains the operation's completion or terminal failure"]
     pub const fn result(&self) -> &Result<Completion> {
         &self.result
     }

@@ -71,7 +71,8 @@ repos:
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
           export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
 
-          cargo hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next -p mqttbytes-v5-next -p rumqttc-v4-next -p rumqttc-v5-next
+          cargo +stable clippy --fix --allow-dirty --all-targets -p mqttbytes-core-next;
+          cargo +stable hack clippy --fix --allow-dirty --each-feature --exclude-all-features --no-dev-deps -p mqttbytes-v4-next -p mqttbytes-v5-next -p rumqttc-core-next -p rumqttc-v4-next -p rumqttc-v5-next
           '
         language: system
         pass_filenames: false
@@ -86,7 +87,7 @@ repos:
           export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}";
           export RUSTFLAGS="-D warnings -W clippy::pedantic -W clippy::nursery";
 
-          cargo clippy --manifest-path native-wrappers/Cargo.toml --fix --allow-dirty --workspace --all-targets --no-deps
+          cargo +stable clippy --manifest-path native-wrappers/Cargo.toml --locked --workspace --all-targets
           '
         language: system
         pass_filenames: false
