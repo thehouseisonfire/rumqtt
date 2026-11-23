@@ -1788,46 +1788,99 @@ async fn reconnection_resumes_from_the_previous_state() {
     let (listener, port) = reserve_listener().await;
     let mut options = MqttOptions::new("dummy", ("127.0.0.1", port));
     options
-        .set_keep_alive(5)
         .set_clean_start(false)
         .set_session_expiry_interval(Some(PERSISTENT_SESSION_EXPIRY));
 
     let (client, mut eventloop) = AsyncClient::builder(options).capacity(5).build();
-    task::spawn(async move {
-        start_requests(10, QoS::AtLeastOnce, 1, client).await;
-        time::sleep(Duration::from_secs(10)).await;
-    });
+    time::timeout(TEST_TIMEOUT, async {
+        let (connack, mut broker) = tokio::join!(
+            eventloop.poll(),
+            TestBroker::from_listener(
+                listener,
+                ConnectBehavior::Accept {
+                    session_saved: false
+                }
+            ),
+        );
+        assert_matches!(
+            connack.unwrap(),
+            Event::Incoming(Packet::ConnAck(ConnAck {
+                session_present: false,
+                ..
+            }))
+        );
 
-    task::spawn(async move {
-        run(&mut eventloop, true).await.unwrap();
-    });
+        let mut unacked = Vec::new();
+        for payload in 1..=4 {
+            client
+                .publish(
+                    "hello/world",
+                    [payload],
+                    PublishOptions::new(QoS::AtLeastOnce),
+                )
+                .await
+                .unwrap();
+            let outgoing = eventloop.poll().await.unwrap();
+            let packet = broker
+                .read_publish()
+                .await
+                .expect("missing initial publish");
+            assert_eq!(outgoing, Event::Outgoing(Outgoing::Publish(packet.pkid)));
+            assert_eq!(packet.payload.as_ref(), &[payload]);
+            assert!(!packet.dup);
 
-    let mut broker = TestBroker::from_listener(
-        listener,
-        ConnectBehavior::Accept {
-            session_saved: false,
-        },
-    )
-    .await;
-    for i in 1..=2 {
-        let packet = broker.read_publish().await.unwrap();
-        assert_eq!(i, packet.payload[0]);
-        broker.ack(packet.pkid).await;
-    }
+            if payload <= 2 {
+                broker.ack(packet.pkid).await;
+                assert_matches!(
+                    eventloop.poll().await.unwrap(),
+                    Event::Incoming(Packet::PubAck(ack)) if ack.pkid == packet.pkid
+                );
+            } else {
+                unacked.push((payload, packet.pkid));
+            }
+        }
 
-    let listener = listener_on(port).await;
-    let mut broker = TestBroker::from_listener(
-        listener,
-        ConnectBehavior::Accept {
-            session_saved: true,
-        },
-    )
-    .await;
-    for i in 3..=4 {
-        let packet = broker.read_publish().await.unwrap();
-        assert_eq!(i, packet.payload[0]);
-        broker.ack(packet.pkid).await;
-    }
+        // Have the replacement listener ready before closing the first connection.
+        let listener = listener_on(port).await;
+        drop(broker);
+        assert_matches!(
+            eventloop.poll().await,
+            Err(ConnectionError::MqttState(StateError::ConnectionAborted))
+        );
+
+        let (connack, mut broker) = tokio::join!(
+            eventloop.poll(),
+            TestBroker::from_listener(
+                listener,
+                ConnectBehavior::Accept {
+                    session_saved: true
+                }
+            ),
+        );
+        assert_matches!(
+            connack.unwrap(),
+            Event::Incoming(Packet::ConnAck(ConnAck {
+                session_present: true,
+                ..
+            }))
+        );
+
+        for (payload, pkid) in unacked {
+            assert_eq!(
+                eventloop.poll().await.unwrap(),
+                Event::Outgoing(Outgoing::Publish(pkid))
+            );
+            let packet = broker
+                .read_publish()
+                .await
+                .expect("missing replayed publish");
+            assert_eq!(packet.payload.as_ref(), &[payload]);
+            assert_eq!(packet.pkid, pkid);
+            assert!(packet.dup);
+        }
+    })
+    .await
+    .expect("timed out waiting for persistent session replay");
 }
 
 #[tokio::test]
