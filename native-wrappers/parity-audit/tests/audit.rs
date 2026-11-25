@@ -9615,7 +9615,10 @@ fn macro_typed_inherent_owners_fail_explicitly_instead_of_losing_methods() {
         error.contains("unsupported inherent impl owner `owner ! ()`"),
         "{error}"
     );
-    assert!(error.contains("core/src/lib.rs"), "{error}");
+    assert!(
+        error.replace('\\', "/").contains("core/src/lib.rs"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -9960,7 +9963,10 @@ fn anonymous_constants_cannot_hide_callable_inherent_members() {
             error.contains("unsupported anonymous constant"),
             "{addition}: {error}"
         );
-        assert!(error.contains("core/src/lib.rs"), "{error}");
+        assert!(
+            error.replace('\\', "/").contains("core/src/lib.rs"),
+            "{error}"
+        );
         assert!(!check_review_fixture(root).status.success());
         assert_eq!(
             fs::read(root.join(rumqttc_parity_audit::LEDGER)).unwrap(),

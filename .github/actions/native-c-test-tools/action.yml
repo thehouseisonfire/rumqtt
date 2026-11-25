@@ -1,5 +1,5 @@
 name: Native C broker tools
-description: Provision a required Mosquitto broker for native C Will fixtures.
+description: Provision a required Mosquitto broker for native wrapper fixtures and benchmarks.
 runs:
   using: composite
   steps:
@@ -9,8 +9,13 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y mosquitto
+        # Ubuntu confines /usr/sbin/mosquitto with an AppArmor profile that
+        # does not allow the generated fixture configs in temporary directories.
+        broker="$RUNNER_TEMP/rumqttc-mosquitto"
+        install -m 0755 /usr/sbin/mosquitto "$broker"
         # Mosquitto 2.0 reports its help/version successfully with exit code 3.
-        mosquitto -h || test "$?" -eq 3
+        "$broker" -h || test "$?" -eq 3
+        echo "MOSQUITTO_BIN=$broker" >> "$GITHUB_ENV"
     - name: Install Mosquitto on macOS
       if: runner.os == 'macOS'
       shell: bash

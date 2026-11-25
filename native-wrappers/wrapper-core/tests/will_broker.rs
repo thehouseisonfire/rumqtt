@@ -33,21 +33,27 @@ fn real_broker_publishes_will_only_after_ungraceful_disconnect() {
     .unwrap();
     drop(reservation);
     let binary = std::env::var_os("MOSQUITTO_BIN").unwrap_or_else(|| "mosquitto".into());
+    let log = directory.path().join("mosquitto.log");
     let mut broker = Broker(
-        ProcessCommand::new(binary)
+        ProcessCommand::new(&binary)
             .arg("-c")
-            .arg(path)
+            .arg(&path)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
             .spawn()
-            .unwrap(),
+            .unwrap_or_else(|error| panic!("could not start {binary:?}: {error}")),
     );
     let deadline = Instant::now() + Duration::from_secs(5);
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+    loop {
+        let status = broker.0.try_wait().unwrap();
         assert!(
-            Instant::now() < deadline && broker.0.try_wait().unwrap().is_none(),
-            "broker did not become ready"
+            status.is_none() && Instant::now() < deadline,
+            "{binary:?} did not become ready with {path:?} (exit status: {status:?})\n{}",
+            std::fs::read_to_string(&log).unwrap_or_default()
         );
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     for mqtt5 in [false, true] {
