@@ -416,6 +416,7 @@ class EmqxDockerBroker:
             logs = run_process(["docker", "logs", self.container_name], timeout=10)
             raise FixtureError(f"EMQX did not become ready: {(logs.stderr or logs.stdout).strip()}")
         deadline = time.monotonic() + 30
+        output = ""
         while time.monotonic() < deadline:
             logs = run_process(["docker", "logs", self.container_name], timeout=10)
             output = f"{logs.stdout}\n{logs.stderr}"

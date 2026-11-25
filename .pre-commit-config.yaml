@@ -19,7 +19,9 @@ repos:
 
       - id: pyrefly
         name: pyrefly typecheck
-        entry: pyrefly check
+        entry: >-
+          uv run --no-project --with pytest --with psutil --with types-psutil --with pyrefly
+          pyrefly check --min-severity warn
         language: system
         types_or: [python, pyi]
         pass_filenames: false

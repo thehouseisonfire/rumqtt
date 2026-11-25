@@ -143,7 +143,7 @@ class Proxy:
             pump = threading.Thread(target=self.relay, args=(upstream, stream), daemon=True)
             pump.start()
             self.relay(stream, upstream)
-        except (OSError, TimeoutError):
+        except OSError:
             # Trust rejection and cancellation are exercised by the client.
             pass
         except Exception:

@@ -59,7 +59,7 @@ def test_audit_uses_json_and_accepts_a_more_portable_policy(monkeypatch: pytest.
     monkeypatch.setattr(
         sys,
         "argv",
-        [str(audit_linux_wheel.__file__), str(wheel), "--policy", "manylinux_2_17_x86_64"],
+        [audit_linux_wheel.__file__, str(wheel), "--policy", "manylinux_2_17_x86_64"],
     )
 
     assert audit_linux_wheel.main() == 0

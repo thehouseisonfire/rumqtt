@@ -162,7 +162,7 @@ def read_exact(stream: socket.socket, length: int) -> bytes | None:
     while len(data) < length:
         try:
             chunk = stream.recv(length - len(data))
-        except (ConnectionError, OSError, TimeoutError):
+        except OSError:
             return None
         if not chunk:
             return None
@@ -447,7 +447,7 @@ class Broker:
             if self.websocket:
                 try:
                     stream = accept_websocket(stream)
-                except (ConnectionError, OSError, TimeoutError, ValueError):
+                except (OSError, ValueError):
                     stream.close()
                     continue
             thread = threading.Thread(target=self.serve, args=(stream,), daemon=True)

@@ -15,7 +15,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from pathlib import Path
 from typing import cast
 
@@ -240,7 +240,7 @@ def cleanup(path: Path) -> None:
 
 
 @contextlib.contextmanager
-def trusted_root(root: Path, environment: dict[str, str]) -> Iterator[None]:
+def trusted_root(root: Path, environment: dict[str, str]) -> Generator[None, None, None]:
     if sys.platform.startswith("linux"):
         with tempfile.TemporaryDirectory(prefix="rumqttc-empty-roots-") as empty:
             environment["SSL_CERT_FILE"] = str(root)

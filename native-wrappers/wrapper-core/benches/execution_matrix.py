@@ -166,7 +166,7 @@ def run_case(
                 )
                 assert child.stdout is not None and child.stdin is not None
                 stdout = child.stdout
-                output = queue.Queue()
+                output: queue.Queue[str | None] = queue.Queue()
 
                 def read_output():
                     for line in stdout:

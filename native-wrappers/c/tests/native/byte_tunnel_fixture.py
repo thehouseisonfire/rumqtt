@@ -28,7 +28,7 @@ class ByteTunnel(Proxy):
             pump = threading.Thread(target=self.relay, args=(upstream, stream), daemon=True)
             pump.start()
             self.relay(stream, upstream)
-        except (OSError, TimeoutError):
+        except OSError:
             pass  # Client cancellation and TLS trust rejection are expected.
         except Exception as error:
             with self.lock:
